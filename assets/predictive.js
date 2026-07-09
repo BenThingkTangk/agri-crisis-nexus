@@ -223,29 +223,43 @@
   function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function escapeAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;'); }
 
-  // -------- Mount into Ops Matrix / dedicated tab --------
+  // -------- Mount into Ops Matrix ONLY --------
+  let mounted = false;
   function mount() {
-    // Try to insert into module 11 (ops) pane
+    if (mounted) return true;
+    // If a stray predict-mount already exists (e.g. from a prior fallback), remove it
+    const stray = document.getElementById('predict-mount');
+    if (stray && stray.parentElement && stray.parentElement.tagName === 'BODY') {
+      stray.remove();
+    }
     const opsPane = document.querySelector('.module[data-mod="ops"]')
       || document.querySelector('[data-tab-pane="ops"]')
       || document.getElementById('pane-ops')
       || document.querySelector('.ops-container');
-    if (opsPane) {
-      const holder = document.createElement('div');
-      holder.id = 'predict-mount';
-      opsPane.insertBefore(holder, opsPane.firstChild);
-      PREDICT.render(holder);
-    } else {
-      // Fallback: append to body
-      const holder = document.createElement('div');
-      holder.id = 'predict-mount';
-      holder.style.padding = '20px';
-      document.body.appendChild(holder);
-      PREDICT.render(holder);
-    }
+    if (!opsPane) return false;
+    // Avoid duplicate mounts inside ops
+    if (opsPane.querySelector('#predict-mount')) { mounted = true; return true; }
+    const holder = document.createElement('div');
+    holder.id = 'predict-mount';
+    opsPane.insertBefore(holder, opsPane.firstChild);
+    PREDICT.render(holder);
+    mounted = true;
+    return true;
+  }
+
+  // Retry until ops module is present. Never fall back to <body>.
+  function tryMount(attempt = 0) {
+    if (mount()) return;
+    if (attempt < 20) setTimeout(() => tryMount(attempt + 1), 500);
   }
 
   window.addEventListener('atom:ready', () => {
-    setTimeout(mount, 500);
+    setTimeout(() => tryMount(0), 300);
   });
+  // Also attempt on DOMContentLoaded in case atom:ready never fires
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    setTimeout(() => tryMount(0), 1000);
+  } else {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(() => tryMount(0), 1000));
+  }
 })();

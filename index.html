@@ -138,11 +138,18 @@ a{color:var(--cyan);text-decoration:none}
 .nav-item:hover{color:var(--cyan);background:rgba(0,229,255,.08);border-color:rgba(0,229,255,.2)}
 .nav-item.active{color:var(--cyan);background:rgba(0,229,255,.15);border-color:var(--cyan);
   box-shadow:0 0 20px rgba(0,229,255,.3)}
-.nav-item .tip{position:absolute;left:56px;top:50%;transform:translateY(-50%);
-  background:var(--bg-3);color:var(--text);padding:6px 12px;border-radius:6px;font-size:12px;
+.nav-item .tip{position:absolute;left:calc(100% + 10px);top:50%;transform:translate(-6px,-50%);
+  background:rgba(16,22,42,.96);color:var(--text);padding:6px 12px;border-radius:6px;font-size:12px;
   font-family:var(--font-mono);letter-spacing:.05em;white-space:nowrap;opacity:0;pointer-events:none;
-  border:1px solid var(--border-2);transition:opacity .2s;z-index:60}
-.nav-item:hover .tip{opacity:1}
+  border:1px solid rgba(0,229,255,.35);box-shadow:0 6px 24px rgba(0,0,0,.55),0 0 0 1px rgba(0,0,0,.5);
+  backdrop-filter:blur(8px);transition:opacity .18s ease,transform .18s ease;z-index:200}
+.nav-item .tip::before{content:'';position:absolute;left:-5px;top:50%;transform:translateY(-50%) rotate(45deg);
+  width:8px;height:8px;background:rgba(16,22,42,.96);border-left:1px solid rgba(0,229,255,.35);border-bottom:1px solid rgba(0,229,255,.35)}
+.nav-item:hover .tip{opacity:1;transform:translate(0,-50%)}
+.nav-item.active .tip{display:none}
+
+/* Safety: predict-mount must live inside the Ops module. If it ever ends up as a direct child of body, hide it. */
+body > #predict-mount{display:none !important}
 
 /* ---------- Header ---------- */
 #topbar{position:sticky;top:32px;z-index:40;
