@@ -24,31 +24,31 @@
     { id:'f8', title:'Sahel food-war expansion', desc:'Burkina/Mali/Niger crisis crosses to coastal states', confidence:66, severity:'high', window:'6-12mo', trigger:['Wagner rebrand ops','Coup contagion','Grain aid interception']}
   ];
 
-  // -------- Correlation matrix (crisis vector → Nirmata leverage) --------
+  // -------- Correlation matrix (crisis vector → Nirmata Holdings pillar) --------
   const NIRMATA_MATRIX = {
-    'AntimatterAI': {
-      full: 'AntimatterAI — Post-Quantum Cryptography',
+    'Secure Infrastructure': {
+      full: 'Nirmata — Secure Infrastructure Pillar',
       color: '#00e5ff',
       applies_to: ['supply chain security','provenance','commodity fraud','satellite comm','trading systems'],
       leverage: 'Post-quantum secured supply-chain provenance for wheat, corn, rice. Prevents state-level MITM on trading systems. Applies to FCT, Cargill, ADM, COFCO exposure.',
       solves: ['grain provenance fraud','post-quantum audit trails','sovereign food ledgers','satellite comm hardening']
     },
-    'ThingkTangk/HumanOS': {
-      full: 'ThingkTangk — HumanOS Coordination Layer',
+    'Coordination Layer': {
+      full: 'Nirmata — Coordination Layer Pillar',
       color: '#00ffb3',
       applies_to: ['multi-actor coordination','field ops','NGO logistics','agri-cooperative','farm-to-fork'],
-      leverage: 'Human OS as the coordination substrate for NGOs, cooperatives, ag-input distributors during crisis. Turns fragmented actors into a single addressable network.',
+      leverage: 'Human-centered operating layer for NGOs, cooperatives, ag-input distributors during crisis. Turns fragmented actors into a single addressable network.',
       solves: ['NGO-cooperative coordination','crisis response routing','farm-to-fork transparency','labor mobilization']
     },
-    'RRG.bio': {
-      full: 'RRG.bio — Regenerative Stem Cell + Biotech',
+    'Regenerative Biology': {
+      full: 'Nirmata — Regenerative Biology Pillar',
       color: '#bf5fff',
       applies_to: ['soil biology','regenerative ag','biostimulants','protein alternatives','pharma resilience'],
       leverage: 'Regenerative biology stack — soil microbiome, biostimulants, cultivated protein IP. Direct hedge against ex-crop protein collapse and fertilizer weaponization.',
       solves: ['soil microbiome restoration','biostimulant formulations','cultivated protein','pharma resilience']
     },
-    'TryClinixAI': {
-      full: 'TryClinixAI — Clinical Decision AI',
+    'Clinical Intelligence': {
+      full: 'Nirmata — Clinical Intelligence Pillar',
       color: '#f5c842',
       applies_to: ['malnutrition triage','famine health','pandemic-ag','livestock health','antibiotic resistance'],
       leverage: 'Clinical decision engine for famine triage, pediatric malnutrition, livestock disease outbreaks. Deployable to Sudan, Gaza, Sahel, Yemen.',
@@ -66,10 +66,10 @@
       info.applies_to.forEach(k => { if (t.includes(k.toLowerCase())) score += 25; });
       info.solves.forEach(k => { if (t.includes(k.toLowerCase().split(' ')[0])) score += 15; });
       // Keyword boosts
-      if (/quantum|crypt|provenance|trading|satellite/.test(t) && brand === 'AntimatterAI') score += 20;
-      if (/coordinat|ngo|logistic|coop|network/.test(t) && brand === 'ThingkTangk/HumanOS') score += 20;
-      if (/soil|microbiome|biostim|regen|protein|stem/.test(t) && brand === 'RRG.bio') score += 20;
-      if (/malnutrit|famine|clinic|health|triage|livestock/.test(t) && brand === 'TryClinixAI') score += 20;
+      if (/quantum|crypt|provenance|trading|satellite/.test(t) && brand === 'Secure Infrastructure') score += 20;
+      if (/coordinat|ngo|logistic|coop|network/.test(t) && brand === 'Coordination Layer') score += 20;
+      if (/soil|microbiome|biostim|regen|protein|stem/.test(t) && brand === 'Regenerative Biology') score += 20;
+      if (/malnutrit|famine|clinic|health|triage|livestock/.test(t) && brand === 'Clinical Intelligence') score += 20;
       score = Math.min(100, score);
       out.push({ brand, score, ...info });
     });
@@ -197,10 +197,10 @@
       btn.onclick = () => {
         const s = btn.dataset.scenario;
         const prompts = {
-          collapse: 'Model the full 180-day scenario if the Black Sea grain corridor collapses tomorrow. Include: wheat/corn/sunflower price paths (with numbers), regional food-security cascade, chess moves each major power will play, Nirmata portfolio positioning. Emit an atom-artifact scenario.',
-          cascade: 'Model the compound scenario: severe El Niño 2026-27 + India rice ban extension + North African wheat crisis. Give me a 12-month cascade with numbered inflection points, casualty/displacement projections, commodity price paths, and where each Nirmata company plugs in. Emit an atom-artifact scenario.',
-          quantum: 'Model the scenario: a quantum-capable state actor breaks classical encryption on major agricultural commodity trading systems. What breaks first? What is the price/supply impact? How does AntimatterAI capture this market — with concrete timeline and pricing. Emit atom-artifact scenario.',
-          pandemic: 'Model the scenario: African Swine Fever variant + H5N1 mammalian transition + Russia-China grain sanctions dispute — happening in Q3 2026. Give me the systems-level cascade, TryClinixAI + RRG.bio deployment path, and 3 hedges we should place now. Emit atom-artifact scenario.'
+          collapse: 'Model the full 180-day scenario if the Black Sea grain corridor collapses tomorrow. Include: wheat/corn/sunflower price paths (with numbers), regional food-security cascade, chess moves each major power will play, Nirmata Holdings strategic positioning across its four pillars. Emit an atom-artifact scenario.',
+          cascade: 'Model the compound scenario: severe El Niño 2026-27 + India rice ban extension + North African wheat crisis. Give me a 12-month cascade with numbered inflection points, casualty/displacement projections, commodity price paths, and where each Nirmata Holdings pillar plugs in. Emit an atom-artifact scenario.',
+          quantum: 'Model the scenario: a quantum-capable state actor breaks classical encryption on major agricultural commodity trading systems. What breaks first? What is the price/supply impact? How does Nirmata Holdings\' Secure Infrastructure pillar capture this market — with concrete timeline and pricing. Emit atom-artifact scenario.',
+          pandemic: 'Model the scenario: African Swine Fever variant + H5N1 mammalian transition + Russia-China grain sanctions dispute — happening in Q3 2026. Give me the systems-level cascade, Nirmata Holdings\' Clinical Intelligence + Regenerative Biology deployment path, and 3 hedges we should place now. Emit atom-artifact scenario.'
         };
         window.ATOM?.ask(prompts[s], { mode: 'reasoning' });
       };

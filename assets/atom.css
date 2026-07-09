@@ -292,6 +292,30 @@
   background: rgba(255,255,255,.06);
   color: #b8c5d6;
 }
+/* BUILD MODE button — distinct purple aura */
+.atom-mode-btn.atom-mode-build {
+  border-color: rgba(191,95,255,.35);
+  color: #bf5fff;
+  background: rgba(191,95,255,.06);
+  position: relative;
+}
+.atom-mode-btn.atom-mode-build::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, transparent, rgba(191,95,255,.3), transparent);
+  opacity: 0;
+  transition: opacity .3s;
+  pointer-events: none;
+}
+.atom-mode-btn.atom-mode-build:hover::before { opacity: 1; }
+.atom-mode-btn.atom-mode-build.active {
+  background: linear-gradient(90deg, rgba(191,95,255,.3), rgba(0,229,255,.2));
+  border-color: rgba(191,95,255,.7);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(191,95,255,.4);
+}
 
 /* ---------- Messages ---------- */
 .atom-messages {

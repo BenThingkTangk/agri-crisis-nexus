@@ -30,7 +30,7 @@ Click the ATOM orb (bottom-right, or press **⌘K** / **A**) to invoke your stra
 ATOM can build things inside the app — try:
 - "Build me a memo comparing 2026 shocks to 1973 oil crisis"
 - "Predict wheat price if Black Sea corridor collapses"
-- "Correlate current Sahel food crisis to RRG.bio and TryClinixAI"
+- "Correlate current Sahel food crisis to Nirmata Holdings' Regenerative Biology and Clinical Intelligence pillars"
 
 ## Live Data Engine
 

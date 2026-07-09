@@ -525,6 +525,7 @@ main{margin-left:var(--sidebar-w);padding:32px 32px 80px;position:relative;z-ind
 .hud{font-family:var(--font-mono);letter-spacing:.1em}
 </style>
 <link rel="stylesheet" href="/assets/atom.css">
+<link rel="stylesheet" href="/assets/mobile.css">
 </head>
 <body>
 <div class="classification-banner">⚠ STRATEGIC INTELLIGENCE — AGRI-CRISIS NEXUS — CHIEF QUANTUM OFFICER EYES ONLY ⚠</div>
@@ -864,10 +865,10 @@ const CHESS_ACTORS = [
   {name:'Regen Ag Movement',flag:'🌱',type:'allied',piece:'♘',pos:[0,6],threat:'stable',farmland:'40M acres',grain:'—',stance:'Soil restoration mandate'},
   {name:'Nirmata Holdings',flag:'⚡',type:'allied',piece:'♖',pos:[0,7],threat:'stable',farmland:'—',grain:'—',stance:'AI + PQC + biotech convergence'},
   // Front line white pawns
-  {name:'AntimatterAI',flag:'⚛️',type:'allied',piece:'♙',pos:[1,0],threat:'stable',farmland:'—',grain:'—',stance:'Post-quantum AI infrastructure'},
-  {name:'RRG.bio',flag:'🧬',type:'allied',piece:'♙',pos:[1,1],threat:'stable',farmland:'—',grain:'—',stance:'Stem cell + soil biology'},
-  {name:'TryClinixAI',flag:'🏥',type:'allied',piece:'♙',pos:[1,2],threat:'stable',farmland:'—',grain:'—',stance:'Data integrity platform'},
-  {name:'HumanOS',flag:'🤖',type:'allied',piece:'♙',pos:[1,3],threat:'stable',farmland:'—',grain:'—',stance:'Voice AI for smallholders'},
+  {name:'Nirmata · Secure Infrastructure',flag:'⚛️',type:'allied',piece:'♙',pos:[1,0],threat:'stable',farmland:'—',grain:'—',stance:'Post-quantum crypto + provenance systems'},
+  {name:'Nirmata · Regenerative Biology',flag:'🧬',type:'allied',piece:'♙',pos:[1,1],threat:'stable',farmland:'—',grain:'—',stance:'Soil microbiome + regenerative biotech'},
+  {name:'Nirmata · Clinical Intelligence',flag:'🏥',type:'allied',piece:'♙',pos:[1,2],threat:'stable',farmland:'—',grain:'—',stance:'Clinical decision AI for famine + livestock'},
+  {name:'Nirmata · Coordination Layer',flag:'🤖',type:'allied',piece:'♙',pos:[1,3],threat:'stable',farmland:'—',grain:'—',stance:'Human-centered OS for field ops'},
   {name:'Chainalysis',flag:'⛓️',type:'allied',piece:'♙',pos:[1,4],threat:'stable',farmland:'—',grain:'—',stance:'On-chain agri-commodity data'},
   {name:'AcreTrader',flag:'🌾',type:'allied',piece:'♙',pos:[1,5],threat:'moderate',farmland:'80k acres tokenized',grain:'—',stance:'Farmland fractional ownership'},
   {name:'Indigo Ag',flag:'🌿',type:'allied',piece:'♙',pos:[1,6],threat:'moderate',farmland:'5M acres enrolled',grain:'—',stance:'Microbial seed treatments'},
@@ -897,7 +898,7 @@ const CHESS_ACTORS = [
 const WIN_MOVES = [
   {t:'AI SOIL INTEL',d:'Deploy first integrated AI + biostimulant precision platform (Nirmata pole position — no competitor at scale)'},
   {t:'POST-QUANTUM CHAIN',d:'Launch quantum-secure agri-commodity blockchain before $110B tokenization matures'},
-  {t:'SMALLHOLDER OS',d:'HumanOS voice-AI advisor to 500M smallholders — mobile-first, multi-lingual'},
+  {t:'SMALLHOLDER OS',d:'Nirmata Coordination Layer voice-AI advisor to 500M smallholders — mobile-first, multi-lingual'},
   {t:'CARBON VERIF AI',d:'AI-measured soil carbon → on-chain credit issuance — first trusted standard'},
   {t:'PARAMETRIC INSURE',d:'Weather API → smart-contract crop insurance — $90B underinsured market'},
   {t:'SEED IP RAILS',d:'Blockchain seed royalty enforcement rails preventing counterfeit trait spread'},
@@ -1057,14 +1058,14 @@ const TIMELINE_EVENTS = [
 
 // ---------- Opportunity matrix ----------
 const OPP_MATRIX = [
-  {opp:'AI Soil Health Platform',sub:'Real-time microbiome + fulvic/humic optimization AI',size:'$36B biostim + $24B precision ag',pri:'critical',edge:'AntimatterAI + IoT + RRG.bio biotech lens',gap:'No integrated AI soil intelligence platform exists',time:'2026–2028',conf:92,fund:'$30–50M Seed→A',compet:'Trace Genomics, Indigo Ag (partial)'},
-  {opp:'AgriTech AI Decision Engine',sub:'Unified crop-weather-market real-time platform',size:'$4.9B AI-in-ag by 2030',pri:'critical',edge:'ATOM automation + HumanOS + AntimatterAI',gap:'Fragmented tools — no unified intelligence layer',time:'2026–2027',conf:88,fund:'$40–70M Series A',compet:'Climate FieldView, Granular'},
+  {opp:'AI Soil Health Platform',sub:'Real-time microbiome + fulvic/humic optimization AI',size:'$36B biostim + $24B precision ag',pri:'critical',edge:'Nirmata Secure Infra + IoT + Regenerative Biology lens',gap:'No integrated AI soil intelligence platform exists',time:'2026–2028',conf:92,fund:'$30–50M Seed→A',compet:'Trace Genomics, Indigo Ag (partial)'},
+  {opp:'AgriTech AI Decision Engine',sub:'Unified crop-weather-market real-time platform',size:'$4.9B AI-in-ag by 2030',pri:'critical',edge:'ATOM automation + Nirmata Coordination Layer + Secure Infra',gap:'Fragmented tools — no unified intelligence layer',time:'2026–2027',conf:88,fund:'$40–70M Series A',compet:'Climate FieldView, Granular'},
   {opp:'Agri-Commodity Tokenization',sub:'Post-quantum blockchain RWA for grain/carbon credits',size:'$7B (2026) → $110B (2030) → $1.4T (2040)',pri:'high',edge:'Post-quantum crypto + blockchain infra',gap:'No quantum-secure agri-commodity blockchain standard',time:'2026–2029',conf:82,fund:'$50–100M Series A/B',compet:'AcreTrader, Harvest Returns (no PQC)'},
   {opp:'Parametric Crop Insurance AI',sub:'Weather-data → smart contract auto-payout engine',size:'$90B+ underinsured ag sector',pri:'high',edge:'ATOM automation + fintech integration',gap:'Insurance missing link in food system financing',time:'2027–2029',conf:76,fund:'$25–40M Series A',compet:'Pula, ACRE Africa (regional only)'},
   {opp:'Vertical Farm AI OS',sub:'Full automation and optimization for indoor farms',size:'$8.2B → $41B (2034)',pri:'medium',edge:'AI systems + real-time control platforms',gap:'No comprehensive vertical farm AI OS on market',time:'2027–2030',conf:71,fund:'$20–35M Series A',compet:'Plenty, Kalera (proprietary silos)'},
-  {opp:'Smallholder Farmer AI Platform',sub:'Mobile AI agronomic advisor for 500M+ farms',size:'500M+ smallholder farms globally',pri:'strategic',edge:'HumanOS voice AI + mobile-first + multi-lingual',gap:'Zero AI access for 80% of the world\'s farmers',time:'2028–2032',conf:84,fund:'$60–120M Series B (impact-linked)',compet:'Wefarm, Digital Green (data-thin)'},
-  {opp:'Carbon Credit Verification AI',sub:'Soil carbon measurement + on-chain credit issuance',size:'$167M → $375M (2033) → $1B+',pri:'strategic',edge:'AI measurement + blockchain + RRG.bio',gap:'No trusted AI-verified soil carbon measurement system',time:'2027–2031',conf:79,fund:'$30–60M Series A/B',compet:'Regrow, Indigo Carbon (unverified)'},
-  {opp:'Food Supply Chain Transparency',sub:'AI + blockchain provenance tracking farm to fork',size:'Global food supply chain $8T+',pri:'medium',edge:'Blockchain + AI audit + TryClinixAI data integrity',gap:'30–40% food loss due to opaque supply chains',time:'2027–2030',conf:73,fund:'$25–50M Series A',compet:'IBM Food Trust, VeChain (limited scale)'}
+  {opp:'Smallholder Farmer AI Platform',sub:'Mobile AI agronomic advisor for 500M+ farms',size:'500M+ smallholder farms globally',pri:'strategic',edge:'Nirmata Coordination Layer voice AI + mobile-first + multi-lingual',gap:'Zero AI access for 80% of the world\'s farmers',time:'2028–2032',conf:84,fund:'$60–120M Series B (impact-linked)',compet:'Wefarm, Digital Green (data-thin)'},
+  {opp:'Carbon Credit Verification AI',sub:'Soil carbon measurement + on-chain credit issuance',size:'$167M → $375M (2033) → $1B+',pri:'strategic',edge:'AI measurement + blockchain + Nirmata Regenerative Biology',gap:'No trusted AI-verified soil carbon measurement system',time:'2027–2031',conf:79,fund:'$30–60M Series A/B',compet:'Regrow, Indigo Carbon (unverified)'},
+  {opp:'Food Supply Chain Transparency',sub:'AI + blockchain provenance tracking farm to fork',size:'Global food supply chain $8T+',pri:'medium',edge:'Blockchain + AI audit + Nirmata Secure Infra data integrity',gap:'30–40% food loss due to opaque supply chains',time:'2027–2030',conf:73,fund:'$25–50M Series A',compet:'IBM Food Trust, VeChain (limited scale)'}
 ];
 
 // ---------- WHAT NOBODY IS TALKING ABOUT ----------
@@ -1082,10 +1083,10 @@ const UNFORESEEN_RISKS = [
   {t:'Data Colonialism',d:'Big Tech acquiring all farm sensor data creates new dependency chains replicating colonialism'},
 ];
 const NIRMATA_MOAT = [
-  {t:'Cross-Portfolio Convergence',d:'AntimatterAI + RRG.bio + HumanOS + TryClinixAI — only entity with AI, biotech, quantum crypto, and voice UI under one roof'},
+  {t:'Cross-Pillar Convergence',d:'Nirmata Holdings — only entity uniting AI, biotech, quantum crypto, and voice UI under one strategic roof'},
   {t:'Post-Quantum Cryptography Edge',d:'CQO-led PQC expertise 24 months ahead of NIST commercial migration deadline for $110B tokenization market'},
-  {t:'Biological Data Sovereignty',d:'RRG.bio stem cell + microbiome pipeline creates proprietary biological datasets no LLM can replicate'},
-  {t:'Voice AI Distribution',d:'HumanOS voice interface reaches 500M smallholder farmers where text-based tools fail'},
+  {t:'Biological Data Sovereignty',d:'Nirmata Regenerative Biology microbiome pipeline creates proprietary biological datasets no LLM can replicate'},
+  {t:'Voice AI Distribution',d:'Nirmata Coordination Layer voice interface reaches 500M smallholder farmers where text-based tools fail'},
   {t:'Vertical Automation Loop',d:'ATOM automation platform closes the loop from sensing → decision → intervention → verification'},
 ];
 
@@ -1938,9 +1939,9 @@ function buildModuleOps(){
         <div class="grid grid-2">
           <div><h4 style="color:var(--green);margin-bottom:12px;letter-spacing:.1em;font-size:12px">Q3 2026 — LAUNCH</h4>
             <ol style="padding-left:20px;font-size:13px;line-height:1.9;color:var(--text)">
-              <li>Deploy AntimatterAI post-quantum grain-tokenization prototype</li>
-              <li>RRG.bio soil microbiome + humic AI correlation study</li>
-              <li>HumanOS voice interface — Hindi/Swahili/Portuguese pilot</li>
+              <li>Deploy Nirmata Secure Infra post-quantum grain-tokenization prototype</li>
+              <li>Nirmata Regenerative Biology soil microbiome + humic AI correlation study</li>
+              <li>Nirmata Coordination Layer voice interface — Hindi/Swahili/Portuguese pilot</li>
               <li>File 6 PQC agri-blockchain patents</li>
             </ol>
           </div>
@@ -1948,7 +1949,7 @@ function buildModuleOps(){
             <ol style="padding-left:20px;font-size:13px;line-height:1.9;color:var(--text)">
               <li>Series A close: $60M Nirmata AgriTech vertical</li>
               <li>Partnership: 1 sovereign wealth fund, 1 CGIAR institute</li>
-              <li>Onboard 500k smallholder farmers via HumanOS voice AI</li>
+              <li>Onboard 500k smallholder farmers via Nirmata Coordination Layer voice AI</li>
               <li>First 10k acres of AI-verified soil carbon credits issued on-chain</li>
             </ol>
           </div>

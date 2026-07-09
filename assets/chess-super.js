@@ -109,7 +109,7 @@
         const prompts = {
           moves: `What are the 3 highest-probability moves ${actor} will make in the global food/agriculture chessboard over the next 60 days? For each: move description, probability %, trigger conditions, market impact. Cite sources.`,
           weak: `What are the 3 most exploitable weak points of ${actor} in the current food/agriculture geopolitical landscape? For each: weakness, why it matters, who could exploit it. Cite sources.`,
-          lever: `What are the specific levers Nirmata Holdings (AntimatterAI post-quantum, ThingkTangk HumanOS, RRG.bio regen biotech, TryClinixAI clinical) could pull vis-à-vis ${actor} in the current food-war landscape? Give 3 concrete plays. Cite sources.`,
+          lever: `What are the specific levers Nirmata Holdings (across its four pillars: Secure Infrastructure / post-quantum crypto, Coordination Layer / human-centered ops, Regenerative Biology / soil & biotech, Clinical Intelligence / decision AI) could pull vis-à-vis ${actor} in the current food-war landscape? Give 3 concrete plays. Cite sources.`,
           counter: `List 3 concrete counter-plays that other actors (state or corporate) would deploy against ${actor}'s recent moves in agriculture/food/commodities. Include cost, timeline, probability of success. Cite sources.`
         };
         const box = document.getElementById('actor-probe-result');

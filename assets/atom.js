@@ -10,14 +10,17 @@
   const ATOM = {
     open: false,
     expanded: false,
-    mode: 'chat', // chat | reasoning | deep | quick
+    mode: 'chat', // chat | reasoning | deep | quick | build
     history: [],
     thinking: false,
     lastCitations: [],
     artifacts: [],
     liveData: {}, // live-refreshed data from Perplexity
     autoRefresh: false,
-    subscribers: {}
+    subscribers: {},
+    buildUnlocked: false, // BUILD MODE authorization gate
+    buildPrincipal: null, // 'ben' | 'joel' once unlocked
+    buildHistory: [] // { ts, summary, plan, applied }
   };
   window.ATOM = ATOM;
 
@@ -35,7 +38,7 @@
       "Analyze cascade: Ogallala depletion → US corn → global protein"
     ],
     deep: [
-      "Full deep-dive on stem cell agriculture opportunities for RRG.bio",
+      "Full deep-dive on regenerative-biotech opportunities for Nirmata Holdings",
       "Comprehensive threat map for post-quantum crypto in food supply",
       "Deep research: biostimulants TAM 2026-2030 with primary sources"
     ],
@@ -43,7 +46,21 @@
       "Latest wheat futures price",
       "Any new grain export bans this week?",
       "IPC phase update for Sudan and Gaza"
+    ],
+    build: [
+      "Add a new KPI card for global refugee count on the map module",
+      "Change the color of the classification banner to gold",
+      "Add a search filter to the timeline module",
+      "Insert a new tab for supply chain risks",
+      "Show recent change history"
     ]
+  };
+
+  // -------- BUILD MODE unlock codes (client-side gate; real auth is passphrase confirmation) --------
+  const BUILD_UNLOCK_CODES = {
+    'BEN-QUANTUM-2026': 'ben',
+    'JOEL-BEDARD-COFOUNDER': 'joel',
+    'NIRMATA-BUILD-OVERRIDE': 'admin'
   };
 
   // -------- Boot UI --------
@@ -97,6 +114,7 @@
         <button class="atom-mode-btn" data-mode="reasoning">⇌ REASONING</button>
         <button class="atom-mode-btn" data-mode="deep">▲ DEEP RESEARCH</button>
         <button class="atom-mode-btn" data-mode="quick">⚡ QUICK</button>
+        <button class="atom-mode-btn atom-mode-build" data-mode="build" title="Self-editing mode">◆ BUILD</button>
       </div>
       <div class="atom-messages" id="atom-messages"></div>
       <div class="atom-input-wrap">
@@ -131,10 +149,19 @@
 
     document.querySelectorAll('.atom-mode-btn').forEach(btn => {
       btn.addEventListener('click', () => {
+        const newMode = btn.dataset.mode;
+        // BUILD MODE requires unlock
+        if (newMode === 'build' && !ATOM.buildUnlocked) {
+          promptBuildUnlock();
+          return;
+        }
         document.querySelectorAll('.atom-mode-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        ATOM.mode = btn.dataset.mode;
+        ATOM.mode = newMode;
         renderSuggestions();
+        if (newMode === 'build') {
+          announceBuildMode();
+        }
       });
     });
 
@@ -161,7 +188,7 @@
        I can:<br>
        • <em>Analyze</em> live crisis intelligence via Perplexity's Sonar family (chat / reasoning / deep research).<br>
        • <em>Forecast</em> geopolitical, commodity, and food-supply scenarios with confidence scores.<br>
-       • <em>Correlate</em> every crisis vector to Nirmata solutions (AntimatterAI, ThingkTangk, RRG.bio, TryClinixAI).<br>
+       • <em>Correlate</em> every crisis vector to Nirmata Holdings' strategic pillars — secure infrastructure, coordination layer, regenerative biology, clinical intelligence.<br>
        • <em>Build</em> new modules, dashboards, briefings, memos, and chess moves inline — try "build me a…"<br><br>
        <strong>Try:</strong> "Build a memo comparing current 2026 food shocks to 1973 oil crisis" or "Predict wheat price if Black Sea corridor collapses".`,
       []
@@ -275,7 +302,7 @@
     return `Active module: ${active}. Filters: ${JSON.stringify(filters)}.
 Top critical countries in dataset: ${criticalCountries}.
 Baseline commodity ref: ${priceSummary}.${liveSummary}
-Nirmata Holdings portfolio: AntimatterAI (post-quantum crypto), ThingkTangk/HumanOS (coordination OS), RRG.bio (stem cell + regenerative), TryClinixAI (clinical decision AI).
+Nirmata Holdings pillars: (1) Secure Infrastructure (post-quantum crypto + provenance), (2) Coordination Layer (human-centered OS for field ops), (3) Regenerative Biology (soil, microbiome, biotech), (4) Clinical Intelligence (decision AI for famine, malnutrition, livestock).
 User: Chief Quantum Officer Ben O'Leary.`;
   }
 
@@ -349,6 +376,11 @@ User: Chief Quantum Officer Ben O'Leary.`;
       if (artifacts.length) {
         artifacts.forEach(a => mountArtifact(assistantEl, a));
       }
+      // Extract & process build plans (BUILD MODE)
+      const buildPlans = extractBuildPlans(fullText);
+      if (buildPlans.length) {
+        buildPlans.forEach(p => mountBuildPlan(assistantEl, p));
+      }
 
     } catch (err) {
       console.error('ATOM error:', err);
@@ -384,6 +416,9 @@ User: Chief Quantum Officer Ben O'Leary.`;
     // Code fences (preserve for artifact extraction later — display as-is)
     s = s.replace(/```(atom-artifact)\n([\s\S]*?)```/g, (_, lang, code) =>
       `<div style="font-family:'Space Mono',monospace;font-size:10px;color:#00ffb3;background:rgba(0,255,179,.06);padding:8px;border-radius:6px;border:1px dashed rgba(0,255,179,.3);margin:6px 0;">◉ ARTIFACT: ${escapeHtml(extractArtifactTitle(code))}</div>`);
+    // BUILD MODE plans — hide the raw JSON block, will be mounted as a rich UI below
+    s = s.replace(/```(atom-build)\s*\n([\s\S]*?)```/g, (_, lang, code) =>
+      `<div style="font-family:'Space Mono',monospace;font-size:10px;color:#bf5fff;background:rgba(191,95,255,.06);padding:8px;border-radius:6px;border:1px dashed rgba(191,95,255,.3);margin:6px 0;">◆ BUILD PLAN GENERATED — rendering preview below…</div>`);
     s = s.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) =>
       `<pre style="background:rgba(0,0,0,.4);padding:10px;border-radius:6px;overflow-x:auto;font-family:'Space Mono',monospace;font-size:11px;color:#00ffb3;">${code}</pre>`);
     s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -451,6 +486,307 @@ User: Chief Quantum Officer Ben O'Leary.`;
     });
     ATOM.artifacts.push(artifact);
   }
+  // -------- BUILD MODE ---------
+  function promptBuildUnlock() {
+    const box = document.getElementById('atom-messages');
+    // If a prompt panel is already visible, focus its input
+    const existing = document.getElementById('atom-build-unlock');
+    if (existing) { existing.querySelector('input')?.focus(); return; }
+    if (!ATOM.open) toggle();
+    const el = document.createElement('div');
+    el.id = 'atom-build-unlock';
+    el.className = 'atom-msg assistant';
+    el.innerHTML = `
+      <div style="padding:14px;border:1px solid rgba(191,95,255,.45);border-radius:10px;background:linear-gradient(135deg,rgba(191,95,255,.08),rgba(0,229,255,.05));">
+        <div style="font-family:'Clash Display',sans-serif;font-size:13px;letter-spacing:.18em;color:#bf5fff;margin-bottom:8px;">◆ BUILD MODE · AUTHORIZATION REQUIRED</div>
+        <div style="font-size:12px;color:#c9d3e2;line-height:1.5;margin-bottom:12px;">
+          BUILD MODE lets ATOM propose live changes to this application's source code. Only <strong>Ben O'Leary</strong> (CQO) and <strong>Joel Bedard</strong> (co-founder) are authorized.<br><br>
+          Enter your unlock code to continue. Codes are private — do not share.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="atom-build-unlock-input" type="password" placeholder="Unlock code"
+            style="flex:1;padding:10px 12px;background:rgba(0,0,0,.5);border:1px solid rgba(191,95,255,.4);border-radius:6px;color:#fff;font-family:'Space Mono',monospace;font-size:13px;">
+          <button id="atom-build-unlock-submit"
+            style="padding:10px 16px;background:linear-gradient(135deg,#bf5fff,#00e5ff);border:none;border-radius:6px;color:#0a0e1a;font-family:'Clash Display',sans-serif;font-size:12px;letter-spacing:.12em;font-weight:600;cursor:pointer;">UNLOCK</button>
+        </div>
+        <div id="atom-build-unlock-msg" style="margin-top:8px;font-size:11px;color:#ff2d55;min-height:14px;"></div>
+      </div>
+    `;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+    const input = document.getElementById('atom-build-unlock-input');
+    const submit = document.getElementById('atom-build-unlock-submit');
+    const msg = document.getElementById('atom-build-unlock-msg');
+    setTimeout(() => input.focus(), 50);
+    const attempt = () => {
+      const code = (input.value || '').trim().toUpperCase();
+      const principal = BUILD_UNLOCK_CODES[code];
+      if (principal) {
+        ATOM.buildUnlocked = true;
+        ATOM.buildPrincipal = principal;
+        el.remove();
+        // Activate build mode
+        document.querySelectorAll('.atom-mode-btn').forEach(b =>
+          b.classList.toggle('active', b.dataset.mode === 'build'));
+        ATOM.mode = 'build';
+        renderSuggestions();
+        announceBuildMode();
+      } else {
+        msg.textContent = 'Invalid unlock code. Access denied.';
+        input.value = '';
+        input.focus();
+      }
+    };
+    submit.addEventListener('click', attempt);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') attempt(); });
+  }
+
+  function announceBuildMode() {
+    const principalName = ATOM.buildPrincipal === 'ben' ? 'Ben O\'Leary (CQO)'
+      : ATOM.buildPrincipal === 'joel' ? 'Joel Bedard (Co-founder)'
+      : 'Administrator';
+    pushAssistant(`
+      <div style="padding:12px 14px;border:1px solid rgba(191,95,255,.4);border-radius:10px;background:rgba(191,95,255,.06);">
+        <div style="font-family:'Clash Display',sans-serif;font-size:12px;letter-spacing:.18em;color:#bf5fff;margin-bottom:6px;">◆ BUILD MODE · UNLOCKED</div>
+        <div style="font-size:12px;color:#c9d3e2;line-height:1.5;">
+          Authenticated as <strong>${escapeHtml(principalName)}</strong>. Describe any change you want made to the application — add a feature, modify a module, change styling, insert new data. I will:<br><br>
+          → Analyze the current codebase<br>
+          → Emit a precise edit plan (file + find/replace) with a risk rating<br>
+          → Preview the diff for your review<br>
+          → Provide copy-paste patches or downloadable files<br><br>
+          <strong>Try:</strong> "Add a new KPI card showing displaced-population count on the map module."<br>
+          <button data-act="show-history" style="margin-top:10px;padding:6px 12px;background:rgba(0,255,179,.1);border:1px solid rgba(0,255,179,.3);border-radius:6px;color:#00ffb3;font-family:'Space Mono',monospace;font-size:11px;cursor:pointer;">☰ SHOW CHANGE HISTORY</button>
+        </div>
+      </div>
+    `, []);
+    const box = document.getElementById('atom-messages');
+    const btn = box.querySelector('[data-act="show-history"]');
+    btn?.addEventListener('click', showBuildHistory);
+  }
+
+  function loadBuildHistory() {
+    try {
+      const raw = sessionStorage.getItem('atom_build_history');
+      if (raw) ATOM.buildHistory = JSON.parse(raw);
+    } catch (_) { ATOM.buildHistory = []; }
+  }
+  function saveBuildHistory() {
+    try {
+      sessionStorage.setItem('atom_build_history', JSON.stringify(ATOM.buildHistory.slice(-30)));
+    } catch (_) {}
+  }
+  function showBuildHistory() {
+    loadBuildHistory();
+    const hist = ATOM.buildHistory;
+    if (!hist.length) {
+      pushSystem('No change history yet in this session.');
+      return;
+    }
+    const html = `
+      <div style="padding:12px 14px;border:1px solid rgba(0,255,179,.3);border-radius:10px;background:rgba(0,0,0,.3);">
+        <div style="font-family:'Clash Display',sans-serif;font-size:12px;letter-spacing:.18em;color:#00ffb3;margin-bottom:10px;">☰ CHANGE HISTORY (this session)</div>
+        ${hist.slice().reverse().map((h,i) => `
+          <div style="padding:8px 10px;margin-bottom:6px;background:rgba(0,255,179,.04);border-left:2px solid ${h.applied ? '#00ffb3' : '#f5c842'};border-radius:4px;">
+            <div style="font-size:11px;color:#7d8ba0;font-family:'Space Mono',monospace;">${new Date(h.ts).toLocaleString()}</div>
+            <div style="font-size:12px;color:#e8ecf5;margin-top:2px;">${escapeHtml(h.summary || 'change')}</div>
+            <div style="font-size:10px;color:${h.applied ? '#00ffb3' : '#f5c842'};letter-spacing:.1em;margin-top:4px;">${h.applied ? '✓ MARKED APPLIED' : '○ PENDING'} · risk: ${h.risk || 'n/a'} · ${h.plan?.changes?.length || 0} file(s)</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    pushAssistant(html, []);
+  }
+
+  function extractBuildPlans(text) {
+    const out = [];
+    const rx = /```atom-build\s*\n([\s\S]*?)```/g;
+    let m;
+    while ((m = rx.exec(text)) !== null) {
+      try {
+        const j = JSON.parse(m[1]);
+        out.push(j);
+      } catch (e) {
+        console.warn('Build plan parse failed', e);
+      }
+    }
+    return out;
+  }
+
+  function mountBuildPlan(afterEl, plan) {
+    const wrap = document.createElement('div');
+    wrap.className = 'atom-build-plan';
+    const planId = 'atom-plan-' + Date.now() + '-' + Math.random().toString(36).slice(2,7);
+    const riskColor = plan.risk === 'high' ? '#ff2d55' : plan.risk === 'med' ? '#f5c842' : '#00ffb3';
+    const riskLabel = (plan.risk || 'low').toUpperCase();
+
+    // Safety pre-check
+    const guardWarnings = [];
+    (plan.changes || []).forEach((c, i) => {
+      const combined = `${c.find || ''}\n${c.replace || ''}\n${c.content || ''}`;
+      if (/PPLX_KEY|pplx-[A-Za-z0-9]{6,}|GITHUB_TOKEN|Bearer\s+[A-Za-z0-9]/.test(combined)) {
+        guardWarnings.push(`Change #${i+1} appears to reference secrets/keys — blocked by safety guard.`);
+      }
+      if ((c.path || '').toLowerCase() === 'api/atom.js') {
+        guardWarnings.push(`Change #${i+1} targets api/atom.js which is protected (self-editing the agent is disallowed).`);
+      }
+    });
+    const isBlocked = guardWarnings.length > 0;
+
+    wrap.innerHTML = `
+      <div class="atom-build-plan-inner" id="${planId}" style="margin:12px 0;padding:14px;border:1px solid rgba(191,95,255,.4);border-radius:12px;background:linear-gradient(135deg,rgba(10,14,26,.85),rgba(191,95,255,.06));">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px;">
+          <div>
+            <div style="font-family:'Clash Display',sans-serif;font-size:12px;letter-spacing:.2em;color:#bf5fff;margin-bottom:4px;">◆ BUILD PLAN</div>
+            <div style="font-size:14px;color:#fff;font-weight:600;">${escapeHtml(plan.summary || 'Untitled change')}</div>
+          </div>
+          <span style="padding:4px 10px;background:${riskColor}22;color:${riskColor};border:1px solid ${riskColor}66;border-radius:20px;font-family:'Space Mono',monospace;font-size:10px;letter-spacing:.15em;white-space:nowrap;">RISK · ${riskLabel}</span>
+        </div>
+        ${plan.reasoning ? `<div style="font-size:11px;color:#a8b5c8;line-height:1.5;margin-bottom:12px;padding:8px 10px;background:rgba(0,0,0,.3);border-radius:6px;border-left:2px solid #bf5fff;"><em>${escapeHtml(plan.reasoning)}</em></div>` : ''}
+        ${isBlocked ? `<div style="padding:10px 12px;margin-bottom:12px;background:rgba(255,45,85,.1);border:1px solid rgba(255,45,85,.4);border-radius:6px;color:#ff2d55;font-size:11px;font-family:'Space Mono',monospace;">⚠ SAFETY GUARD TRIGGERED<br>${guardWarnings.map(w=>escapeHtml(w)).join('<br>')}</div>` : ''}
+        <div style="font-family:'Space Mono',monospace;font-size:10px;color:#7d8ba0;letter-spacing:.1em;margin-bottom:8px;">${(plan.changes||[]).length} FILE CHANGE(S)</div>
+        <div class="atom-build-changes"></div>
+        ${plan.post_deploy_note ? `<div style="margin-top:10px;padding:8px 10px;background:rgba(0,229,255,.05);border-radius:6px;font-size:11px;color:#00e5ff;"><strong>Post-deploy:</strong> ${escapeHtml(plan.post_deploy_note)}</div>` : ''}
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;">
+          <button data-act="copy-plan" style="padding:8px 14px;background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.4);border-radius:6px;color:#00e5ff;font-family:'Space Mono',monospace;font-size:11px;cursor:pointer;">⧉ COPY JSON</button>
+          <button data-act="download-patch" style="padding:8px 14px;background:rgba(0,255,179,.1);border:1px solid rgba(0,255,179,.4);border-radius:6px;color:#00ffb3;font-family:'Space Mono',monospace;font-size:11px;cursor:pointer;">⬇ DOWNLOAD PATCH</button>
+          <button data-act="mark-applied" ${isBlocked?'disabled':''} style="padding:8px 14px;background:${isBlocked?'rgba(125,139,160,.1)':'rgba(191,95,255,.15)'};border:1px solid ${isBlocked?'rgba(125,139,160,.3)':'rgba(191,95,255,.5)'};border-radius:6px;color:${isBlocked?'#7d8ba0':'#bf5fff'};font-family:'Space Mono',monospace;font-size:11px;cursor:${isBlocked?'not-allowed':'pointer'};">✓ MARK APPLIED</button>
+          <button data-act="discard" style="padding:8px 14px;background:rgba(255,45,85,.08);border:1px solid rgba(255,45,85,.3);border-radius:6px;color:#ff2d55;font-family:'Space Mono',monospace;font-size:11px;cursor:pointer;">✕ DISCARD</button>
+        </div>
+      </div>
+    `;
+    afterEl.after(wrap);
+
+    // Render each change with a diff preview
+    const changesRoot = wrap.querySelector('.atom-build-changes');
+    (plan.changes || []).forEach((c, i) => {
+      const ch = document.createElement('div');
+      ch.style.cssText = 'margin-bottom:10px;background:rgba(0,0,0,.4);border-radius:8px;overflow:hidden;border:1px solid rgba(191,95,255,.15);';
+      ch.innerHTML = `
+        <div style="padding:8px 12px;background:rgba(191,95,255,.08);display:flex;justify-content:space-between;align-items:center;gap:10px;font-family:'Space Mono',monospace;font-size:11px;">
+          <span><span style="color:#bf5fff;">${i+1}.</span> <span style="color:#00e5ff;">${escapeHtml(c.path||'?')}</span> <span style="color:#7d8ba0;">· ${escapeHtml(c.operation||'replace')}</span></span>
+          <button data-toggle="${i}" style="background:transparent;border:1px solid rgba(255,255,255,.2);color:#c9d3e2;font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;font-family:'Space Mono',monospace;">TOGGLE</button>
+        </div>
+        <div class="atom-diff" data-diff="${i}" style="padding:10px 12px;display:none;">
+          ${c.anchor ? `<div style="color:#7d8ba0;font-size:10px;margin-bottom:6px;"><em>${escapeHtml(c.anchor)}</em></div>` : ''}
+          ${c.find ? `<div style="font-family:'Space Mono',monospace;font-size:10px;color:#ff2d55;margin-bottom:6px;">- FIND:</div><pre style="background:rgba(255,45,85,.05);border-left:2px solid #ff2d55;padding:6px 8px;margin:0 0 8px;font-family:'Space Mono',monospace;font-size:10px;color:#ffb3c0;white-space:pre-wrap;max-height:200px;overflow:auto;">${escapeHtml(c.find)}</pre>` : ''}
+          ${c.replace ? `<div style="font-family:'Space Mono',monospace;font-size:10px;color:#00ffb3;margin-bottom:6px;">+ REPLACE:</div><pre style="background:rgba(0,255,179,.05);border-left:2px solid #00ffb3;padding:6px 8px;margin:0;font-family:'Space Mono',monospace;font-size:10px;color:#b3ffe0;white-space:pre-wrap;max-height:200px;overflow:auto;">${escapeHtml(c.replace)}</pre>` : ''}
+          ${c.content && !c.replace ? `<div style="font-family:'Space Mono',monospace;font-size:10px;color:#00ffb3;margin-bottom:6px;">+ CONTENT:</div><pre style="background:rgba(0,255,179,.05);border-left:2px solid #00ffb3;padding:6px 8px;margin:0;font-family:'Space Mono',monospace;font-size:10px;color:#b3ffe0;white-space:pre-wrap;max-height:200px;overflow:auto;">${escapeHtml(c.content)}</pre>` : ''}
+        </div>
+      `;
+      changesRoot.appendChild(ch);
+    });
+    // Toggle diff preview
+    wrap.querySelectorAll('[data-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = btn.dataset.toggle;
+        const diff = wrap.querySelector(`[data-diff="${i}"]`);
+        diff.style.display = diff.style.display === 'none' ? 'block' : 'none';
+      });
+    });
+    // Auto-expand first change
+    const firstDiff = wrap.querySelector('[data-diff="0"]');
+    if (firstDiff) firstDiff.style.display = 'block';
+
+    // Actions
+    wrap.querySelector('[data-act="copy-plan"]').addEventListener('click', () => {
+      navigator.clipboard?.writeText(JSON.stringify(plan, null, 2));
+      pushSystem('Build plan JSON copied to clipboard');
+    });
+    wrap.querySelector('[data-act="download-patch"]').addEventListener('click', () => downloadPatch(plan));
+    const markBtn = wrap.querySelector('[data-act="mark-applied"]');
+    if (markBtn && !isBlocked) {
+      markBtn.addEventListener('click', () => {
+        loadBuildHistory();
+        ATOM.buildHistory.push({
+          ts: Date.now(),
+          summary: plan.summary,
+          risk: plan.risk,
+          plan,
+          applied: true,
+          principal: ATOM.buildPrincipal
+        });
+        saveBuildHistory();
+        markBtn.disabled = true;
+        markBtn.textContent = '✓ APPLIED';
+        markBtn.style.opacity = '.6';
+        pushSystem(`Change marked applied: ${plan.summary}`);
+      });
+    }
+    wrap.querySelector('[data-act="discard"]').addEventListener('click', () => {
+      loadBuildHistory();
+      ATOM.buildHistory.push({
+        ts: Date.now(), summary: plan.summary, risk: plan.risk, plan,
+        applied: false, discarded: true, principal: ATOM.buildPrincipal
+      });
+      saveBuildHistory();
+      wrap.remove();
+      pushSystem(`Build plan discarded: ${plan.summary}`);
+    });
+
+    // Log pending in history
+    loadBuildHistory();
+    ATOM.buildHistory.push({
+      ts: Date.now(), summary: plan.summary, risk: plan.risk, plan,
+      applied: false, principal: ATOM.buildPrincipal
+    });
+    saveBuildHistory();
+  }
+
+  function downloadPatch(plan) {
+    // Build a human-readable patch file (unified-diff-ish)
+    const lines = [];
+    lines.push('# ATOM BUILD PLAN');
+    lines.push('# Generated: ' + new Date().toISOString());
+    lines.push('# Principal: ' + (ATOM.buildPrincipal || 'unknown'));
+    lines.push('# Summary: ' + (plan.summary || ''));
+    lines.push('# Risk: ' + (plan.risk || 'low'));
+    lines.push('# Reasoning: ' + (plan.reasoning || ''));
+    lines.push('');
+    (plan.changes || []).forEach((c, i) => {
+      lines.push(`## Change ${i+1}: ${c.path} (${c.operation})`);
+      if (c.anchor) lines.push('# Anchor: ' + c.anchor);
+      lines.push('');
+      if (c.find) {
+        lines.push('--- FIND ---');
+        lines.push(c.find);
+        lines.push('--- END FIND ---');
+        lines.push('');
+      }
+      if (c.replace) {
+        lines.push('+++ REPLACE +++');
+        lines.push(c.replace);
+        lines.push('+++ END REPLACE +++');
+        lines.push('');
+      }
+      if (c.content && !c.replace) {
+        lines.push('+++ CONTENT +++');
+        lines.push(c.content);
+        lines.push('+++ END CONTENT +++');
+        lines.push('');
+      }
+    });
+    if (plan.post_deploy_note) {
+      lines.push('# Post-deploy: ' + plan.post_deploy_note);
+    }
+    lines.push('');
+    lines.push('# --- Also embedded as JSON below for programmatic use ---');
+    lines.push(JSON.stringify(plan, null, 2));
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `atom-build-${Date.now()}.patch.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    pushSystem('Patch downloaded. Apply locally, commit, and push to auto-deploy on Vercel.');
+  }
+
+  // Expose BUILD helpers on ATOM
+  ATOM.buildLock = function() { ATOM.buildUnlocked = false; ATOM.buildPrincipal = null; pushSystem('BUILD MODE re-locked.'); };
+  ATOM.buildShowHistory = showBuildHistory;
+
   function deployArtifactToStudio(artifact) {
     // Add an "Atom Studio" section to Ops Matrix (module 11) if not present
     const opsPane = document.querySelector('.module[data-mod="ops"]')
