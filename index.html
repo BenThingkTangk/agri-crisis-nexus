@@ -524,6 +524,7 @@ main{margin-left:var(--sidebar-w);padding:32px 32px 80px;position:relative;z-ind
 .mt-16{margin-top:16px}.mt-24{margin-top:24px}.mb-16{margin-bottom:16px}
 .hud{font-family:var(--font-mono);letter-spacing:.1em}
 </style>
+<link rel="stylesheet" href="/assets/atom.css">
 </head>
 <body>
 <div class="classification-banner">⚠ STRATEGIC INTELLIGENCE — AGRI-CRISIS NEXUS — CHIEF QUANTUM OFFICER EYES ONLY ⚠</div>
@@ -1087,6 +1088,23 @@ const NIRMATA_MOAT = [
   {t:'Voice AI Distribution',d:'HumanOS voice interface reaches 500M smallholder farmers where text-based tools fail'},
   {t:'Vertical Automation Loop',d:'ATOM automation platform closes the loop from sensing → decision → intervention → verification'},
 ];
+
+// ---- Expose to window for ATOM agent + live engine + predictive engine ----
+Object.assign(window, {
+  COUNTRIES, CRISIS_EVENTS, INTEL_CARDS, CHESS_ACTORS, COMMODITY_PRICES,
+  WIN_MOVES: typeof WIN_MOVES!=='undefined'?WIN_MOVES:[],
+  THREAT_MOVES: typeof THREAT_MOVES!=='undefined'?THREAT_MOVES:[],
+  GRAIN_FLOWS: typeof GRAIN_FLOWS!=='undefined'?GRAIN_FLOWS:[],
+  AQUIFERS: typeof AQUIFERS!=='undefined'?AQUIFERS:[],
+  WATER_TRADE: typeof WATER_TRADE!=='undefined'?WATER_TRADE:[],
+  BIOTECH_PIPELINE: typeof BIOTECH_PIPELINE!=='undefined'?BIOTECH_PIPELINE:[],
+  TIMELINE_EVENTS: typeof TIMELINE_EVENTS!=='undefined'?TIMELINE_EVENTS:[],
+  OPP_MATRIX: typeof OPP_MATRIX!=='undefined'?OPP_MATRIX:[],
+  WHITESPACE: typeof WHITESPACE!=='undefined'?WHITESPACE:[],
+  UNFORESEEN_RISKS: typeof UNFORESEEN_RISKS!=='undefined'?UNFORESEEN_RISKS:[],
+  NIRMATA_MOAT: typeof NIRMATA_MOAT!=='undefined'?NIRMATA_MOAT:[],
+  TABS: typeof TABS!=='undefined'?TABS:[]
+});
 </script>
 <script>
 /* ============================================================
@@ -2697,5 +2715,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   setTimeout(wire,1500);
 });
 </script>
+<script src="/assets/atom.js" defer></script>
+<script src="/assets/live-engine.js" defer></script>
+<script src="/assets/predictive.js" defer></script>
+<script src="/assets/chess-super.js" defer></script>
 </body>
 </html>

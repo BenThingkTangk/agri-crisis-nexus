@@ -1,14 +1,12 @@
 {
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-      ]
+  "version": 2,
+  "functions": {
+    "api/atom.js": {
+      "maxDuration": 60
     }
+  },
+  "rewrites": [
+    { "source": "/api/atom", "destination": "/api/atom" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
