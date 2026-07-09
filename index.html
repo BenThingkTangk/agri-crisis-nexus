@@ -142,11 +142,15 @@ a{color:var(--cyan);text-decoration:none}
   background:rgba(16,22,42,.96);color:var(--text);padding:6px 12px;border-radius:6px;font-size:12px;
   font-family:var(--font-mono);letter-spacing:.05em;white-space:nowrap;opacity:0;pointer-events:none;
   border:1px solid rgba(0,229,255,.35);box-shadow:0 6px 24px rgba(0,0,0,.55),0 0 0 1px rgba(0,0,0,.5);
-  backdrop-filter:blur(8px);transition:opacity .18s ease,transform .18s ease;z-index:200}
+  backdrop-filter:blur(8px);
+  /* Delay reveal so quick fly-throughs never flash the tooltip over content */
+  transition:opacity .18s ease .35s,transform .18s ease .35s;z-index:200}
 .nav-item .tip::before{content:'';position:absolute;left:-5px;top:50%;transform:translateY(-50%) rotate(45deg);
   width:8px;height:8px;background:rgba(16,22,42,.96);border-left:1px solid rgba(0,229,255,.35);border-bottom:1px solid rgba(0,229,255,.35)}
 .nav-item:hover .tip{opacity:1;transform:translate(0,-50%)}
 .nav-item.active .tip{display:none}
+/* On desktops with real cursors, keep the delay. On touch, never show. */
+@media (hover: none){ .nav-item .tip{display:none} }
 
 /* Safety: predict-mount must live inside the Ops module. If it ever ends up as a direct child of body, hide it. */
 body > #predict-mount{display:none !important}
