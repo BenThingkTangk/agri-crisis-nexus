@@ -525,6 +525,7 @@ main{margin-left:var(--sidebar-w);padding:32px 32px 80px;position:relative;z-ind
 .hud{font-family:var(--font-mono);letter-spacing:.1em}
 </style>
 <link rel="stylesheet" href="/assets/atom.css">
+<link rel="stylesheet" href="/assets/strategy-brief.css">
 <link rel="stylesheet" href="/assets/mobile.css">
 </head>
 <body>
@@ -636,6 +637,8 @@ let authenticated = false;
 // ---------- Navigation tabs ----------
 const TABS = [
   {id:'map',       icon:'🌍', label:'Global Crisis Map'},
+  {id:'brief',     icon:'📶', label:'Daily Intel Brief'},
+  {id:'strategy',  icon:'💎', label:'Nirmata Strategy'},
   {id:'radar',     icon:'📡', label:'Tactical Radar'},
   {id:'chess',     icon:'♟️', label:'Geopolitical Chess'},
   {id:'intel',     icon:'📰', label:'Intel Feed'},
@@ -1241,6 +1244,8 @@ function activateModule(id){
   if(id==='status'&&!window._statusInit){setTimeout(revealStatus,50);window._statusInit=true;}
   if(id==='intel'&&!window._intelInit){setTimeout(revealIntel,50);window._intelInit=true;}
   if(id==='timeline'&&!window._timelineInit){setTimeout(initTimeline,50);window._timelineInit=true;}
+  if(id==='brief'&&!window._briefInit){setTimeout(()=>{window.NirmataBrief&&NirmataBrief.mount&&NirmataBrief.mount();},50);window._briefInit=true;}
+  if(id==='strategy'&&!window._strategyInit){setTimeout(()=>{window.NirmataStrategy&&NirmataStrategy.mount&&NirmataStrategy.mount();},50);window._strategyInit=true;}
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -1280,7 +1285,51 @@ function buildAllModules(){
     buildModuleWater()+
     buildModuleBiotech()+
     buildModuleTimeline()+
-    buildModuleOps();
+    buildModuleOps()+
+    buildModuleBrief()+
+    buildModuleStrategy();
+}
+
+/* ---------- MODULE: DAILY INTEL BRIEF (mounted by daily-brief.js) ---------- */
+function buildModuleBrief(){
+  return `<section class="module" data-mod="brief">
+    <div class="module-head">
+      <div><div class="module-title">Daily Intel Brief</div>
+      <div class="module-sub">◆ Constantly refreshed · Deep research · Cross-industry web</div></div>
+      <div class="module-tag">◆ LIVE INTEL ◆</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="mac-dots"><div class="mac-dot red"></div><div class="mac-dot yellow"></div><div class="mac-dot green"></div></div>
+        <div class="panel-name">daily-intel-brief.classified · CLASSIFICATION: TOP SECRET</div>
+        <div class="panel-status critical">SONAR-DEEP-RESEARCH</div>
+      </div>
+      <div class="panel-body" id="brief-body" style="padding:0">
+        <div style="padding:40px;text-align:center;color:#7d8ba0;font-family:'Space Mono',monospace;font-size:12px;">Initializing brief…</div>
+      </div>
+    </div>
+  </section>`;
+}
+
+/* ---------- MODULE: NIRMATA STRATEGY (mounted by strategy-advisor.js) ---------- */
+function buildModuleStrategy(){
+  return `<section class="module" data-mod="strategy">
+    <div class="module-head">
+      <div><div class="module-title">Nirmata Holdings · Strategy Advisor</div>
+      <div class="module-sub">◆ For Ben O'Leary (CQO) + Joel Bedard (Co-founder) · sonar-reasoning</div></div>
+      <div class="module-tag">◆ STRATEGIC ADVISORY ◆</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="mac-dots"><div class="mac-dot red"></div><div class="mac-dot yellow"></div><div class="mac-dot green"></div></div>
+        <div class="panel-name">nirmata-strategy-advisor.classified · CLASSIFICATION: TOP SECRET</div>
+        <div class="panel-status critical">4 PILLARS · 6 FRAMES</div>
+      </div>
+      <div class="panel-body" id="strategy-body" style="padding:0">
+        <div style="padding:40px;text-align:center;color:#7d8ba0;font-family:'Space Mono',monospace;font-size:12px;">Initializing strategy advisor…</div>
+      </div>
+    </div>
+  </section>`;
 }
 
 /* ---------- MODULE 1: MAP ---------- */
@@ -2720,5 +2769,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 <script src="/assets/live-engine.js" defer></script>
 <script src="/assets/predictive.js" defer></script>
 <script src="/assets/chess-super.js" defer></script>
+<script src="/assets/strategy-advisor.js" defer></script>
+<script src="/assets/daily-brief.js" defer></script>
 </body>
 </html>
