@@ -117,7 +117,7 @@ header#topbar{
   height:var(--header-h);flex:0 0 auto;
   display:flex;align-items:center;gap:18px;padding:0 18px;
   background:linear-gradient(180deg, #14181e, #0f1216);
-  border-bottom:1px solid var(--border);z-index:900;
+  border-bottom:1px solid var(--border);position:relative;z-index:960;
 }
 .brand{display:flex;align-items:center;gap:11px;flex:0 0 auto;}
 .brand .logo{width:30px;height:30px;flex:0 0 auto;}
@@ -303,6 +303,7 @@ main#workspace{
 /* Country drawer / generic drawer */
 .drawer-scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;opacity:0;pointer-events:none;transition:opacity .22s;}
 .drawer-scrim.open{opacity:1;pointer-events:auto;}
+.nav-scrim{display:none;}
 .drawer{position:fixed;top:0;right:0;bottom:0;width:min(460px,92vw);background:var(--bg-2);border-left:1px solid var(--border-strong);z-index:1110;transform:translateX(100%);transition:transform .26s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;box-shadow:var(--shadow);}
 .drawer.open{transform:none;}
 .drawer-h{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border);}
@@ -436,9 +437,11 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   .mode-panel{padding:18px 16px 90px;}
 }
 @media (max-width:760px){
-  nav#modes{position:fixed;top:var(--header-h);left:0;right:0;bottom:0;flex-direction:column;gap:4px;
-    background:var(--bg-2);padding:16px;z-index:950;overflow-y:auto;transform:translateX(-100%);transition:transform .24s;border-right:1px solid var(--border);}
-  nav#modes.open{transform:none;}
+  nav#modes{position:fixed;top:var(--header-h);left:0;bottom:0;width:min(300px,84vw);flex-direction:column;gap:4px;
+    background:var(--bg-2);padding:16px;z-index:950;overflow-y:auto;transform:translateX(-100%);transition:transform .24s;border-right:1px solid var(--border-strong);box-shadow:var(--shadow);}
+  nav#modes.open{transform:translateX(0);}
+  .nav-scrim{display:block;position:fixed;top:var(--header-h);left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:940;opacity:0;pointer-events:none;transition:opacity .2s;}
+  .nav-scrim.open{opacity:1;pointer-events:auto;}
   .mode-tab{width:100%;justify-content:flex-start;font-size:15px;padding:13px 15px;min-height:48px;}
   .hamburger{display:inline-flex;}
   .clock{display:none;}
@@ -506,6 +509,7 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
       <button class="btn-atom" id="openAtom"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l2.5 2.5M16.5 16.5 19 19M19 5l-2.5 2.5M7.5 16.5 5 19"/><circle cx="12" cy="12" r="3"/></svg><span class="lbl">Ask ATOM</span></button>
     </div>
   </header>
+  <div class="nav-scrim" id="navScrim" aria-hidden="true"></div>
 
   <main id="workspace">
     <!-- mode panels injected -->

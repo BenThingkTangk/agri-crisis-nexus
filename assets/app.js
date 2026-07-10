@@ -100,8 +100,10 @@ function bindShell(){
   const ham=$('#hamburger');
   ham.addEventListener('click',()=>{
     const open=$('#modes').classList.toggle('open');
+    $('#navScrim').classList.toggle('open',open);
     ham.setAttribute('aria-expanded',open?'true':'false');
   });
+  $('#navScrim').addEventListener('click',closeMobileNav);
   document.addEventListener('keydown',e=>{
     if(e.key==='Escape'){
       if($('#atom').classList.contains('open')) closeAtom();
@@ -111,7 +113,7 @@ function bindShell(){
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); openAtom(); }
   });
 }
-function closeMobileNav(){ $('#modes').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); }
+function closeMobileNav(){ $('#modes').classList.remove('open'); $('#navScrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); }
 
 /* ================= DRAWER ================= */
 function openDrawer(title,bodyHTML){
