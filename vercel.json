@@ -3,10 +3,14 @@
   "functions": {
     "api/atom.js": {
       "maxDuration": 300
+    },
+    "api/live.js": {
+      "maxDuration": 15
     }
   },
   "rewrites": [
     { "source": "/api/atom", "destination": "/api/atom" },
+    { "source": "/api/live", "destination": "/api/live" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

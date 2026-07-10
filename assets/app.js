@@ -50,9 +50,14 @@ function boot(){
   startClock();
   bindShell();
   buildAtom();
+  buildCmdk();
   activateMode('command');
+  startLive();
   refreshIcons();
 }
+
+/* Respect reduced motion for JS-driven animation */
+const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function buildNav(){
   const nav=$('#modes');
@@ -104,16 +109,123 @@ function bindShell(){
     ham.setAttribute('aria-expanded',open?'true':'false');
   });
   $('#navScrim').addEventListener('click',closeMobileNav);
+  $('#openCmdk').addEventListener('click',()=>openCmdk());
+  $('#cmdkScrim').addEventListener('click',closeCmdk);
   document.addEventListener('keydown',e=>{
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); toggleCmdk(); return; }
+    if($('#cmdk').classList.contains('open')){ handleCmdkKeys(e); return; }
     if(e.key==='Escape'){
       if($('#atom').classList.contains('open')) closeAtom();
       else if($('#drawer').classList.contains('open')) closeDrawer();
       else closeMobileNav();
     }
-    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); openAtom(); }
   });
 }
 function closeMobileNav(){ $('#modes').classList.remove('open'); $('#navScrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); }
+
+/* ================= LIVE DATA LAYER ================= */
+let liveState={status:'connecting',events:[],sources:[],asOf:null,paused:false};
+let liveTimer=null;
+async function pollLive(){
+  try{
+    const ctrl=new AbortController();
+    const to=setTimeout(()=>ctrl.abort(),9000);
+    const res=await fetch('/api/live',{signal:ctrl.signal});
+    clearTimeout(to);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    liveState.status=data.status||'degraded';
+    liveState.events=Array.isArray(data.events)?data.events:[];
+    liveState.sources=Array.isArray(data.sources)?data.sources:[];
+    liveState.asOf=data.asOf||new Date().toISOString();
+  }catch(err){
+    liveState.status='degraded';
+    liveState.events=[];
+    liveState.sources=(liveState.sources.length?liveState.sources:[{name:'ReliefWeb'},{name:'USGS'},{name:'NASA EONET'}]).map(s=>({name:s.name,status:'down',count:0}));
+    liveState.asOf=new Date().toISOString();
+  }
+  paintLive();
+}
+function startLive(){
+  paintLive(); // render connecting/bundled state immediately
+  pollLive();
+  liveTimer=setInterval(()=>{ if(!liveState.paused) pollLive(); },90000);
+}
+function paintLive(){
+  updatePosture();
+  updateTicker();
+  updateLiveOverlay();
+  if(rendered.intel) mergeLiveIntel();
+}
+function liveLabel(){ return liveState.status==='live'?'LIVE':liveState.status==='partial'?'PARTIAL':liveState.status==='connecting'?'SYNCING':'DEGRADED · BUNDLED INTEL'; }
+function relTime(iso){
+  if(!iso) return '';
+  const d=new Date(iso), s=Math.max(0,(Date.now()-d.getTime())/1000);
+  if(s<90) return 'just now';
+  if(s<3600) return Math.round(s/60)+'m ago';
+  if(s<86400) return Math.round(s/3600)+'h ago';
+  return Math.round(s/86400)+'d ago';
+}
+
+/* ================= COMMAND PALETTE ================= */
+let cmdkItems=[], cmdkFiltered=[], cmdkActive=0;
+function buildCmdkIndex(){
+  const items=[];
+  MODES.forEach(m=>items.push({group:'Modes',icon:m.icon,title:m.label,sub:'Switch mode',kbd:'',run:()=>activateMode(m.id)}));
+  D.COUNTRIES.forEach(c=>items.push({group:'Countries',icon:'flag',title:c.name,sub:'IPC '+c.ipc+' · '+c.cont,run:()=>{activateMode('map');setTimeout(()=>showCountry(c.code),140);}}));
+  D.MISSIONS.forEach(m=>items.push({group:'Missions',icon:'crosshair',title:m.code+' · '+m.objective,sub:m.pillar,run:()=>{activateMode('command');}}));
+  D.INTEL_CARDS.slice(0,30).forEach(c=>items.push({group:'Intel',icon:'rss',title:c.head,sub:c.src+' · '+c.region,run:()=>{activateMode('intel');intelState.q=c.head.slice(0,24).toLowerCase();setTimeout(()=>{const s=$('#intelSearch');if(s){s.value=intelState.q;drawIntel();}},160);}}));
+  const acts=[
+    {icon:'sparkles',title:'Ask ATOM',sub:'Open intelligence terminal',run:()=>openAtom()},
+    {icon:'printer',title:'Print daily brief',sub:'Action',run:()=>printBrief()},
+    {icon:'download',title:'Export intel CSV',sub:'Action',run:()=>{activateMode('intel');setTimeout(exportIntelCSV,120);}},
+    {icon:'swords',title:'Open War Room',sub:'Simulate intervention',run:()=>activateMode('simulate')},
+    {icon:'git-compare',title:'Compare two countries',sub:'Map compare mode',run:()=>{activateMode('map');setTimeout(()=>openCompare(),160);}},
+  ];
+  acts.forEach(a=>items.push({group:'Actions',...a}));
+  D.ATOM_PRESETS.forEach(p=>items.push({group:'ATOM prompts',icon:p.icon,title:p.label,sub:'Ask ATOM',run:()=>openAtom(p.prompt)}));
+  cmdkItems=items;
+}
+function buildCmdk(){
+  buildCmdkIndex();
+  $('#cmdkInput').addEventListener('input',()=>filterCmdk());
+}
+function toggleCmdk(){ $('#cmdk').classList.contains('open')?closeCmdk():openCmdk(); }
+function openCmdk(){
+  closeAtom(); closeDrawer(); closeMobileNav();
+  $('#cmdk').classList.add('open'); $('#cmdkScrim').classList.add('open'); $('#cmdk').setAttribute('aria-hidden','false');
+  const inp=$('#cmdkInput'); inp.value=''; filterCmdk(); setTimeout(()=>inp.focus(),40);
+}
+function closeCmdk(){ $('#cmdk').classList.remove('open'); $('#cmdkScrim').classList.remove('open'); $('#cmdk').setAttribute('aria-hidden','true'); }
+function filterCmdk(){
+  const q=$('#cmdkInput').value.trim().toLowerCase();
+  cmdkFiltered = !q ? cmdkItems.slice(0,40) : cmdkItems.filter(i=>(i.title+' '+i.sub+' '+i.group).toLowerCase().includes(q)).slice(0,40);
+  cmdkActive=0; drawCmdk();
+}
+function drawCmdk(){
+  const list=$('#cmdkList');
+  if(!cmdkFiltered.length){ list.innerHTML='<div class="cmdk-empty">No matches. Try a country, mode, or “brief”.</div>'; return; }
+  let html='', lastGroup='';
+  cmdkFiltered.forEach((it,i)=>{
+    if(it.group!==lastGroup){ html+=`<div class="cmdk-group">${esc(it.group)}</div>`; lastGroup=it.group; }
+    html+=`<div class="cmdk-item ${i===cmdkActive?'active':''}" data-i="${i}" role="option">${icon(it.icon)}<div class="ci-main"><div class="ci-t">${esc(it.title)}</div><div class="ci-s">${esc(it.sub||'')}</div></div>${it.kbd?`<span class="ci-k">${esc(it.kbd)}</span>`:''}</div>`;
+  });
+  list.innerHTML=html;
+  $$('#cmdkList .cmdk-item').forEach(node=>{
+    node.addEventListener('click',()=>runCmdk(+node.dataset.i));
+    node.addEventListener('mousemove',()=>{cmdkActive=+node.dataset.i;highlightCmdk();});
+  });
+  refreshIcons();
+}
+function highlightCmdk(){ $$('#cmdkList .cmdk-item').forEach(n=>n.classList.toggle('active',+n.dataset.i===cmdkActive)); }
+function runCmdk(i){ const it=cmdkFiltered[i]; if(!it) return; closeCmdk(); setTimeout(()=>it.run(),20); }
+function handleCmdkKeys(e){
+  if(e.key==='Escape'){ e.preventDefault(); closeCmdk(); return; }
+  if(e.key==='ArrowDown'){ e.preventDefault(); cmdkActive=Math.min(cmdkFiltered.length-1,cmdkActive+1); scrollCmdkActive(); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); cmdkActive=Math.max(0,cmdkActive-1); scrollCmdkActive(); }
+  else if(e.key==='Enter'){ e.preventDefault(); runCmdk(cmdkActive); }
+}
+function scrollCmdkActive(){ highlightCmdk(); const n=$(`#cmdkList .cmdk-item[data-i="${cmdkActive}"]`); if(n) n.scrollIntoView({block:'nearest'}); }
 
 /* ================= DRAWER ================= */
 function openDrawer(title,bodyHTML){
@@ -130,6 +242,8 @@ function renderCommand(p){
   const critical = D.COUNTRIES.filter(c=>c.tl==='critical');
   const watch = [...D.COUNTRIES].sort((a,b)=>(b.conflict+b.climate+b.hungerPct)-(a.conflict+a.climate+a.hungerPct)).slice(0,7);
   p.innerHTML = `
+    <div class="posture" id="posture" data-testid="posture"></div>
+
     <div class="mode-head">
       <div class="eyebrow">Global Threat Dashboard · as of ${D.AS_OF}</div>
       <h2>The world is entering a <em>food-security polycrisis</em></h2>
@@ -137,6 +251,16 @@ function renderCommand(p){
     </div>
 
     <div class="kpi-strip" id="cmdKpis"></div>
+
+    <div class="section">
+      <div class="section-title"><h3>${icon('crosshair')} Mission priority queue</h3><span class="meta">${D.MISSIONS.length} active objectives</span></div>
+      <div class="missions" id="cmdMissions" data-testid="missions"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><h3>${icon('radio')} Live event rail</h3><span class="meta">public feeds · ReliefWeb · USGS · NASA EONET</span></div>
+      <div class="ticker" id="cmdTicker" data-testid="ticker"></div>
+    </div>
 
     <div class="section">
       <div class="section-title"><h3>${icon('activity')} Crisis vectors</h3><span class="meta">Composite severity · 0–100</span></div>
@@ -170,14 +294,21 @@ function renderCommand(p){
       <div class="cards" id="cmdActions" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))"></div>
     </div>`;
 
-  // KPIs
+  // KPIs (with count-up on the numeric portion)
   $('#cmdKpis').innerHTML = D.KPIS.map(k=>`
     <div class="kpi c-${k.sev}">
-      <div class="val">${esc(k.val)}</div>
+      <div class="val" data-countup="${esc(k.val)}">${esc(k.val)}</div>
       <div class="lbl">${esc(k.lbl)}</div>
       <div class="delta ${k.dir}">${k.dir==='up'?'▲':k.dir==='down'?'▼':'—'} ${esc(k.delta)}</div>
       <div class="src">${esc(k.src)}</div>
     </div>`).join('');
+  $$('#cmdKpis .val[data-countup]').forEach(countUp);
+
+  // Mission priority queue
+  renderMissions();
+
+  // Posture + ticker paint from current live state
+  updatePosture(); updateTicker();
 
   // vectors
   const sevColor={critical:'var(--sev-critical)',high:'var(--sev-high)',moderate:'var(--sev-moderate)',stable:'var(--sev-stable)'};
@@ -243,8 +374,116 @@ function renderCommand(p){
   });
 }
 
+/* KPI count-up: animate only the numeric part, preserve prefix/suffix */
+function countUp(node){
+  const raw=node.getAttribute('data-countup')||node.textContent;
+  const m=String(raw).match(/^([^\d.-]*)(-?[\d,]*\.?\d+)(.*)$/);
+  if(!m||REDUCED){ node.textContent=raw; return; }
+  const pre=m[1], suf=m[3], target=parseFloat(m[2].replace(/,/g,'')), dec=(m[2].split('.')[1]||'').length;
+  const grouped=/,/.test(m[2]);
+  const fmt=v=>{ let s=dec?v.toFixed(dec):String(Math.round(v)); if(grouped) s=Number(s).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec}); return pre+s+suf; };
+  const dur=900, t0=performance.now();
+  const step=now=>{ const p=Math.min(1,(now-t0)/dur), e=1-Math.pow(1-p,3); node.textContent=fmt(target*e); if(p<1) requestAnimationFrame(step); else node.textContent=raw; };
+  requestAnimationFrame(step);
+}
+
+/* Mission priority queue */
+function renderMissions(){
+  const wrap=$('#cmdMissions'); if(!wrap) return;
+  const order={critical:0,high:1,moderate:2};
+  const missions=[...D.MISSIONS].sort((a,b)=>(order[a.sev]-order[b.sev])||(b.conf-a.conf));
+  wrap.innerHTML=missions.map(m=>`
+    <div class="mission sev-${m.sev}" data-id="${m.id}">
+      <div class="m-top"><span class="m-code">${esc(m.code)}</span><span class="m-owner">${esc(m.owner)}</span>${badge(m.sev)}</div>
+      <h4>${esc(m.objective)}</h4>
+      <div class="m-why">${esc(m.why)}</div>
+      <div class="m-meta">
+        <div class="mr">${icon('clock')} <span>${esc(m.window)}</span></div>
+        <div class="mr">${icon('layers')} <span>${esc(m.pillar)}</span></div>
+      </div>
+      <div class="m-conf"><span class="cv">Confidence</span><div class="track"><div class="fill" style="width:${m.conf}%;background:var(--sev-${m.sev})"></div></div><span class="cv">${m.conf}%</span></div>
+      <div class="m-acts">
+        ${m.country?`<button class="btn sm" data-act="map">${icon('globe')} Map</button>`:''}
+        <button class="btn sm" data-act="wargame">${icon('swords')} War-game</button>
+        <button class="btn sm primary" data-act="atom">${icon('sparkles')} Ask ATOM</button>
+      </div>
+    </div>`).join('');
+  $$('#cmdMissions .mission').forEach(node=>{
+    const m=D.MISSIONS.find(x=>x.id===node.dataset.id);
+    node.querySelectorAll('.m-acts .btn').forEach(btn=>btn.addEventListener('click',e=>{
+      e.stopPropagation();
+      const act=btn.dataset.act;
+      if(act==='map'&&m.country){ activateMode('map'); setTimeout(()=>showCountry(m.country),140); }
+      else if(act==='wargame'){ activateMode('simulate'); setTimeout(()=>presetSim(m.owner),160); }
+      else if(act==='atom'){ openAtom('Advance mission '+m.code+': '+m.objective+'. Give a course of action with effectiveness, residual risk, dependencies and confidence.'); }
+    }));
+  });
+  refreshIcons();
+}
+
+/* Threat posture header */
+function updatePosture(){
+  const host=$('#posture'); if(!host) return;
+  const st=liveState.status;
+  const crit=D.COUNTRIES.filter(c=>c.tl==='critical').length;
+  const flashpoints=crit+D.MISSIONS.filter(m=>m.sev==='critical').length;
+  const okSources=liveState.sources.filter(s=>s.status==='ok');
+  const bundled=st==='degraded'||st==='connecting';
+  const health = liveState.sources.length
+    ? liveState.sources.map(s=>`<span class="sh-chip ${s.status==='ok'?'ok':'down'}">${s.status==='ok'?icon('check-circle-2'):icon('alert-circle')} ${esc(s.name)}${s.status==='ok'?` · ${s.count}`:' · down'}</span>`).join('')
+    : `<span class="sh-chip bundled">${icon('database')} bundled intel</span>`;
+  const bundledChip = bundled ? `<span class="sh-chip bundled">${icon('database')} bundled intel active</span>` : '';
+  host.innerHTML=`
+    <div class="posture-top">
+      <div class="defcon">
+        <div class="ring">D2</div>
+        <div><div class="dl">Operational posture</div><div class="dv">ELEVATED · WATCH</div></div>
+      </div>
+      <div class="pstat"><span class="k">Mission clock</span><span class="v" id="postureClock">—</span></div>
+      <div class="pstat"><span class="k">Active flashpoints</span><span class="v">${flashpoints}</span></div>
+      <div class="pstat"><span class="k">Last sync</span><span class="v sync">${liveState.asOf?relTime(liveState.asOf):'—'}</span></div>
+      <span class="live-pill ${st==='live'?'live':st==='partial'?'partial':st==='connecting'?'partial':'degraded'}" data-testid="live-pill"><span class="dot"></span>${liveLabel()}</span>
+    </div>
+    <div class="src-health">${health}${bundledChip}</div>`;
+  const pc=$('#postureClock'); if(pc){ const d=new Date(); pc.textContent=d.toUTCString().slice(17,25)+'Z'; }
+  refreshIcons();
+}
+
+/* Live event ticker */
+function updateTicker(){
+  const host=$('#cmdTicker'); if(!host) return;
+  const evs=liveState.events;
+  const sevDot={critical:'var(--sev-critical)',high:'var(--sev-high)',moderate:'var(--sev-moderate)',stable:'var(--sev-stable)'};
+  const head=`
+    <div class="ticker-h">
+      <div class="tt"><span class="ld"></span>${liveState.status==='degraded'?'FEED DEGRADED':'INCOMING'}</div>
+      <div class="t-ctrl">
+        <button class="btn sm" id="tickPause">${icon(liveState.paused?'play':'pause')} ${liveState.paused?'Resume':'Pause'}</button>
+        <button class="btn sm" id="tickJump">${icon('newspaper')} Intel</button>
+      </div>
+    </div>`;
+  let body;
+  if(liveState.status==='connecting'){ body=`<div class="ticker-item"><span class="ti-sev" style="background:var(--sev-moderate)"></span><div class="ti-main"><div class="ti-t">Connecting to live crisis feeds…</div></div></div>`; }
+  else if(!evs.length){ body=`<div class="ticker-item"><span class="ti-sev" style="background:var(--cyan)"></span><div class="ti-main"><div class="ti-t">Live feeds unavailable — bundled intelligence remains fully operational.</div><div class="ti-s">Switch to Intel for ${D.INTEL_CARDS.length} curated items</div></div></div>`; }
+  else { body=evs.slice(0,14).map((e,i)=>`
+      <div class="ticker-item" data-url="${esc(e.url||'')}">
+        <span class="ti-sev" style="background:${sevDot[e.severity]||'var(--sev-neutral)'}"></span>
+        <div class="ti-main"><div class="ti-t">${esc(e.title)}</div><div class="ti-s">${esc(e.geography||'')} · ${esc(e.category||'')} · ${relTime(e.published)}</div></div>
+        <span class="ti-src">${esc(e.source||'')}</span>
+      </div>`).join(''); }
+  host.innerHTML=head+`<div class="ticker-list">${body}</div>`;
+  host.classList.toggle('paused',liveState.paused);
+  $('#tickPause').addEventListener('click',()=>{ liveState.paused=!liveState.paused; updateTicker(); });
+  $('#tickJump').addEventListener('click',()=>activateMode('intel'));
+  $$('#cmdTicker .ticker-item[data-url]').forEach(node=>{
+    const url=node.dataset.url;
+    if(url) node.addEventListener('click',()=>window.open(url,'_blank','noopener'));
+  });
+  refreshIcons();
+}
+
 /* ================= MAP ================= */
-let mapObj=null, mapLayerGroup=null, activeLayer='food', wheelOn=false;
+let mapObj=null, mapLayerGroup=null, liveLayerGroup=null, activeLayer='food', wheelOn=false, liveOverlayOn=false;
 const LAYERS=[
   {id:'food',label:'Food security',metric:c=>c.hungerPct,color:c=>c.tl},
   {id:'conflict',label:'Conflict',metric:c=>c.conflict,color:c=>c.conflict>80?'critical':c.conflict>60?'high':c.conflict>40?'moderate':'stable'},
@@ -261,10 +500,13 @@ function renderMap(p){
     </div>
     <div class="map-layers" id="mapLayers"></div>
     <div class="btn-row" style="margin-bottom:12px">
-      <button class="btn sm" id="wheelToggle">${icon('mouse-pointer-2')} Wheel-zoom: OFF</button>
+      <button class="btn sm" id="wheelToggle" data-testid="wheel-toggle">${icon('mouse-pointer-2')} Wheel-zoom: OFF</button>
+      <button class="btn sm" id="liveToggle" data-testid="live-toggle">${icon('radio')} Live events: OFF</button>
+      <button class="btn sm" id="compareBtn" data-testid="compare-btn">${icon('git-compare')} Compare countries</button>
       <span class="chip">Click any marker for a country profile + sources</span>
     </div>
     <div class="panel pad0" style="border-radius:var(--radius)"><div id="map" role="application" aria-label="World crisis map"></div></div>
+    <div id="compareTray"></div>
     <div class="section">
       <div class="section-title"><h3>${icon('droplets')} Aquifer stress overlay</h3><span class="meta">NASA GRACE · depletion %</span></div>
       <div class="cards" id="mapAquifers"></div>
@@ -276,6 +518,12 @@ function renderMap(p){
     if(mapObj){ wheelOn?mapObj.scrollWheelZoom.enable():mapObj.scrollWheelZoom.disable(); }
     $('#wheelToggle').innerHTML=`${icon('mouse-pointer-2')} Wheel-zoom: ${wheelOn?'ON':'OFF'}`; refreshIcons();
   });
+  $('#liveToggle').addEventListener('click',()=>{
+    liveOverlayOn=!liveOverlayOn;
+    $('#liveToggle').innerHTML=`${icon('radio')} Live events: ${liveOverlayOn?'ON':'OFF'}`;
+    updateLiveOverlay(); refreshIcons();
+  });
+  $('#compareBtn').addEventListener('click',()=>openCompare());
   $('#mapAquifers').innerHTML = D.AQUIFERS.map(a=>`
     <div class="card">
       <div class="ch"><div class="src-line">${icon('droplet','ic')} ${esc(a.region)}</div>${badge(a.tl)}</div>
@@ -292,7 +540,9 @@ function initMap(){
     attribution:'&copy; OpenStreetMap &copy; CARTO', subdomains:'abcd', maxZoom:8
   }).addTo(mapObj);
   mapLayerGroup=L.layerGroup().addTo(mapObj);
+  liveLayerGroup=L.layerGroup().addTo(mapObj);
   drawMarkers();
+  updateLiveOverlay();
   setTimeout(()=>mapObj.invalidateSize(),120);
 }
 function drawMarkers(){
@@ -303,6 +553,12 @@ function drawMarkers(){
   D.COUNTRIES.forEach(c=>{
     const val=layer.metric(c), tl=layer.color(c);
     const r=6+Math.round(val/8);
+    // restrained radar pulse for critical markers
+    if(tl==='critical' && !REDUCED){
+      const ring=L.circleMarker([c.lat,c.lng],{radius:r,color:cc.critical,weight:1.5,fill:false,opacity:.5,className:'pulse-ring'});
+      ring.on('add',()=>{ const elp=ring.getElement(); if(elp){ elp.style.transformOrigin='center'; elp.animate([{opacity:.5,transform:'scale(1)'},{opacity:0,transform:'scale(2.4)'}],{duration:2400,iterations:Infinity,easing:'ease-out'}); } });
+      mapLayerGroup.addLayer(ring);
+    }
     const m=L.circleMarker([c.lat,c.lng],{radius:r,color:'#0a0c0f',weight:1.5,fillColor:cc[tl]||'#7d8794',fillOpacity:.82});
     m.bindPopup(`<b>${c.flag} ${esc(c.name)}</b><br><span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${layer.label}: ${val} · IPC ${c.ipc}</span><br><a href="#" data-code="${c.code}" class="popupLink">Open profile →</a>`);
     m.on('popupopen',(ev)=>{const lk=ev.popup.getElement().querySelector('.popupLink'); if(lk) lk.addEventListener('click',e=>{e.preventDefault();showCountry(c.code);});});
@@ -326,6 +582,63 @@ function showCountry(code){
   const ab=$('#drawerAtom'); if(ab) ab.addEventListener('click',()=>{closeDrawer();openAtom('Give me a strategic brief on the agricultural crisis in '+c.name+', with confidence and 3 sources.');});
 }
 
+/* Live-event overlay on the map */
+function updateLiveOverlay(){
+  if(!mapObj||!liveLayerGroup) return;
+  liveLayerGroup.clearLayers();
+  if(!liveOverlayOn) return;
+  const cc={critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'};
+  liveState.events.filter(e=>typeof e.lat==='number'&&typeof e.lng==='number').forEach(e=>{
+    const m=L.circleMarker([e.lat,e.lng],{radius:5,color:'#fff',weight:1,fillColor:cc[e.severity]||'#7d8794',fillOpacity:.9});
+    m.bindPopup(`<b>${esc(e.title)}</b><br><span class="popup-src">${esc(e.source||'')} · ${esc(e.category||'')} · ${esc(relTime(e.published))}</span><br><a href="${esc(e.url||'#')}" target="_blank" rel="noopener">Open source →</a>`);
+    liveLayerGroup.addLayer(m);
+  });
+}
+
+/* Two-country compare mode */
+let compareSel=[];
+function openCompare(){
+  const tray=$('#compareTray'); if(!tray) return;
+  if(!compareSel.length) compareSel=[D.COUNTRIES.find(c=>c.tl==='critical')?.code||D.COUNTRIES[0].code, D.COUNTRIES.filter(c=>c.tl==='critical')[1]?.code||D.COUNTRIES[1].code];
+  drawCompare();
+  tray.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function drawCompare(){
+  const tray=$('#compareTray'); if(!tray) return;
+  const opts=code=>D.COUNTRIES.map(c=>`<option value="${c.code}" ${c.code===code?'selected':''}>${c.flag} ${esc(c.name)}</option>`).join('');
+  const a=D.COUNTRIES.find(c=>c.code===compareSel[0]), b=D.COUNTRIES.find(c=>c.code===compareSel[1]);
+  const metrics=[['Food-insecure %','hungerPct'],['Conflict','conflict'],['Climate','climate'],['Water stress','water'],['Production','production']];
+  const col=(c,other)=>`
+    <div class="compare-col">
+      <h4>${c.flag} ${esc(c.name)} ${badge(c.tl)}</h4>
+      ${metrics.map(([lbl,key])=>{const v=c[key],ov=other[key],hi=v>ov;return `<div class="cmp-metric"><div class="cm-h"><span>${lbl}</span><span class="v" style="color:${hi?'var(--sev-critical)':'var(--text-dim)'}">${v}</span></div><div class="track"><div class="fill" style="width:${Math.min(100,v)}%;background:var(--sev-${c.tl})"></div></div></div>`;}).join('')}
+    </div>`;
+  const worse = (a.hungerPct+a.conflict+a.climate) >= (b.hungerPct+b.conflict+b.climate) ? a : b;
+  tray.innerHTML=`
+    <div class="compare-tray" data-testid="compare-tray">
+      <div class="btn-row" style="margin-bottom:14px">
+        <select class="select" id="cmpA">${opts(compareSel[0])}</select>
+        <span class="chip">vs</span>
+        <select class="select" id="cmpB">${opts(compareSel[1])}</select>
+        <button class="btn sm" id="cmpClose" style="margin-left:auto">${icon('x')} Close</button>
+      </div>
+      <div class="compare-grid">
+        ${col(a,b)}
+        <div class="compare-vs">VS</div>
+        ${col(b,a)}
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <p style="margin:0;font-size:13px;color:var(--text-dim)"><strong style="color:var(--text)">Suggested intervention:</strong> ${esc(worse.name)} carries the higher composite stress. ${worse.water>=70?'Water stress dominates — lead with Regenerative Biology (water-retention wedge).':worse.conflict>=70?'Conflict dominates — Coordination Layer routes around contested corridors while Clinical Intelligence triages acute need.':'Lead with Clinical Intelligence for acute food-security triage, backed by Coordination Layer distribution.'}</p>
+        <div class="btn-row" style="margin-top:10px"><button class="btn sm primary" id="cmpAtom">${icon('sparkles')} Ask ATOM to compare</button></div>
+      </div>
+    </div>`;
+  $('#cmpA').addEventListener('change',e=>{compareSel[0]=e.target.value;drawCompare();});
+  $('#cmpB').addEventListener('change',e=>{compareSel[1]=e.target.value;drawCompare();});
+  $('#cmpClose').addEventListener('click',()=>{$('#compareTray').innerHTML='';});
+  $('#cmpAtom').addEventListener('click',()=>openAtom('Compare the agricultural crisis in '+a.name+' vs '+b.name+' across food security, conflict, climate and water. Which should Nirmata prioritize and with which pillar? Give confidence and sources.'));
+  refreshIcons();
+}
+
 /* ================= INTEL ================= */
 let intelState={q:'',src:'all',cat:'all',sev:'all',signal:false};
 function renderIntel(p){
@@ -342,6 +655,8 @@ function renderIntel(p){
       </div>
       <div id="briefBody"></div>
     </div>
+
+    <div class="panel" id="liveWire" data-testid="live-wire" style="margin-bottom:20px"></div>
 
     <div class="intel-controls">
       <label class="search">${icon('search')}<input id="intelSearch" type="text" placeholder="Search headlines, regions, bodies…" aria-label="Search intelligence"/></label>
@@ -373,7 +688,35 @@ function renderIntel(p){
   $('#fSev').addEventListener('change',e=>{intelState.sev=e.target.value;drawIntel();});
   $('#fSignal').addEventListener('change',e=>{intelState.signal=e.target.checked;drawIntel();});
   $('#exportIntel').addEventListener('click',exportIntelCSV);
+  mergeLiveIntel();
   drawIntel();
+}
+function mergeLiveIntel(){
+  const host=$('#liveWire'); if(!host) return;
+  const st=liveState.status;
+  const sevDot={critical:'var(--sev-critical)',high:'var(--sev-high)',moderate:'var(--sev-moderate)',stable:'var(--sev-stable)'};
+  const pill=`<span class="live-pill ${st==='live'?'live':st==='partial'?'partial':st==='connecting'?'partial':'degraded'}" style="margin-left:auto"><span class="dot"></span>${liveLabel()}</span>`;
+  let inner;
+  if(st==='degraded'||(!liveState.events.length&&st!=='connecting')){
+    inner=`<p class="muted" style="margin:0;font-size:13px">Live wire unavailable — showing bundled intelligence only. All ${D.INTEL_CARDS.length} curated items below remain fully current as of ${D.AS_OF}.</p>`;
+  } else if(st==='connecting'){
+    inner=`<p class="muted" style="margin:0;font-size:13px">Connecting to live crisis feeds…</p>`;
+  } else {
+    inner=`<div class="rows">${liveState.events.slice(0,6).map(e=>`
+      <div class="row-item" data-url="${esc(e.url||'')}" role="button" tabindex="0">
+        <span class="ti-sev" style="width:9px;height:9px;border-radius:50%;background:${sevDot[e.severity]||'var(--sev-neutral)'};flex:0 0 auto"></span>
+        <div class="ri-main"><div class="t" style="white-space:normal">${esc(e.title)}</div><div class="s">${esc(e.source||'')} · ${esc(e.geography||'')} · ${relTime(e.published)}</div></div>
+        <div class="ri-end"><span class="chip">${esc(e.category||'live')}</span></div>
+      </div>`).join('')}</div>`;
+  }
+  host.innerHTML=`<div class="panel-h"><h4>${icon('radio')} Live wire <span class="mono muted" style="font-size:11px">· public feeds</span></h4>${pill}</div>${inner}`;
+  $$('#liveWire .row-item[data-url]').forEach(node=>{
+    const url=node.dataset.url;
+    const go=()=>{ if(url) window.open(url,'_blank','noopener'); };
+    node.addEventListener('click',go);
+    node.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+  });
+  refreshIcons();
 }
 function filteredIntel(){
   return D.INTEL_CARDS.filter(c=>{
@@ -412,7 +755,28 @@ function drawIntel(){
 }
 
 /* ================= STRATEGY ================= */
-let strategyChart=null, currentFrame='questions';
+let strategyChart=null, currentFrame='questions', matrixFilter={pillar:'all',horizon:'all'};
+function filteredMatrix(){
+  return D.OPP_MATRIX.filter(o=>
+    (matrixFilter.pillar==='all'||o.pillar===matrixFilter.pillar)&&
+    (matrixFilter.horizon==='all'||o.horizon===matrixFilter.horizon));
+}
+function drawMatrix(){
+  const tb=$('#matrixTable tbody'); if(!tb) return;
+  const priBadge={critical:'critical',high:'high',strategic:'moderate',medium:'neutral'};
+  const rows=filteredMatrix();
+  tb.innerHTML=rows.length?rows.map(o=>`
+    <tr data-opp="${esc(o.opp)}" style="cursor:pointer"><td><strong>${esc(o.opp)}</strong><div class="sub">${esc(o.sub)}</div></td>
+    <td>${badge(priBadge[o.pri]||'neutral')}</td>
+    <td class="mono" style="font-size:12px">${esc(o.size)}</td>
+    <td class="mono">${o.conf}%</td>
+    <td class="mono" style="font-size:12px">${esc(o.time)}</td></tr>`).join('')
+    :`<tr><td colspan="5" class="muted" style="text-align:center;padding:20px">No opportunities match this filter.</td></tr>`;
+  $$('#matrixTable tbody tr[data-opp]').forEach(r=>r.addEventListener('click',()=>{
+    const o=D.OPP_MATRIX.find(x=>x.opp===r.dataset.opp);
+    if(o) openAtom('Brief me on the "'+o.opp+'" opportunity for Nirmata ('+o.sub+'). Market size '+o.size+'. Give a go/no-go with confidence and 3 sources.');
+  }));
+}
 function renderStrategy(p){
   p.innerHTML=`
     <div class="mode-head">
@@ -434,6 +798,7 @@ function renderStrategy(p){
 
     <div class="section" id="matrixAnchor">
       <div class="section-title"><h3>${icon('target')} Opportunity matrix</h3><button class="btn sm" id="exportMatrix">${icon('download')} CSV</button></div>
+      <div class="mx-filters" id="mxFilters" data-testid="matrix-filters"></div>
       <div class="two-col" style="align-items:start">
         <div class="table-wrap xscroll">
           <table id="matrixTable"><thead><tr><th>Opportunity</th><th>Priority</th><th>Market size</th><th>Confidence</th><th>Window</th></tr></thead><tbody></tbody></table>
@@ -458,14 +823,19 @@ function renderStrategy(p){
   // pillars
   $('#pillars').innerHTML=D.PILLARS.map(p=>`<div class="pillar"><div class="pn">${p.n}</div><h4>${esc(p.name)}</h4><p>${esc(p.desc)}</p></div>`).join('');
 
-  // matrix
-  const priBadge={critical:'critical',high:'high',strategic:'moderate',medium:'neutral'};
-  $('#matrixTable tbody').innerHTML=D.OPP_MATRIX.map(o=>`
-    <tr><td><strong>${esc(o.opp)}</strong><div class="sub">${esc(o.sub)}</div></td>
-    <td>${badge(priBadge[o.pri]||'neutral')}</td>
-    <td class="mono" style="font-size:12px">${esc(o.size)}</td>
-    <td class="mono">${o.conf}%</td>
-    <td class="mono" style="font-size:12px">${esc(o.time)}</td></tr>`).join('');
+  // matrix filters + table
+  const pillarNames={all:'All pillars',bio:'Regenerative Biology',coord:'Coordination',infra:'Secure Infra',clin:'Clinical'};
+  const horizonNames={all:'All horizons',near:'Near',mid:'Mid',long:'Long'};
+  $('#mxFilters').innerHTML=
+    Object.keys(pillarNames).map(k=>`<button class="fbtn ${k==='all'?'active':''}" data-kind="pillar" data-v="${k}">${pillarNames[k]}</button>`).join('')+
+    `<span style="width:1px;background:var(--border);margin:0 4px"></span>`+
+    Object.keys(horizonNames).map(k=>`<button class="fbtn ${k==='all'?'active':''}" data-kind="horizon" data-v="${k}">${horizonNames[k]}</button>`).join('');
+  $$('#mxFilters .fbtn').forEach(b=>b.addEventListener('click',()=>{
+    const kind=b.dataset.kind;
+    $$(`#mxFilters .fbtn[data-kind="${kind}"]`).forEach(x=>x.classList.toggle('active',x===b));
+    matrixFilter[kind]=b.dataset.v; drawMatrix();
+  }));
+  drawMatrix();
   $('#exportMatrix').addEventListener('click',exportMatrixCSV);
 
   // scenarios
@@ -500,14 +870,19 @@ function drawStrategyChart(){
   });
 }
 
-/* ================= SIMULATE / WAR ROOM ================= */
-let simSel={pillar:null,threat:null};
+/* ================= SIMULATE / WAR ROOM 2.0 ================= */
+let simSel={pillar:null,threat:null}, simIntensity=3, simHorizon='mid';
+const HORIZON_MOD={near:-4,mid:0,long:6}; // longer horizon lets structural pillars compound
 function renderSimulate(p){
   p.innerHTML=`
     <div class="mode-head">
       <div class="eyebrow">War Room · Threat Simulation &amp; Intervention</div>
       <h2>Pillar <em>vs</em> threat</h2>
-      <p class="lede">Select one Nirmata pillar and one systemic threat to model the intervention's effectiveness, outcome narration, and residual risk. This is a legible strategic simulator — pick a move on each side.</p>
+      <p class="lede">Select one Nirmata pillar and one systemic threat, tune intensity and horizon, and model the engagement: an animated sequence, before/after risk vectors, three courses of action, and residual risk — all deterministic and explainable.</p>
+    </div>
+    <div class="war-params" data-testid="war-params">
+      <div class="war-param"><label>Threat intensity <span class="pv" id="intVal">3 / 5</span></label><input type="range" id="simInt" min="1" max="5" value="3" data-testid="sim-intensity"/></div>
+      <div class="war-param"><label>Response horizon</label><select id="simHor" data-testid="sim-horizon"><option value="near">Near — 2026 (acute)</option><option value="mid" selected>Mid — 2027–2029</option><option value="long">Long — 2030+</option></select></div>
     </div>
     <div class="sim-wrap">
       <div class="sim-col">
@@ -520,43 +895,98 @@ function renderSimulate(p){
       </div>
     </div>
     <div class="section">
-      <div class="section-title"><h3>${icon('crosshair')} Outcome</h3>
-        <div class="btn-row"><button class="btn sm" id="simRestart">${icon('rotate-ccw')} Restart</button><button class="btn sm primary" id="simAtom">${icon('sparkles')} Ask ATOM to war-game</button></div>
+      <div class="section-title"><h3>${icon('crosshair')} Engagement outcome</h3>
+        <div class="btn-row"><button class="btn sm" id="simRestart">${icon('rotate-ccw')} Reset</button><button class="btn sm primary" id="simAtom">${icon('sparkles')} Ask ATOM to war-game</button></div>
       </div>
       <div class="sim-console" id="simConsole"></div>
+      <div id="simExtra"></div>
     </div>`;
-  $('#simPillars').innerHTML=D.SIM_PILLARS.map(p=>`
-    <button class="move-card pillar-c" data-id="${p.id}"><div class="mi">${p.short}</div><div><div class="mt">${esc(p.name)}</div><div class="md">${esc(p.desc)}</div></div></button>`).join('');
+  $('#simPillars').innerHTML=D.SIM_PILLARS.map(pl=>`
+    <button class="move-card pillar-c" data-id="${pl.id}" data-testid="sim-pillar-${pl.id}"><div class="mi">${pl.short}</div><div><div class="mt">${esc(pl.name)}</div><div class="md">${esc(pl.desc)}</div></div></button>`).join('');
   $('#simThreats').innerHTML=D.SIM_THREATS.map(t=>`
-    <button class="move-card threat" data-id="${t.id}"><div class="mi">${t.short}</div><div><div class="mt">${esc(t.name)}</div><div class="md">${badge(t.sev)}</div></div></button>`).join('');
+    <button class="move-card threat" data-id="${t.id}" data-testid="sim-threat-${t.id}"><div class="mi">${t.short}</div><div><div class="mt">${esc(t.name)}</div><div class="md">${badge(t.sev)}</div></div></button>`).join('');
   $$('#simPillars .move-card').forEach(b=>b.addEventListener('click',()=>{simSel.pillar=b.dataset.id;$$('#simPillars .move-card').forEach(x=>x.classList.toggle('selected',x===b));resolveSim();}));
   $$('#simThreats .move-card').forEach(b=>b.addEventListener('click',()=>{simSel.threat=b.dataset.id;$$('#simThreats .move-card').forEach(x=>x.classList.toggle('selected',x===b));resolveSim();}));
+  $('#simInt').addEventListener('input',e=>{simIntensity=+e.target.value;$('#intVal').textContent=simIntensity+' / 5';resolveSim();});
+  $('#simHor').addEventListener('change',e=>{simHorizon=e.target.value;resolveSim();});
   $('#simRestart').addEventListener('click',()=>{simSel={pillar:null,threat:null};$$('.move-card').forEach(x=>x.classList.remove('selected'));resolveSim();});
   $('#simAtom').addEventListener('click',()=>{
     const pn=simSel.pillar?D.SIM_PILLARS.find(x=>x.id===simSel.pillar).name:'a Nirmata pillar';
     const tn=simSel.threat?D.SIM_THREATS.find(x=>x.id===simSel.threat).name:'a systemic threat';
-    openAtom('War-game deploying '+pn+' against '+tn+'. Give moves, counter-moves, effectiveness estimate and residual risk.');
+    openAtom('War-game deploying '+pn+' against '+tn+' at intensity '+simIntensity+'/5 over a '+simHorizon+' horizon. Compare three courses of action with effectiveness, residual risk, trade-offs and a recommendation.');
   });
   resolveSim();
 }
+// deterministic effectiveness: base pairing ± intensity penalty ± horizon mod, clamped
+function simEff(pillar,threat,intensity,horizon,coaMod){
+  const o=D.SIM_OUTCOMES[pillar+'_'+threat];
+  const base=o?o.eff:50;
+  const intPenalty=(intensity-3)*4; // higher intensity slightly lowers effectiveness
+  let e=base - intPenalty + HORIZON_MOD[horizon] + (coaMod||0);
+  return Math.max(5,Math.min(97,Math.round(e)));
+}
+function presetSim(owner){
+  const map={INF:'infra',COO:'coord',BIO:'bio',CLI:'clin'};
+  const pid=map[owner]; if(!pid) return;
+  simSel.pillar=pid;
+  if(!simSel.threat) simSel.threat = pid==='bio'?'aquifer':pid==='clin'?'blackswan':pid==='infra'?'cyber':'farmpec';
+  $$('#simPillars .move-card').forEach(x=>x.classList.toggle('selected',x.dataset.id===pid));
+  $$('#simThreats .move-card').forEach(x=>x.classList.toggle('selected',x.dataset.id===simSel.threat));
+  resolveSim();
+}
 function resolveSim(){
-  const c=$('#simConsole'); if(!c)return;
+  const c=$('#simConsole'), extra=$('#simExtra'); if(!c)return;
   if(!simSel.pillar||!simSel.threat){
-    c.innerHTML=`<div class="outcome muted">${icon('mouse-pointer-click','ic')}  Select one pillar and one threat to model an engagement.\n\nEach pairing returns an effectiveness estimate, narration, and residual risk drawn from the strategic model.</div>`;
-    refreshIcons(); return;
+    c.innerHTML=`<div class="outcome muted">${icon('mouse-pointer-click','ic')}  Select one pillar and one threat to model an engagement.\n\nAdjust intensity and horizon to see the effectiveness, engagement sequence, before/after vectors and three courses of action update deterministically.</div>`;
+    if(extra) extra.innerHTML=''; refreshIcons(); return;
   }
-  const key=simSel.pillar+'_'+simSel.threat, o=D.SIM_OUTCOMES[key];
-  const pn=D.SIM_PILLARS.find(x=>x.id===simSel.pillar).name, tn=D.SIM_THREATS.find(x=>x.id===simSel.threat).name;
-  const eff=o?o.eff:50, line=o?o.line:'Model pending for this pairing.';
+  const pillar=simSel.pillar, threat=simSel.threat;
+  const o=D.SIM_OUTCOMES[pillar+'_'+threat];
+  const pn=D.SIM_PILLARS.find(x=>x.id===pillar).name, tn=D.SIM_THREATS.find(x=>x.id===threat).name;
+  const eff=simEff(pillar,threat,simIntensity,simHorizon,0), line=o?o.line:'Model pending for this pairing.';
   const rating=eff>=75?'Decisive':eff>=55?'Strong':eff>=40?'Partial':'Weak';
   const col=eff>=75?'var(--sev-stable)':eff>=55?'var(--cyan)':eff>=40?'var(--sev-moderate)':'var(--sev-critical)';
   c.innerHTML=`
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       <span class="chip cyan">${esc(pn)}</span>${icon('arrow-right','ic')}<span class="chip">${esc(tn)}</span>
-      <span class="badge ${eff>=55?'stable':eff>=40?'moderate':'critical'}" style="margin-left:auto"><span class="d"></span>${rating} · ${eff}%</span>
+      <span class="chip">intensity ${simIntensity}/5</span><span class="chip">${simHorizon} horizon</span>
+      <span class="badge ${eff>=55?'stable':eff>=40?'moderate':'critical'}" style="margin-left:auto" data-testid="sim-rating"><span class="d"></span>${rating} · ${eff}%</span>
     </div>
-    <div class="gauge"><span class="mono" style="font-size:11px;color:var(--muted)">EFFECT</span><div class="track"><div class="fill" style="width:${eff}%;background:${col}"></div></div></div>
-    <div class="outcome">${esc(line)}\n\nResidual risk: ${100-eff}% — pair with a complementary pillar to close the gap.</div>`;
+    <div class="gauge"><span class="mono" style="font-size:11px;color:var(--muted)">EFFECT</span><div class="track"><div class="fill" style="width:${eff}%;background:${col};transition:width .8s ease"></div></div></div>
+    <div class="engage-seq" id="engageSeq"></div>`;
+  // animated engagement sequence
+  const seq=[
+    `<span class="tag">[T+0]</span> ${esc(pn)} deployed against ${esc(tn)} at intensity ${simIntensity}/5.`,
+    `<span class="tag">[T+1]</span> ${esc((line.split('. ')[0]||line))}.`,
+    `<span class="tag">[T+2]</span> Effectiveness resolves to ${eff}% (${rating}); residual risk ${100-eff}%.`,
+    `<span class="tag">[T+3]</span> Recommend complementary pillar to close the gap.`,
+  ];
+  const seqHost=$('#engageSeq');
+  seq.forEach((s,i)=>{ const d=el('div','es-line',s); d.style.animationDelay=(REDUCED?0:i*0.28)+'s'; seqHost.appendChild(d); });
+
+  // before/after risk vectors (deterministic: threat raises baseline, pillar reduces by eff share)
+  const baseVec={'Food security':62,'Supply resilience':55,'Water margin':48,'Coordination':44};
+  const after={};
+  Object.keys(baseVec).forEach(k=>{ const before=Math.min(95,baseVec[k]+simIntensity*4); after[k]=Math.max(8,Math.round(before-(before*eff/140))); });
+  // 3 COA cards
+  const coas=(D.COA_LIB[pillar]||[]).map(co=>({...co,eff:simEff(pillar,threat,simIntensity,simHorizon,co.effMod)}));
+  const bestEff=Math.max(...coas.map(c=>c.eff));
+  extra.innerHTML=`
+    <div class="beforeafter" data-testid="beforeafter">
+      <div class="ba-col"><h5>${icon('trending-up')} Before intervention</h5>${Object.keys(baseVec).map(k=>{const v=Math.min(95,baseVec[k]+simIntensity*4);return `<div class="ba-metric"><div class="bm-h"><span>${k}</span><span class="v">${v}</span></div><div class="track"><div class="fill" style="width:${v}%;background:var(--sev-high)"></div></div></div>`;}).join('')}</div>
+      <div class="ba-col"><h5>${icon('trending-down')} After ${esc(pn)}</h5>${Object.keys(after).map(k=>`<div class="ba-metric"><div class="bm-h"><span>${k}</span><span class="v">${after[k]}</span></div><div class="track"><div class="fill" style="width:${after[k]}%;background:var(--sev-stable);transition:width .8s ease"></div></div></div>`).join('')}</div>
+    </div>
+    <div class="section-title" style="margin-top:18px"><h3>${icon('swords')} Courses of action</h3><span class="meta">deterministic · pick a tempo</span></div>
+    <div class="coa-cards" data-testid="coa-cards">
+      ${coas.map(co=>`<div class="coa-card ${co.eff===bestEff?'best':''}">
+        <div class="cc-head"><div><div class="cc-name">${esc(co.name)}</div><div class="cc-tempo">${esc(co.tempo)}</div></div><div class="cc-eff" style="color:${co.eff>=75?'var(--sev-stable)':co.eff>=55?'var(--cyan)':co.eff>=40?'var(--sev-moderate)':'var(--sev-critical)'}">${co.eff}%</div></div>
+        <div class="cc-desc">${esc(co.desc)}</div>
+        <div class="cc-pc"><b>+</b> ${co.pros.map(esc).join(', ')}</div>
+        <div class="cc-pc"><i>−</i> ${co.cons.map(esc).join(', ')}</div>
+        <div class="cc-pc mono">Residual ${100-co.eff}%</div>
+      </div>`).join('')}
+    </div>
+    <p class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">Effectiveness = base pairing model ± intensity penalty ± horizon modifier ± COA modifier, clamped 5–97%. Deterministic — no randomness. Recommended COA: <strong style="color:var(--text)">${esc(coas.find(c=>c.eff===bestEff).name)}</strong>.</p>`;
   refreshIcons();
 }
 
@@ -659,11 +1089,20 @@ function buildResBiotech(){
 }
 function buildResIndustry(){
   $('#res-industry').innerHTML=`
-    <div class="section-title"><h3>${icon('network')} Correlated-industry dependency web</h3><span class="meta">dependency on agriculture · 0–100</span></div>
-    <div class="cards">${D.INDUSTRIES.map(i=>`
-      <div class="card"><div class="ch"><h4>${esc(i.t)}</h4><span class="mono muted">${i.dep}</span></div>
+    <div class="section-title"><h3>${icon('network')} Correlated-industry dependency web</h3><span class="meta">click a node to trace dependencies · 0–100</span></div>
+    <div class="cards industry-web" id="industryWeb">${D.INDUSTRIES.map(i=>`
+      <div class="card" data-t="${esc(i.t)}"><div class="ch"><h4>${esc(i.t)}</h4><span class="mono muted">${i.dep}</span></div>
       <div class="track"><div class="fill" style="width:${i.dep}%;background:var(--cyan)"></div></div>
-      <p>${esc(i.d)}</p></div>`).join('')}</div>`;
+      <p>${esc(i.d)}</p>
+      ${Array.isArray(i.links)?`<div class="links">${i.links.map(l=>`<span class="chip">${esc(l)}</span>`).join('')}</div>`:''}</div>`).join('')}</div>`;
+  let webSel=null;
+  $$('#industryWeb .card').forEach(card=>card.addEventListener('click',()=>{
+    const t=card.dataset.t, ind=D.INDUSTRIES.find(x=>x.t===t);
+    if(webSel===t){ webSel=null; $$('#industryWeb .card').forEach(c=>c.classList.remove('linked','faded')); return; }
+    webSel=t;
+    const linked=new Set([t,...(ind.links||[])]);
+    $$('#industryWeb .card').forEach(c=>{ const ct=c.dataset.t; c.classList.toggle('linked',linked.has(ct)); c.classList.toggle('faded',!linked.has(ct)); });
+  }));
 }
 function buildResCountries(){
   const rows=[...D.COUNTRIES].sort((a,b)=>b.ipc-a.ipc||b.hungerPct-a.hungerPct);
@@ -717,6 +1156,8 @@ const ATOM_SUGGEST=[
 function buildAtom(){
   $('#atomModes').innerHTML=ATOM_MODES.map(m=>`<button class="atom-mode ${m.id===atomMode?'active':''}" data-m="${m.id}">${m.label}</button>`).join('');
   $$('#atomModes .atom-mode').forEach(b=>b.addEventListener('click',()=>{atomMode=b.dataset.m;$$('#atomModes .atom-mode').forEach(x=>x.classList.toggle('active',x===b));}));
+  $('#atomPresets').innerHTML=D.ATOM_PRESETS.map(p=>`<button class="atom-preset" data-p="${p.id}">${icon(p.icon)}${esc(p.label)}</button>`).join('');
+  $$('#atomPresets .atom-preset').forEach(b=>b.addEventListener('click',()=>{const p=D.ATOM_PRESETS.find(x=>x.id===b.dataset.p);if(p)sendAtom(p.prompt);}));
   $('#atomSend').addEventListener('click',()=>sendAtom());
   const ta=$('#atomInput');
   ta.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendAtom();}});
@@ -729,9 +1170,46 @@ function renderAtomBody(){
     b.innerHTML=`<div class="atom-suggest"><div class="sh">Suggested prompts</div>${ATOM_SUGGEST.map(s=>`<button data-q="${esc(s)}">${esc(s)}</button>`).join('')}</div>`;
     $$('#atomBody .atom-suggest button').forEach(btn=>btn.addEventListener('click',()=>{$('#atomInput').value=btn.dataset.q;sendAtom();}));
   } else {
-    b.innerHTML=atomHistory.map(m=>`<div class="atom-msg ${m.role}"><div class="who">${m.role==='user'?'You':'ATOM'}</div><div class="bubble">${m.pending?'<span class="spinner"></span> analyzing…':esc(m.content)}</div></div>`).join('');
+    b.innerHTML=atomHistory.map((m,i)=>{
+      let inner;
+      if(m.pending) inner='<span class="spinner"></span> '+esc(m.stage||'analyzing…');
+      else if(m.role==='assistant'&&m.ui) inner=renderAtomUI(m.ui,i);
+      else inner=esc(m.content);
+      return `<div class="atom-msg ${m.role}"><div class="who">${m.role==='user'?'You':'ATOM'}</div><div class="bubble">${inner}</div></div>`;
+    }).join('');
+    // wire follow-up chips
+    $$('#atomBody .au-followups button').forEach(btn=>btn.addEventListener('click',()=>sendAtom(btn.dataset.q)));
+    $$('#atomBody .au-actions .btn').forEach(btn=>btn.addEventListener('click',()=>{
+      const act=btn.dataset.act;
+      if(act==='map'){ closeAtom(); activateMode('map'); }
+      else if(act==='wargame'){ closeAtom(); activateMode('simulate'); }
+      else if(act==='intel'){ closeAtom(); activateMode('intel'); }
+    }));
     b.scrollTop=b.scrollHeight;
+    refreshIcons();
   }
+}
+// Parse a fenced ```atom-ui JSON block out of ATOM's text; returns {ui, text} or null
+function parseAtomUI(content){
+  const m=content.match(/```atom-ui\s*([\s\S]*?)```/);
+  if(!m) return null;
+  try{
+    const ui=JSON.parse(m[1].trim());
+    const text=content.replace(m[0],'').trim();
+    return {ui,text};
+  }catch(e){ return null; }
+}
+function renderAtomUI(ui,idx){
+  const blocks=[];
+  const clampN=v=>Math.max(0,Math.min(100,parseInt(v,10)||0));
+  if(ui.lede||ui.brief){ blocks.push(`<div class="au-block au-brief"><div class="au-h">${icon('file-text')} Executive brief</div><p>${esc(ui.lede||ui.brief)}</p>${Array.isArray(ui.keypoints)?`<ul>${ui.keypoints.map(k=>`<li>${esc(k)}</li>`).join('')}</ul>`:''}</div>`); }
+  if(Array.isArray(ui.threats)&&ui.threats.length){ blocks.push(`<div class="au-block"><div class="au-h">${icon('alert-triangle')} Threat cards</div><div class="au-threats">${ui.threats.map(t=>`<div class="au-threat ${['critical','high','moderate'].includes(t.severity)?t.severity:'moderate'}"><div class="th-t">${esc(t.title||'')}</div>${t.detail?`<div class="th-d">${esc(t.detail)}</div>`:''}</div>`).join('')}</div></div>`); }
+  if(Array.isArray(ui.coas)&&ui.coas.length){ const best=Math.max(...ui.coas.map(c=>clampN(c.eff))); blocks.push(`<div class="au-block"><div class="au-h">${icon('swords')} Courses of action</div><div class="au-coa">${ui.coas.map(c=>`<div class="au-coa-card ${(c.recommended||clampN(c.eff)===best)?'rec':''}"><div class="cc-t">${esc(c.name||'')}<span class="cc-eff">${clampN(c.eff)}% · residual ${c.residual!=null?clampN(c.residual):100-clampN(c.eff)}%</span></div>${c.note?`<div class="cc-d">${esc(c.note)}</div>`:''}</div>`).join('')}</div></div>`); }
+  if(ui.confidence!=null){ const cf=clampN(ui.confidence); const col=cf>=75?'var(--sev-stable)':cf>=55?'var(--cyan)':cf>=40?'var(--sev-moderate)':'var(--sev-critical)'; blocks.push(`<div class="au-block"><div class="au-h">${icon('gauge')} Confidence</div><div class="au-conf"><div class="track"><div class="fill" style="width:${cf}%;background:${col}"></div></div><span class="cval">${cf}%</span></div></div>`); }
+  if(Array.isArray(ui.citations)&&ui.citations.length){ blocks.push(`<div class="au-block"><div class="au-h">${icon('link')} Citations</div><div class="au-cites">${ui.citations.map(c=>`<span class="au-cite">${esc(c)}</span>`).join('')}</div></div>`); }
+  blocks.push(`<div class="au-block au-gen">${icon('sparkles')} Model-generated analysis via /api/atom · verify sourced claims independently</div>`);
+  if(Array.isArray(ui.followups)&&ui.followups.length){ blocks.push(`<div class="au-followups">${ui.followups.map(f=>`<button data-q="${esc(f)}">${icon('corner-down-right')} ${esc(f)}</button>`).join('')}</div>`); }
+  return `<div class="atom-ui">${blocks.join('')}</div>`;
 }
 function openAtom(prefill){
   closeDrawer(); closeMobileNav();
@@ -754,26 +1232,34 @@ function renderAtomMode(p){
   $$('#panel-atom .card').forEach(c=>c.addEventListener('click',()=>openAtom(c.dataset.q)));
   $('#openAtomPanel').addEventListener('click',()=>openAtom());
 }
-async function sendAtom(){
-  const ta=$('#atomInput'); const q=ta.value.trim(); if(!q) return;
+async function sendAtom(prompt){
+  const ta=$('#atomInput'); const q=(prompt!=null?String(prompt):ta.value).trim(); if(!q) return;
+  if(!$('#atom').classList.contains('open')) openAtom();
   ta.value=''; ta.style.height='auto';
   atomHistory.push({role:'user',content:q});
-  const pending={role:'assistant',content:'',pending:true}; atomHistory.push(pending);
+  const pending={role:'assistant',content:'',pending:true,stage:'correlating intelligence…'}; atomHistory.push(pending);
   renderAtomBody(); $('#atomSend').disabled=true;
-  const ctx = `Modes available: Command/Map/Intel/Strategy/WarRoom/Data. As-of ${D.AS_OF}. Key figures: 295M acute food-insecure, 5 IPC-5 countries, FFPI 148.2, wheat stocks-to-use 26.4%, fertilizer +35%.`;
+  // staged reveal cues while awaiting the server
+  const stages=['correlating intelligence…','weighing pillar leverage…','scoring confidence…'];
+  let si=0; const stageTimer=REDUCED?null:setInterval(()=>{ si=(si+1)%stages.length; if(pending.pending){ pending.stage=stages[si]; renderAtomBody(); } },1100);
+  const ctx = `Modes available: Command/Map/Intel/Strategy/WarRoom/Data. As-of ${D.AS_OF}. Key figures: 295M acute food-insecure, 5 IPC-5 countries, FFPI 148.2, wheat stocks-to-use 26.4%, fertilizer +35%. Live feed status: ${liveState.status}.`;
   try{
     const res=await fetch('/api/atom',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({messages:atomHistory.filter(m=>!m.pending).map(m=>({role:m.role,content:m.content})),mode:atomMode,stream:false,context:ctx})});
     if(!res.ok){ throw new Error('HTTP '+res.status); }
     const data=await res.json();
     const content = data?.choices?.[0]?.message?.content || 'No content returned.';
-    pending.content=content; pending.pending=false;
+    const parsed=parseAtomUI(content);
+    pending.pending=false;
+    if(parsed){ pending.ui=parsed.ui; pending.content=parsed.text||content; }
+    else pending.content=content;
   }catch(err){
     pending.pending=false;
     const code=/^HTTP (\d{3})$/.exec(String(err&&err.message));
     const hint=code?' (server returned '+code[1]+')':'';
     pending.content='⚠ ATOM is temporarily unavailable'+hint+'.\n\nThe live agent needs the PPLX_KEY environment variable configured on the server. All bundled intelligence in this command center remains fully available offline — try the Command, Intel, Strategy and War Room modes.';
   }
+  if(stageTimer) clearInterval(stageTimer);
   renderAtomBody(); $('#atomSend').disabled=false; refreshIcons();
 }
 

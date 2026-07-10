@@ -254,18 +254,18 @@ const TOKEN_USECASES = [
 
 /* ---------- CORRELATED INDUSTRY DEPENDENCY WEB ---------- */
 const INDUSTRIES = [
-  {t:'Energy',d:'Fertilizer = natural gas; diesel drives every field operation.',dep:88},
-  {t:'Finance',d:'$220B+ farmland AUM; commodity derivatives set planting.',dep:80},
-  {t:'Logistics',d:'30–40% food loss traces to cold-chain + routing gaps.',dep:76},
-  {t:'Water utilities',d:'70% of freshwater withdrawals are agricultural.',dep:90},
-  {t:'Defense',d:'Food as geopolitical weapon; grain corridors are theaters.',dep:72},
-  {t:'Robotics',d:'Labor shortage forces autonomy in harvest + weeding.',dep:64},
-  {t:'Satellite / space',d:'Yield forecasting + aquifer mapping ride on EO data.',dep:70},
-  {t:'Biotech / pharma',d:'CRISPR traits + food-pharming converge on crops.',dep:74},
-  {t:'Telecom / IoT',d:'Precision ag needs pervasive rural connectivity.',dep:60},
-  {t:'Insurance',d:'$90B underinsured; parametric payout is the missing rail.',dep:68},
-  {t:'Climate tech',d:'Carbon MRV + regenerative credits monetize soil.',dep:66},
-  {t:'Retail / CPG',d:'Provenance + shrink drive margin at the shelf.',dep:58},
+  {t:'Energy',d:'Fertilizer = natural gas; diesel drives every field operation.',dep:88,links:['Finance','Logistics','Defense']},
+  {t:'Finance',d:'$220B+ farmland AUM; commodity derivatives set planting.',dep:80,links:['Energy','Insurance','Climate tech']},
+  {t:'Logistics',d:'30–40% food loss traces to cold-chain + routing gaps.',dep:76,links:['Energy','Retail / CPG','Telecom / IoT']},
+  {t:'Water utilities',d:'70% of freshwater withdrawals are agricultural.',dep:90,links:['Energy','Climate tech','Satellite / space']},
+  {t:'Defense',d:'Food as geopolitical weapon; grain corridors are theaters.',dep:72,links:['Energy','Finance','Satellite / space']},
+  {t:'Robotics',d:'Labor shortage forces autonomy in harvest + weeding.',dep:64,links:['Telecom / IoT','Satellite / space']},
+  {t:'Satellite / space',d:'Yield forecasting + aquifer mapping ride on EO data.',dep:70,links:['Water utilities','Defense','Climate tech']},
+  {t:'Biotech / pharma',d:'CRISPR traits + food-pharming converge on crops.',dep:74,links:['Climate tech','Robotics']},
+  {t:'Telecom / IoT',d:'Precision ag needs pervasive rural connectivity.',dep:60,links:['Robotics','Logistics']},
+  {t:'Insurance',d:'$90B underinsured; parametric payout is the missing rail.',dep:68,links:['Finance','Climate tech']},
+  {t:'Climate tech',d:'Carbon MRV + regenerative credits monetize soil.',dep:66,links:['Finance','Water utilities','Biotech / pharma']},
+  {t:'Retail / CPG',d:'Provenance + shrink drive margin at the shelf.',dep:58,links:['Logistics','Finance']},
 ];
 
 /* ---------- BIOTECH PIPELINE (regenerative biology) ---------- */
@@ -353,14 +353,14 @@ const FRAMES = [
 
 /* ---------- OPPORTUNITY MATRIX ---------- */
 const OPP_MATRIX = [
-  {opp:'AI Soil Health Platform',sub:'Real-time microbiome + fulvic/humic optimization',size:'$36B biostim + $24B precision',pri:'critical',edge:'Secure Infra + IoT + Regenerative Biology',gap:'No integrated AI soil platform exists',time:'2026–2028',conf:92},
-  {opp:'AgriTech AI Decision Engine',sub:'Unified crop-weather-market platform',size:'$4.9B AI-in-ag by 2030',pri:'critical',edge:'ATOM + Coordination Layer + Secure Infra',gap:'Fragmented tools; no unified layer',time:'2026–2027',conf:88},
-  {opp:'Agri-Commodity Tokenization',sub:'Post-quantum RWA for grain / carbon',size:'$7B→$110B (2030)→$1.4T (2040)',pri:'high',edge:'Post-quantum crypto + blockchain',gap:'No quantum-secure agri standard',time:'2026–2029',conf:82},
-  {opp:'Parametric Crop Insurance AI',sub:'Weather → smart-contract payout',size:'$90B+ underinsured',pri:'high',edge:'ATOM automation + fintech',gap:'Missing financing rail',time:'2027–2029',conf:76},
-  {opp:'Smallholder Farmer AI Platform',sub:'Mobile voice agronomic advisor',size:'500M+ smallholder farms',pri:'strategic',edge:'Coordination Layer voice AI',gap:'Zero AI access for 80% of farmers',time:'2028–2032',conf:84},
-  {opp:'Carbon Credit Verification AI',sub:'Soil carbon → on-chain credits',size:'$167M→$1B+',pri:'strategic',edge:'AI measurement + Regenerative Biology',gap:'No trusted verified standard',time:'2027–2031',conf:79},
-  {opp:'Vertical Farm AI OS',sub:'Full indoor-farm automation',size:'$8.2B→$41B (2034)',pri:'medium',edge:'AI control systems',gap:'No comprehensive OS on market',time:'2027–2030',conf:71},
-  {opp:'Food Supply-Chain Transparency',sub:'AI + blockchain provenance',size:'Global food chain $8T+',pri:'medium',edge:'Blockchain + Secure Infra audit',gap:'30–40% loss from opacity',time:'2027–2030',conf:73},
+  {opp:'AI Soil Health Platform',sub:'Real-time microbiome + fulvic/humic optimization',size:'$36B biostim + $24B precision',pri:'critical',edge:'Secure Infra + IoT + Regenerative Biology',gap:'No integrated AI soil platform exists',time:'2026–2028',conf:92,pillar:'bio',horizon:'near'},
+  {opp:'AgriTech AI Decision Engine',sub:'Unified crop-weather-market platform',size:'$4.9B AI-in-ag by 2030',pri:'critical',edge:'ATOM + Coordination Layer + Secure Infra',gap:'Fragmented tools; no unified layer',time:'2026–2027',conf:88,pillar:'coord',horizon:'near'},
+  {opp:'Agri-Commodity Tokenization',sub:'Post-quantum RWA for grain / carbon',size:'$7B→$110B (2030)→$1.4T (2040)',pri:'high',edge:'Post-quantum crypto + blockchain',gap:'No quantum-secure agri standard',time:'2026–2029',conf:82,pillar:'infra',horizon:'mid'},
+  {opp:'Parametric Crop Insurance AI',sub:'Weather → smart-contract payout',size:'$90B+ underinsured',pri:'high',edge:'ATOM automation + fintech',gap:'Missing financing rail',time:'2027–2029',conf:76,pillar:'infra',horizon:'mid'},
+  {opp:'Smallholder Farmer AI Platform',sub:'Mobile voice agronomic advisor',size:'500M+ smallholder farms',pri:'strategic',edge:'Coordination Layer voice AI',gap:'Zero AI access for 80% of farmers',time:'2028–2032',conf:84,pillar:'coord',horizon:'long'},
+  {opp:'Carbon Credit Verification AI',sub:'Soil carbon → on-chain credits',size:'$167M→$1B+',pri:'strategic',edge:'AI measurement + Regenerative Biology',gap:'No trusted verified standard',time:'2027–2031',conf:79,pillar:'bio',horizon:'long'},
+  {opp:'Vertical Farm AI OS',sub:'Full indoor-farm automation',size:'$8.2B→$41B (2034)',pri:'medium',edge:'AI control systems',gap:'No comprehensive OS on market',time:'2027–2030',conf:71,pillar:'clin',horizon:'mid'},
+  {opp:'Food Supply-Chain Transparency',sub:'AI + blockchain provenance',size:'Global food chain $8T+',pri:'medium',edge:'Blockchain + Secure Infra audit',gap:'30–40% loss from opacity',time:'2027–2030',conf:73,pillar:'infra',horizon:'mid'},
 ];
 
 /* ---------- SCENARIOS LAB ---------- */
@@ -421,6 +421,48 @@ const SIM_OUTCOMES = {
   clin_blackswan:{eff:82,line:'Famine + malnutrition decision AI is decisive in the acute phase of a cascade — saves the most lives per dollar.'},
 };
 
+/* ---------- MISSION PRIORITY QUEUE (command center) ---------- */
+const MISSIONS = [
+  {id:'m1',code:'MSN-01',objective:'Stand up AI soil-intelligence pilot in India rice belt',why:'Monsoon deficit 22% + 400M rain-fed at risk; fulvic/humic water-retention is highest-leverage aquifer counter (WarRoom eff 84%)',window:'Q3 2026 — 90-day window before kharif lock-in',pillar:'Regenerative Biology',owner:'BIO',conf:88,sev:'high',country:'IND',frame:'moves'},
+  {id:'m2',code:'MSN-02',objective:'Lock post-quantum grain-settlement reference with one merchant partner',why:'NIST 24-month PQC migration clock started; first mover sets a $110B (2030) standard',window:'2026–2027 — ahead of commercial migration',pillar:'Secure Infrastructure',owner:'INF',conf:82,sev:'high',country:null,frame:'moves'},
+  {id:'m3',code:'MSN-03',objective:'Pre-position famine decision-AI ahead of Sudan/Sahel cascade',why:'5 IPC-5 countries; Clinical Intelligence is decisive in acute cascade phase (eff 82%) — most lives per dollar',window:'Immediate — Darfur convoys blocked 47 days',pillar:'Clinical Intelligence',owner:'CLI',conf:84,sev:'critical',country:'SDN',frame:'moves'},
+  {id:'m4',code:'MSN-04',objective:'Launch smallholder voice-AI in one high-density market',why:'Only 6% of 33M African smallholders use any digital tool; voice routes around the text barrier',window:'2026–2028',pillar:'Coordination Layer',owner:'COO',conf:79,sev:'moderate',country:'NGA',frame:'moves'},
+  {id:'m5',code:'MSN-05',objective:'Publish open soil-carbon measurement methodology',why:'No trusted verified standard exists; seeding it unlocks a $1B+ credit market and the biological-data moat',window:'2027–2031',pillar:'Regenerative Biology',owner:'BIO',conf:76,sev:'moderate',country:null,frame:'opportunities'},
+];
+
+/* ---------- COURSE-OF-ACTION TEMPLATES (war room) ---------- */
+const COA_LIB = {
+  infra:[
+    {name:'Provenance-first',tempo:'Deliberate',desc:'Ship signed provenance + open registry before settlement rails.',pros:['Erodes opacity fast','Coalition-friendly'],cons:['Slower monetization'],effMod:0},
+    {name:'Settlement-first',tempo:'Aggressive',desc:'Lead with PQC settlement standard; provenance follows.',pros:['Standard-setting lead','High moat'],cons:['Partner dependency'],effMod:4},
+    {name:'Telemetry-hardening',tempo:'Defensive',desc:'Sign irrigation/harvest control planes first.',pros:['Collapses cyber surface'],cons:['Narrow vs cartel'],effMod:-6},
+  ],
+  coord:[
+    {name:'Voice-broad',tempo:'Aggressive',desc:'Mass voice fan-out across one dense market.',pros:['Population-scale reach','Breaks monopsony'],cons:['Ops-heavy'],effMod:3},
+    {name:'Advisory-deep',tempo:'Deliberate',desc:'High-touch agronomic advisory to lighthouse cooperatives.',pros:['Data quality','Retention'],cons:['Slower scale'],effMod:-2},
+    {name:'Early-warning-net',tempo:'Defensive',desc:'Coordinated early-warning fan-out during shock.',pros:['Best in cascade','Coalition glue'],cons:['Needs live feeds'],effMod:2},
+  ],
+  bio:[
+    {name:'Water-retention wedge',tempo:'Aggressive',desc:'Fulvic/humic + microbiome to cut irrigation demand.',pros:['Highest aquifer leverage','Yield gains'],cons:['Field-trial lag'],effMod:5},
+    {name:'Diversity portfolio',tempo:'Deliberate',desc:'Break monoculture with resilient biological portfolios.',pros:['Structural antidote'],cons:['Adoption friction'],effMod:1},
+    {name:'Degraded-soil recovery',tempo:'Defensive',desc:'Target most-degraded soils for fastest visible ROI.',pros:['Proof points'],cons:['Capital intensive'],effMod:-3},
+  ],
+  clin:[
+    {name:'Acute triage',tempo:'Aggressive',desc:'Famine + malnutrition decision AI at the acute edge.',pros:['Most lives/$','Decisive in cascade'],cons:['Not a cartel counter'],effMod:4},
+    {name:'Surveillance-first',tempo:'Deliberate',desc:'Outbreak + monoculture pathogen surveillance.',pros:['Earliest detection'],cons:['Indirect impact'],effMod:0},
+    {name:'Resilience-backstop',tempo:'Defensive',desc:'Keep response coherent if systems degrade.',pros:['Robustness'],cons:['Lower ceiling'],effMod:-4},
+  ],
+};
+
+/* ---------- ATOM MISSION PRESETS (GenUI) ---------- */
+const ATOM_PRESETS = [
+  {id:'brief',label:'Morning Brief',icon:'sunrise',prompt:'Give me the morning executive brief on the global food-security polycrisis: top 5 developments, market signals, and the single highest-leverage Nirmata move today. Return an executive brief with a confidence score and citations.'},
+  {id:'dossier',label:'Country Dossier',icon:'flag',prompt:'Build a country dossier on Sudan: crisis drivers, IPC status, conflict, water and production, and the recommended Nirmata intervention with confidence and 3 sources.'},
+  {id:'coa',label:'War-Game COAs',icon:'swords',prompt:'Compare three courses of action for deploying Regenerative Biology against aquifer depletion. Give a COA comparison with effectiveness, residual risk, trade-offs, and a recommendation.'},
+  {id:'shock',label:'Supply Shock',icon:'trending-down',prompt:'Model a wheat supply shock if the Black Sea corridor closes permanently: price path, exposed importers, and Nirmata positioning. Confidence + sources.'},
+  {id:'soil',label:'Soil Intervention',icon:'sprout',prompt:'Design a fulvic/humic + microbiome soil intervention for a degraded rain-fed maize system. Expected yield/water impact, deployment steps, and confidence.'},
+];
+
 /* expose to window for ATOM context */
 Object.assign(window, {COUNTRIES, INTEL_CARDS, COMMODITY_PRICES, OPP_MATRIX, AQUIFERS, PILLARS, SCENARIOS});
 
@@ -430,6 +472,7 @@ return {
   GRAIN_FLOWS, CHOKEPOINTS, AQUIFERS, WATER_TRADE, SOIL_MARKETS, SOIL_BENEFITS,
   AI_GAPS, TOKEN_TRAJ, TOKEN_USECASES, INDUSTRIES, BIOTECH_PIPELINE,
   TIMELINE_EVENTS, PILLARS, FRAMES, OPP_MATRIX, SCENARIOS,
-  SIM_PILLARS, SIM_THREATS, SIM_OUTCOMES
+  SIM_PILLARS, SIM_THREATS, SIM_OUTCOMES,
+  MISSIONS, COA_LIB, ATOM_PRESETS
 };
 })();
