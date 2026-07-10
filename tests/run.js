@@ -22,6 +22,14 @@ import {
 } from '../api/_validate.js';
 import { roleAtLeast } from '../api/_auth.js';
 import { isSameOrigin, rateLimit, parseCookies, getSessionToken } from '../api/_http.js';
+import {
+  SEVERITY_LEVELS, severityFromLevel, severityFromScale, severityScore,
+  normalizeEvent, isValidEvent, dedupeEvents, aggregateStatus,
+  withRetry, mapLimit, resetBreakers, cacheClear, breakerFailure, breakerAllows,
+  SOURCES,
+} from '../api/_sources.js';
+import { aggregate, clearSnapshots, recordSnapshot, getSnapshots } from '../api/_aggregate.js';
+import { gdacs, usgs, worldbank } from '../api/_adapters.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -435,11 +443,11 @@ function testTheaterFilters() {
   ok('URL round-trip preserves selection', round.sel === 'cp-suez');
 
   // Password must NEVER be accepted from or emitted to the URL.
-  const injected = F.parseState('password=PutinSucksTinyChinaCocks&pw=x&gate=y&layers=chokepoint');
+  const injected = F.parseState('password=FuckPutin&pw=x&gate=y&layers=chokepoint');
   ok('parseState drops password/pw/gate keys',
     injected.password === undefined && injected.pw === undefined && injected.gate === undefined && injected.layers.join(',') === 'chokepoint');
-  const serialized = F.serializeState({ layers: ['chokepoint'], password: 'PutinSucksTinyChinaCocks', pw: 'x' });
-  ok('serializeState never emits password', serialized.indexOf('password') === -1 && serialized.indexOf('PutinSucks') === -1 && serialized.indexOf('pw=') === -1);
+  const serialized = F.serializeState({ layers: ['chokepoint'], password: 'FuckPutin', pw: 'x' });
+  ok('serializeState never emits password', serialized.indexOf('password') === -1 && serialized.indexOf('FuckPutin') === -1 && serialized.indexOf('pw=') === -1);
 
   // Sim descriptor round-trips (compact, no secrets).
   const simState = { layers: [], commodity: [], severity: [], category: [], evidence: [], sim: { preset: 'suez-closure', intensity: 4, commodities: ['wheat', 'maize'], interventions: ['reroute'] } };
@@ -530,9 +538,194 @@ function testTheaterActions() {
   ok('parseAtomActions no block -> empty actions', ACT.parseAtomActions('just prose, no actions').actions.length === 0);
 }
 
+/* ============================ ingestion pipeline ============================ */
+// A fake fetch that serves canned JSON per-URL substring, records calls, and
+// can simulate failures/timeouts — keeps adapter tests fully deterministic.
+function fakeFetch(routes) {
+  return async function (url) {
+    for (const key of Object.keys(routes)) {
+      if (url.indexOf(key) !== -1) {
+        const r = routes[key];
+        if (r === 'throw') throw new Error('network');
+        return {
+          ok: true, status: 200,
+          headers: { get: () => null },
+          text: async () => JSON.stringify(r),
+        };
+      }
+    }
+    return { ok: false, status: 404, headers: { get: () => null }, text: async () => '' };
+  };
+}
+const noSleep = () => Promise.resolve();
+
+function testSeverity() {
+  section('ingestion: deterministic severity mapping');
+  eq('levels ordered', SEVERITY_LEVELS.join(','), 'stable,moderate,high,critical');
+  eq('famine -> critical', severityFromLevel('Famine declared'), 'critical');
+  eq('orange -> high', severityFromLevel('Orange'), 'high');
+  eq('yellow -> moderate', severityFromLevel('yellow watch'), 'moderate');
+  eq('green -> stable', severityFromLevel('green/normal'), 'stable');
+  eq('unknown -> moderate', severityFromLevel('qwerty'), 'moderate');
+  eq('scale below first -> stable', severityFromScale(1, [4.5, 5.5, 6.5]), 'stable');
+  eq('scale mid -> high', severityFromScale(6, [4.5, 5.5, 6.5]), 'high');
+  eq('scale top -> critical', severityFromScale(7, [4.5, 5.5, 6.5]), 'critical');
+  eq('scale NaN -> moderate', severityFromScale('x', [1, 2, 3]), 'moderate');
+  ok('score monotonic', severityScore('critical') > severityScore('high') &&
+    severityScore('high') > severityScore('moderate') && severityScore('moderate') > severityScore('stable'));
+}
+
+function testNormalize() {
+  section('ingestion: normalizeEvent schema + provenance');
+  const e = normalizeEvent({
+    rawId: '42', domain: 'hazard', category: 'Flood', title: 'Flood in X',
+    severity: 'orange', geography: 'Country X', lat: 10, lon: 20,
+    published: '2026-01-02T00:00:00Z', confidence: 0.9, value: 3, unit: 'm',
+  }, { sourceId: 'gdacs', fetchedAt: '2026-01-03T00:00:00Z' });
+  eq('id is sourceId:rawId', e.id, 'gdacs:42');
+  eq('source name resolved from registry', e.source, 'GDACS');
+  eq('severity mapped from word', e.severity, 'high');
+  eq('observedAt from published', e.observedAt, '2026-01-02T00:00:00.000Z');
+  eq('fetchedAt preserved', e.fetchedAt, '2026-01-03T00:00:00Z');
+  ok('provenance carries source+url+license', !!e.provenance && e.provenance.source === 'GDACS' &&
+    /^https?:\/\//.test(e.provenance.sourceUrl) && typeof e.provenance.license === 'string');
+  eq('evidence defaults observed', e.evidence, 'observed');
+  eq('confidence clamped to 0..1', normalizeEvent({ rawId: '1', confidence: 5 }, { sourceId: 'usgs' }).confidence, 1);
+  eq('missing coords -> null lat', normalizeEvent({ rawId: '1' }, { sourceId: 'usgs' }).lat, null);
+  eq('modeled evidence respected', normalizeEvent({ rawId: '1', evidence: 'modeled' }, { sourceId: 'power' }).evidence, 'modeled');
+
+  section('ingestion: isValidEvent');
+  ok('valid indicator w/o coords passes', isValidEvent(normalizeEvent({ rawId: '1', severity: 'high' }, { sourceId: 'worldbank' })));
+  ok('out-of-range coords rejected', !isValidEvent(normalizeEvent({ rawId: '1', lat: 999, lon: 0, severity: 'high' }, { sourceId: 'usgs' })));
+  ok('missing id rejected', !isValidEvent({ severity: 'high' }));
+}
+
+function testDedupe() {
+  section('ingestion: dedupe (id + spatiotemporal cluster)');
+  const mk = (id, sid, lat, lon, conf) => normalizeEvent({ rawId: id, lat, lon, confidence: conf, severity: 'high', published: '2026-01-02T00:00:00Z' }, { sourceId: sid });
+  // id-dedupe: two records with the identical stable id collapse to one.
+  const idDup = dedupeEvents([mk('9', 'gdacs', 80.0, 100.0, 0.6), mk('9', 'gdacs', 80.0, 100.0, 0.6)]);
+  ok('id-dedupe removes exact duplicate id', idDup.filter((e) => e.id === 'gdacs:9').length === 1);
+  // spatiotemporal cluster: different ids/sources, same 0.1-grid cell + day => one kept.
+  const a = mk('1', 'gdacs', 10.01, 20.01, 0.6);
+  const b = mk('2', 'usgs', 10.02, 20.02, 0.9);
+  const c = mk('3', 'eonet', 55.0, 5.0, 0.7);     // far away => distinct
+  const out = dedupeEvents([a, b, c]);
+  const cluster = out.filter((e) => e.domain === 'hazard' && Math.round(e.lat) === 10);
+  ok('spatiotemporal cluster keeps one highest-confidence record', cluster.length === 1 && cluster[0].confidence === 0.9);
+  ok('distinct location retained', out.some((e) => Math.round(e.lat) === 55));
+  ok('non-geo indicators are never clustered away',
+    dedupeEvents([mk('a', 'worldbank', null, null, 0.5), mk('b', 'worldbank', null, null, 0.5)]).length === 2);
+}
+
+function testAggregateStatus() {
+  section('ingestion: aggregateStatus');
+  eq('all ok -> live', aggregateStatus([{ status: 'ok' }, { status: 'ok' }]), 'live');
+  eq('mix -> partial', aggregateStatus([{ status: 'ok' }, { status: 'down' }]), 'partial');
+  eq('only stale -> stale', aggregateStatus([{ status: 'stale' }, { status: 'down' }]), 'stale');
+  eq('all down -> degraded', aggregateStatus([{ status: 'down' }, { status: 'down' }]), 'degraded');
+  eq('empty -> degraded', aggregateStatus([]), 'degraded');
+}
+
+async function testRetryConcurrency() {
+  section('ingestion: retry/backoff + bounded concurrency');
+  let n = 0;
+  const val = await withRetry(() => { n++; if (n < 3) throw new Error('x'); return 'ok'; }, { retries: 3, baseDelayMs: 1, sleep: noSleep });
+  ok('withRetry succeeds after transient failures', val === 'ok' && n === 3);
+  let threw = false;
+  try { await withRetry(() => { throw new Error('always'); }, { retries: 1, sleep: noSleep }); } catch (e) { threw = true; }
+  ok('withRetry rethrows after exhausting retries', threw);
+
+  let active = 0, peak = 0;
+  await mapLimit([1, 2, 3, 4, 5, 6], 2, async () => {
+    active++; peak = Math.max(peak, active); await noSleep(); active--;
+  });
+  ok('mapLimit respects concurrency cap', peak <= 2);
+  const order = await mapLimit([3, 1, 2], 2, async (x) => x * 10);
+  ok('mapLimit preserves input order', order.join(',') === '30,10,20');
+}
+
+async function testAggregatePipeline() {
+  section('ingestion: aggregate — partial failure tolerance + disabled + cache');
+  resetBreakers(); cacheClear(); clearSnapshots();
+
+  const good = { id: 'gdacs', ttlMs: 1000, run: async () => ([
+    { rawId: 'g1', domain: 'hazard', severity: 'critical', lat: 1, lon: 1, published: '2026-01-02T00:00:00Z', confidence: 0.9 },
+  ]) };
+  const bad = { id: 'usgs', ttlMs: 1000, run: async () => { throw new Error('boom'); } };
+  const disabled = { id: 'reliefweb', ttlMs: 1000, run: async () => { const e = new Error('no appname'); e.disabled = true; throw e; } };
+
+  const agg = await aggregate({ adapters: [good, bad, disabled], fetchImpl: fakeFetch({}), sleep: noSleep, now: Date.parse('2026-01-03T00:00:00Z') });
+  ok('one bad source does not fail the aggregate', agg.summary.total === 1 && agg.events[0].id === 'gdacs:g1');
+  ok('bad source reported down', agg.sources.find((s) => s.id === 'usgs').status === 'down');
+  ok('disabled source reported disabled, not down', agg.sources.find((s) => s.id === 'reliefweb').status === 'disabled');
+  ok('status is partial (ok + down, ignoring disabled)', agg.status === 'partial');
+  ok('summary counts observed', agg.summary.observed === 1 && agg.summary.modeled === 0);
+
+  // Last-known-good: the good source is now cached. Make it fail; expect stale served.
+  const goodFails = { id: 'gdacs', ttlMs: 1, run: async () => { throw new Error('down now'); } };
+  breakerFailure('gdacs'); breakerFailure('gdacs'); breakerFailure('gdacs'); // trip breaker -> use LKG
+  const agg2 = await aggregate({ adapters: [goodFails], fetchImpl: fakeFetch({}), sleep: noSleep, now: Date.parse('2026-01-03T01:00:00Z') });
+  ok('last-known-good served as stale when source fails', agg2.sources[0].status === 'stale' && agg2.events.length === 1);
+
+  section('ingestion: snapshots (no DB migration)');
+  recordSnapshot(agg);
+  ok('snapshot recorded to in-memory ring', getSnapshots().length === 1 && getSnapshots()[0].total === 1);
+}
+
+async function testRealAdapters() {
+  section('ingestion: adapter parsing (fixtures, no network)');
+  const gd = await gdacs({ fetchImpl: fakeFetch({ 'gdacs.org': { features: [
+    { properties: { eventtype: 'FL', eventid: 7, name: 'Flood A', alertlevel: 'Orange', country: 'X', fromdate: '2026-01-02', url: { report: 'https://x' } }, geometry: { coordinates: [20, 10] } },
+    { properties: { eventtype: 'EQ', eventid: 8 }, geometry: { coordinates: [0, 0] } }, // filtered (not agri type)
+  ] } }) });
+  ok('GDACS filters to agri hazard types', gd.length === 1 && gd[0].rawId === 'FL7' && gd[0].domain === 'hazard');
+
+  const eq2 = await usgs({ fetchImpl: fakeFetch({ 'earthquake.usgs.gov': { features: [
+    { id: 'us1', properties: { mag: 6.7, place: 'Region', time: 1735776000000, url: 'https://u' }, geometry: { coordinates: [30, 40] } },
+  ] } }) });
+  ok('USGS maps magnitude to critical severity', eq2[0].severity === 'critical' && eq2[0].lat === 40);
+
+  const wb = await worldbank({ fetchImpl: fakeFetch({ 'worldbank.org': [
+    { page: 1 }, [ { value: 45.2, date: '2025', countryiso3code: 'ETH', country: { id: 'ET', value: 'Ethiopia' } } ],
+  ] }) });
+  ok('World Bank maps high CPI to critical severity', wb[0].severity === 'critical' && wb[0].domain === 'market');
+}
+
+/* ============================ branding + security guards ============================ */
+function testBrandingSecurity() {
+  section('branding: AgriOS rebrand + no leakage');
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const app = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+  const combined = html + '\n' + app;
+
+  ok('title uses AgriOS lockup', /<title>AgriOS · A Nirmata Holdings Company<\/title>/.test(html));
+  ok('gate shows AgriOS wordmark', /Agri<span[^>]*>OS<\/span>/.test(html));
+  ok('lockup subline present somewhere', combined.indexOf('A Nirmata Holdings Company') !== -1);
+  ok('no visible AGRI-NEXUS product title', html.indexOf('AGRI-NEXUS · Command Center') === -1);
+  ok('gate/topbar wordmark no longer AGRI-NEXUS', html.indexOf('AGRI-<b>NEXUS</b>') === -1 && html.indexOf('AGRI-NEXUS <span') === -1);
+  ok('print brief rebranded', app.indexOf('AGRI-NEXUS COMMAND CENTER — Daily') === -1 && app.indexOf('AgriOS · A Nirmata Holdings Company — Daily') !== -1);
+
+  section('security: gate + storage + forbidden brands');
+  ok('access code is exact FuckPutin', /const PASSWORD\s*=\s*"FuckPutin"/.test(app));
+  ok('old access code fully removed', combined.indexOf('PutinSucksTinyChinaCocks') === -1);
+  ok('no localStorage', combined.indexOf('localStorage') === -1);
+  ok('no sessionStorage', combined.indexOf('sessionStorage') === -1);
+  ok('no IndexedDB', combined.indexOf('indexedDB') === -1 && combined.indexOf('IndexedDB') === -1);
+  const forbidden = ['clinixAI', 'antimatterai', 'rrg.bio', 'thingktangk', 'HumanOS'];
+  ok('no forbidden sibling brands in UI', forbidden.every((b) => combined.indexOf(b) === -1));
+
+  section('a11y: traffic-light language redundancy');
+  ok('signal bubble carries text label + aria (not colour alone)',
+    /class="signal \$\{tl\}"[\s\S]*aria-label/.test(app) && app.indexOf('sig-lbl') !== -1);
+  ok('evidence badges cover LIVE/STALE/MODELED/BUNDLED',
+    ['LIVE', 'STALE', 'MODELED', 'BUNDLED'].every((k) => app.indexOf(k) !== -1));
+  ok('accessible traffic legend present', app.indexOf("data-testid=\"traffic-legend\"") !== -1);
+}
+
 /* ============================ run ============================ */
 (async function main() {
-  console.log('AGRI-NEXUS collaboration test suite');
+  console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
     await testCrypto();
     testRbac();
@@ -544,6 +737,14 @@ function testTheaterActions() {
     testTheaterFilters();
     testSimEngine();
     testTheaterActions();
+    testSeverity();
+    testNormalize();
+    testDedupe();
+    testAggregateStatus();
+    await testRetryConcurrency();
+    await testAggregatePipeline();
+    await testRealAdapters();
+    testBrandingSecurity();
   } catch (e) {
     console.error('\nFATAL: test harness threw:', e && e.message);
     process.exit(1);

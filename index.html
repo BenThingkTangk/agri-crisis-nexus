@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-<meta name="description" content="AGRI-NEXUS COMMAND CENTER — command-grade agricultural crisis intelligence." />
-<title>AGRI-NEXUS · Command Center</title>
+<meta name="description" content="AgriOS · A Nirmata Holdings Company — command-grade agricultural crisis intelligence." />
+<title>AgriOS · A Nirmata Holdings Company</title>
 
 <!-- Fonts: General Sans (UI) + JetBrains Mono (data) -->
 <link rel="preconnect" href="https://api.fontshare.com" />
@@ -20,7 +20,7 @@
 
 <style>
 /* ============================================================
-   AGRI-NEXUS COMMAND CENTER — single deterministic stylesheet
+   AgriOS · A Nirmata Holdings Company — single deterministic stylesheet
    ============================================================ */
 :root{
   --bg:#0c0e11;
@@ -454,6 +454,43 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .src-health .sh-chip.down .d{background:var(--sev-critical);}
 .src-health .sh-chip.bundled .d{background:var(--cyan);}
 
+/* ============ TRAFFIC-LIGHT SIGNAL LANGUAGE (PhysioPS) ============ */
+/* Compact circular signal bubble + icon/label redundancy — never colour alone. */
+.signal{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.07em;padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);white-space:nowrap;}
+.signal .bub{width:9px;height:9px;border-radius:50%;flex:0 0 auto;box-shadow:0 0 0 3px rgba(255,255,255,.03);}
+.signal .sig-x{color:var(--muted);font-weight:400;}
+.signal.stable{color:#a6d7b6;border-color:rgba(91,168,111,.34);}.signal.stable .bub{background:var(--sev-stable);box-shadow:0 0 8px rgba(91,168,111,.5);}
+.signal.moderate{color:#ecd98f;border-color:rgba(217,178,58,.32);}.signal.moderate .bub{background:var(--sev-moderate);box-shadow:0 0 8px rgba(217,178,58,.45);}
+.signal.high{color:#f2c58f;border-color:rgba(232,145,60,.32);}.signal.high .bub{background:var(--sev-high);}
+.signal.critical{color:#ffb4ad;border-color:rgba(226,72,61,.36);}.signal.critical .bub{background:var(--sev-critical);box-shadow:0 0 8px rgba(226,72,61,.5);}
+.signal.cyan{color:var(--cyan);border-color:rgba(95,179,196,.34);}.signal.cyan .bub{background:var(--cyan);box-shadow:0 0 8px rgba(95,179,196,.45);}
+.signal.neutral{color:var(--text-dim);border-color:var(--border);}.signal.neutral .bub{background:var(--sev-neutral);}
+/* Evidence badges: LIVE / STALE / MODELED / BUNDLED */
+.ev-badge{font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:.08em;padding:2px 7px;border-radius:4px;border:1px solid var(--border);white-space:nowrap;}
+.ev-badge.stable{color:#a6d7b6;border-color:rgba(91,168,111,.34);background:rgba(91,168,111,.08);}
+.ev-badge.moderate{color:#ecd98f;border-color:rgba(217,178,58,.32);background:rgba(217,178,58,.08);}
+.ev-badge.cyan{color:var(--cyan);border-color:rgba(95,179,196,.34);background:rgba(95,179,196,.08);}
+.ev-badge.neutral{color:var(--text-dim);border-color:var(--border);background:rgba(125,135,148,.08);}
+/* Legend */
+.tl-legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);}
+.tl-leg{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);}
+.tl-leg .bub{width:8px;height:8px;border-radius:50%;flex:0 0 auto;}
+.tl-leg b{font-size:9.5px;letter-spacing:.08em;}
+.tl-leg.stable .bub{background:var(--sev-stable);}.tl-leg.stable b{color:#a6d7b6;}
+.tl-leg.moderate .bub{background:var(--sev-moderate);}.tl-leg.moderate b{color:#ecd98f;}
+.tl-leg.critical .bub{background:var(--sev-critical);}.tl-leg.critical b{color:#ffb4ad;}
+.tl-leg.cyan .bub{background:var(--cyan);}.tl-leg.cyan b{color:var(--cyan);}
+/* Per-source health rail */
+.sh-list{display:flex;flex-direction:column;gap:7px;}
+.sh-row{display:grid;grid-template-columns:minmax(120px,1.4fr) auto minmax(80px,1fr) auto;align-items:center;gap:10px;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);}
+.sh-row .sh-name{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.sh-row .sh-dom{font-size:9px;color:var(--faint);letter-spacing:.1em;text-transform:uppercase;}
+.sh-row .sh-nm{font-size:13px;color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;}
+.sh-row .sh-meta{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sh-row .prov-link{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:10px;color:var(--cyan);text-decoration:none;}
+.sh-row .prov-link:hover{text-decoration:underline;}
+@media(max-width:640px){.sh-row{grid-template-columns:1fr auto;}.sh-row .sh-meta{display:none;}}
+
 /* Count-up numerals */
 .kpi .val[data-countup]{font-variant-numeric:tabular-nums;}
 
@@ -862,8 +899,8 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
         <path d="M22 15 V22" stroke="#e2483d" stroke-width="2.6" stroke-linecap="round"/>
       </svg>
       <div>
-        <h1>AGRI-NEXUS <span style="color:var(--red)">COMMAND</span></h1>
-        <div class="sub">Crisis Intelligence Platform</div>
+        <h1>Agri<span style="color:var(--red)">OS</span></h1>
+        <div class="sub">A Nirmata Holdings Company · Crisis Intelligence Platform</div>
       </div>
     </div>
     <div class="gate-title"><span class="lock">◆</span> Restricted access — credential required</div>
@@ -892,8 +929,8 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
         <path d="M22 15 V22" stroke="#e2483d" stroke-width="3" stroke-linecap="round"/>
       </svg>
       <div>
-        <div class="name">AGRI-<b>NEXUS</b></div>
-        <div class="div">Command Center</div>
+        <div class="name">Agri<b>OS</b></div>
+        <div class="div">A Nirmata Holdings Company</div>
       </div>
     </div>
     <nav id="modes" aria-label="Primary modes"></nav>

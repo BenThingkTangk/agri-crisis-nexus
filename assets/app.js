@@ -1,11 +1,11 @@
 /* ============================================================
-   AGRI-NEXUS COMMAND CENTER — application controller
+   AgriOS · A Nirmata Holdings Company — application controller
    Deterministic: modes render on first activation, single scroll.
    ============================================================ */
 (function(){
 'use strict';
 const D = window.AGRI;
-const PASSWORD = "PutinSucksTinyChinaCocks"; // JS variable only — never persisted
+const PASSWORD = "FuckPutin"; // JS variable only — never persisted
 const $ = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
 const el = (tag,cls,html)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(html!=null)e.innerHTML=html;return e;};
@@ -54,6 +54,7 @@ function boot(){
   buildCmdk();
   activateMode(bootStartMode());
   startLive();
+  startIntel();
   refreshIcons();
   if(window.AGRI_COLLAB) window.AGRI_COLLAB.init();
 }
@@ -184,6 +185,128 @@ function relTime(iso){
   if(s<86400) return Math.round(s/3600)+'h ago';
   return Math.round(s/86400)+'d ago';
 }
+
+/* ================= LIVE INTEL LAYER (fused /api/intel) =================
+   Consumes the unified server-side aggregate and drives the Data-suite
+   source-health rail. Distinguishes LIVE / STALE / MODELED / BUNDLED and
+   always degrades to bundled intelligence — never throws to the UI. */
+let intelData={status:'connecting',events:[],sources:[],summary:null,asOf:null,bundled:true};
+let intelTimer=null;
+// Map a source-health status to a traffic-light token (never colour alone).
+function trafficFor(status){
+  if(status==='ok') return {tl:'stable', label:'LIVE', icon:'check-circle-2'};
+  if(status==='stale') return {tl:'moderate', label:'STALE', icon:'clock'};
+  if(status==='disabled') return {tl:'neutral', label:'STANDBY', icon:'minus-circle'};
+  if(status==='down') return {tl:'critical', label:'DOWN', icon:'alert-circle'};
+  return {tl:'neutral', label:'—', icon:'circle'};
+}
+// Compact circular signal bubble with icon + text redundancy (a11y-safe).
+function signalBubble(tl,label,extra){
+  const title=label+(extra?(' · '+extra):'');
+  return `<span class="signal ${tl}" role="img" aria-label="${esc(title)}" title="${esc(title)}"><span class="bub"></span><span class="sig-lbl mono">${esc(label)}</span>${extra?`<span class="sig-x mono">${esc(extra)}</span>`:''}</span>`;
+}
+function evidenceBadge(kind){
+  const map={LIVE:'stable',STALE:'moderate',MODELED:'cyan',BUNDLED:'neutral'};
+  return `<span class="ev-badge ev-${kind.toLowerCase()} ${map[kind]||'neutral'}" aria-label="Evidence: ${kind}">${esc(kind)}</span>`;
+}
+// Static, accessible legend for the traffic-light language.
+function trafficLegend(){
+  const items=[
+    ['stable','GREEN','Nominal · live · ready'],
+    ['moderate','AMBER','Watch · stale · degraded'],
+    ['critical','RED','Critical · down · stand-down'],
+    ['cyan','CYAN','Modeled · informational'],
+  ];
+  return `<div class="tl-legend" data-testid="traffic-legend" role="group" aria-label="Signal legend">
+    ${items.map(([tl,k,d])=>`<span class="tl-leg ${tl}"><span class="bub"></span><b class="mono">${k}</b> ${esc(d)}</span>`).join('')}
+  </div>`;
+}
+async function pollIntel(){
+  try{
+    const ctrl=new AbortController();
+    const to=setTimeout(()=>ctrl.abort(),12000);
+    const res=await fetch('/api/intel',{signal:ctrl.signal});
+    clearTimeout(to);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    intelData.status=data.status||'degraded';
+    intelData.events=Array.isArray(data.events)?data.events:[];
+    intelData.sources=Array.isArray(data.sources)?data.sources:[];
+    intelData.summary=data.summary||null;
+    intelData.asOf=data.asOf||new Date().toISOString();
+    intelData.bundled=!(data.summary&&data.summary.total>0);
+  }catch(err){
+    intelData.status='degraded';
+    intelData.events=[];
+    intelData.summary=null;
+    intelData.bundled=true;
+    intelData.asOf=new Date().toISOString();
+  }
+  paintIntel();
+}
+function startIntel(){ paintIntel(); pollIntel(); intelTimer=setInterval(pollIntel,120000); }
+function paintIntel(){ if(rendered.resources && currentResTab==='feeds') drawSourceHealth(); }
+function intelLabel(){
+  const s=intelData.status;
+  return s==='live'?'LIVE':s==='partial'?'PARTIAL':s==='stale'?'STALE':s==='connecting'?'SYNCING':'DEGRADED · BUNDLED INTEL';
+}
+// Render the source-health rail + fused events for the Data → Live Feeds tab.
+function drawSourceHealth(){
+  const host=$('#res-feeds'); if(!host) return;
+  const sm=intelData.summary;
+  const st=intelData.status;
+  const pillTl=st==='live'?'stable':st==='partial'?'moderate':st==='stale'?'moderate':st==='connecting'?'neutral':'critical';
+  const sources=intelData.sources.length?intelData.sources:Object.keys(SEED_SOURCES).map(k=>SEED_SOURCES[k]);
+  const rows=sources.map(s=>{
+    const t=trafficFor(s.status||'connecting');
+    const prov=s.homepage?`<a href="${esc(s.homepage)}" target="_blank" rel="noopener" class="prov-link">${icon('external-link','ic')} source</a>`:'';
+    const cnt=(s.count!=null)?`${s.count}`:'—';
+    return `<div class="sh-row" data-testid="source-row">
+      <div class="sh-name"><span class="sh-dom mono">${esc(s.domain||'')}</span><span class="sh-nm">${esc(s.name||s.id)}</span></div>
+      ${signalBubble(t.tl,t.label,cnt+' evt')}
+      <div class="sh-meta mono">${esc((s.license||'').slice(0,28))}</div>
+      <div class="sh-act">${prov}</div>
+    </div>`;
+  }).join('');
+  const observed=sm?sm.observed:0, modeled=sm?sm.modeled:0;
+  const stats=sm?`<span class="chip">${sm.total} events</span><span class="chip">${observed} observed</span><span class="chip">${modeled} modeled</span><span class="chip">${sm.sourcesOk}/${sm.sourcesTotal} sources live</span>`:'<span class="chip">bundled intelligence</span>';
+  const evList=intelData.events.slice(0,10).map(e=>{
+    const kind=e.evidence==='modeled'?'MODELED':(st==='stale'?'STALE':'LIVE');
+    const tl=e.severity==='critical'?'critical':e.severity==='high'?'moderate':e.severity==='stable'?'stable':'moderate';
+    const url=e.sourceUrl||(e.provenance&&e.provenance.sourceUrl)||'';
+    return `<div class="row-item" ${url?`data-url="${esc(url)}"`:''} role="button" tabindex="0">
+      <span class="ti-sev" style="width:9px;height:9px;border-radius:50%;background:var(--sev-${tl});flex:0 0 auto"></span>
+      <div class="ri-main"><div class="t" style="white-space:normal">${esc(e.title)}</div><div class="s">${esc(e.source||'')} · ${esc(e.geography||'')} · ${relTime(e.observedAt)}</div></div>
+      <div class="ri-end">${evidenceBadge(kind)}</div>
+    </div>`;
+  }).join('');
+  host.innerHTML=`
+    <div class="section-title"><h3>${icon('activity')} Live source health</h3><span class="meta">unified public-feed aggregate · /api/intel</span></div>
+    <div class="panel">
+      <div class="panel-h"><h4>${icon('radio')} Aggregate status</h4>
+        ${signalBubble(pillTl,intelLabel(),intelData.asOf?relTime(intelData.asOf):'')}</div>
+      <div class="cf" style="margin:10px 0 4px">${stats}</div>
+      ${trafficLegend()}
+    </div>
+    <div class="section"><div class="section-title"><h3>${icon('server')} Per-source status</h3><span class="meta">green live · amber stale · red down · cyan modeled</span></div>
+      <div class="sh-list" data-testid="source-health-list">${rows}</div>
+    </div>
+    <div class="section"><div class="section-title"><h3>${icon('rss')} Fused live events</h3></div>
+      ${evList?`<div class="rows">${evList}</div>`:`<p class="muted" style="margin:0;font-size:13px">Live feeds unavailable — bundled intelligence remains fully operational. ${D.INTEL_CARDS.length} curated items available under Intel.</p>`}
+    </div>`;
+  $$('#res-feeds .row-item[data-url]').forEach(node=>{
+    const url=node.dataset.url; const go=()=>{ if(url) window.open(url,'_blank','noopener'); };
+    node.addEventListener('click',go); node.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+  });
+  refreshIcons();
+}
+// Fallback seed used before the first /api/intel response resolves.
+const SEED_SOURCES={
+  gdacs:{id:'gdacs',name:'GDACS',domain:'hazard',status:'connecting',count:null,homepage:'https://www.gdacs.org'},
+  usgs:{id:'usgs',name:'USGS',domain:'hazard',status:'connecting',count:null,homepage:'https://earthquake.usgs.gov'},
+  eonet:{id:'eonet',name:'NASA EONET',domain:'hazard',status:'connecting',count:null,homepage:'https://eonet.gsfc.nasa.gov'},
+  worldbank:{id:'worldbank',name:'World Bank',domain:'market',status:'connecting',count:null,homepage:'https://data.worldbank.org'},
+};
 
 /* ================= COMMAND PALETTE ================= */
 let cmdkItems=[], cmdkFiltered=[], cmdkActive=0;
@@ -1050,6 +1173,7 @@ function resolveSim(){
 
 /* ================= RESOURCES / DATA ================= */
 const RES_TABS=[
+  {id:'feeds',label:'Live Feeds'},
   {id:'markets',label:'Markets & Supply'},
   {id:'water',label:'Climate & Water'},
   {id:'soil',label:'Soil / Fulvic-Humic'},
@@ -1074,10 +1198,10 @@ function renderResources(p){
     currentResTab=b.dataset.t;
     $$('#resTabs .subtab').forEach(x=>x.classList.toggle('active',x===b));
     $$('.subpanel').forEach(x=>x.classList.toggle('active',x.id==='res-'+currentResTab));
-    drawResourceCharts(currentResTab);
+    if(currentResTab==='feeds') drawSourceHealth(); else drawResourceCharts(currentResTab);
   }));
   // build all sub-panels (static content is cheap; charts drawn lazily)
-  buildResMarkets(); buildResWater(); buildResSoil(); buildResAI();
+  drawSourceHealth(); buildResMarkets(); buildResWater(); buildResSoil(); buildResAI();
   buildResChain(); buildResBiotech(); buildResIndustry(); buildResCountries();
   $('#res-'+currentResTab).classList.add('active');
   refreshIcons();
@@ -1366,6 +1490,11 @@ window.AGRI_APP = {
   },
   // War Room threat/pillar catalogs for the New-mission composer + labels
   pillars: (window.AGRI && window.AGRI.PILLARS) ? window.AGRI.PILLARS.map(p=>p.name) : [],
+  // Live fused-intel snapshot for the Theater/GenUI consumers (read-only copy).
+  getIntel: ()=> ({ status:intelData.status, asOf:intelData.asOf, bundled:intelData.bundled,
+    summary:intelData.summary, sources:intelData.sources.slice(), events:intelData.events.slice() }),
+  refreshIntel: ()=> pollIntel(),
+  trafficFor, evidenceBadge, signalBubble, trafficLegend,
 };
 
 /* ================= EXPORTS ================= */
@@ -1385,12 +1514,12 @@ function printBrief(){
   const crit=D.INTEL_CARDS.filter(c=>c.tl==='critical').slice(0,6);
   const markets=D.INTEL_CARDS.filter(c=>c.cat==='MARKET SIGNAL').slice(0,5);
   const w=window.open('','_blank'); if(!w){alert('Enable pop-ups to print the briefing.');return;}
-  w.document.write(`<html><head><title>AGRI-NEXUS Daily Brief ${D.AS_OF}</title>
+  w.document.write(`<html><head><title>AgriOS Daily Brief ${D.AS_OF}</title>
     <style>body{font-family:Georgia,serif;max-width:720px;margin:32px auto;color:#111;line-height:1.55;padding:0 20px}
     h1{font-size:22px;border-bottom:3px solid #e2483d;padding-bottom:8px}h2{font-size:14px;color:#e2483d;margin-top:22px;text-transform:uppercase;letter-spacing:.05em}
     .kpis{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}.kpi{border:1px solid #ccc;border-radius:6px;padding:8px 12px;font-size:13px}.kpi b{font-size:18px;display:block}
     li{margin:5px 0;font-size:13px}small{color:#666}</style></head><body>
-    <h1>AGRI-NEXUS COMMAND CENTER — Daily Intelligence Brief</h1>
+    <h1>AgriOS · A Nirmata Holdings Company — Daily Intelligence Brief</h1>
     <small>As of ${D.AS_OF} · Nirmata Holdings · Strategic Operations · Sources: FAO, FEWS NET, ACLED, WFP, USDA WASDE, NOAA, World Bank</small>
     <div class="kpis">${D.KPIS.map(k=>`<div class="kpi"><b>${k.val}</b>${k.lbl}<br><small>${k.src}</small></div>`).join('')}</div>
     <h2>Situation</h2><p>Five countries sit in confirmed famine (IPC-5). The FAO Food Price Index is 148.2 (+4.7% MoM); wheat stocks-to-use is at an 8-year low of 26.4%; fertilizer is up 35% since the Hormuz incident.</p>
