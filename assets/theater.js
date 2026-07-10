@@ -14,7 +14,7 @@
 (function () {
   'use strict';
   var A = window.AGRI_APP, D = window.THEATER_DATA, F = window.THEATER_FILTERS,
-      ACT = window.THEATER_ACTIONS, SIM = window.SIM_ENGINE;
+      ACT = window.THEATER_ACTIONS, SIM = window.SIM_ENGINE, GB = window.THEATER_GLOBE;
   if (!A || !D || !F || !SIM) return; // base app must be present
 
   var esc = A.esc, icon = A.icon;
@@ -34,6 +34,9 @@
 
   var canvas, ctx, W = 0, H = 0, DPR = 1, raf = null, animTo = null, dragging = false, lastPt = null, hoverNode = null;
   var simTimer = null, listeners = [], mounted = false;
+  // Globe upgrade: renderer selection, idle auto-rotation, telemetry, starfield.
+  var renderer = 'canvas2d', autoRotate = false, lastFrameTs = 0, stars = null, starW = 0, starH = 0;
+  var lastActivity = 0; // ms of last user interaction — auto-rotate resumes after a short idle
 
   function on(el, ev, fn, opt) { if (!el) return; el.addEventListener(ev, fn, opt); listeners.push([el, ev, fn, opt]); }
   function offAll() { listeners.forEach(function (l) { try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} }); listeners = []; }
@@ -59,21 +62,82 @@
 
   /* ================= draw ================= */
   function clear() { ctx.clearRect(0, 0, W, H); }
+
+  // Framed near-black starfield behind the globe. Deterministic (seeded) so it
+  // never shimmers between resizes; a gentle twinkle plays only when motion is OK.
+  function drawStarfield() {
+    ctx.fillStyle = '#05070a';
+    ctx.fillRect(0, 0, W, H);
+    if (GB && (!stars || starW !== W || starH !== H)) {
+      var count = Math.max(40, Math.min(220, Math.round(W * H / 5200)));
+      stars = GB.starfield(1337, count, W, H); starW = W; starH = H;
+    }
+    if (!stars) return;
+    var tw = REDUCED ? 0 : Date.now() / 900;
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var a = REDUCED ? s.a : s.a * (0.6 + 0.4 * (0.5 + 0.5 * Math.sin(tw + s.tw)));
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(200,224,232,' + a.toFixed(3) + ')'; ctx.fill();
+    }
+  }
+
+  // Deterministic value-noise proxy for land vs ocean — no external texture,
+  // license-safe, rotates with the sphere. Returns 0..~1.
+  function landNoise(lat, lng) {
+    var x = Math.sin(lat * 0.55 + lng * 0.42) * 43758.5453;
+    var y = Math.sin(lat * 1.30 - lng * 0.27 + 2.1) * 12543.987;
+    var z = Math.sin((lat + lng) * 0.21 + 1.7) * 9871.23;
+    return ((x - Math.floor(x)) * 0.5 + (y - Math.floor(y)) * 0.32 + (z - Math.floor(z)) * 0.18);
+  }
+
   function drawGlobe() {
     var R = radius(), cx = W / 2, cy = H / 2;
+    drawStarfield();
     if (st.view === '3d') {
-      var g = ctx.createRadialGradient(cx - R * 0.3, cy - R * 0.3, R * 0.1, cx, cy, R);
-      g.addColorStop(0, '#16202a'); g.addColorStop(1, '#0b0f13');
+      // Atmospheric navy/cyan rim glow just outside the disc.
+      var halo = ctx.createRadialGradient(cx, cy, R * 0.92, cx, cy, R * 1.28);
+      halo.addColorStop(0, 'rgba(95,179,196,0.28)');
+      halo.addColorStop(0.5, 'rgba(46,86,120,0.16)');
+      halo.addColorStop(1, 'rgba(46,86,120,0)');
+      ctx.beginPath(); ctx.arc(cx, cy, R * 1.28, 0, Math.PI * 2); ctx.fillStyle = halo; ctx.fill();
+      // Dark ocean sphere with day-side lift toward upper-left.
+      var g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.08, cx, cy, R);
+      g.addColorStop(0, '#16303f'); g.addColorStop(0.55, '#0f1c26'); g.addColorStop(1, '#080d12');
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
-      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(95,179,196,0.10)';
+      // Clip to the disc, paint procedural land speckle, then graticule.
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+      drawLand(R);
+      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(95,179,196,0.12)';
       for (var la = -60; la <= 60; la += 30) drawParallel(la);
       for (var lo = -180; lo < 180; lo += 30) drawMeridian(lo);
-      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(95,179,196,0.35)'; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.restore();
+      // Terminator shading — subtle darkening away from the light.
+      var term = ctx.createRadialGradient(cx - R * 0.3, cy - R * 0.3, R * 0.2, cx + R * 0.25, cy + R * 0.3, R * 1.15);
+      term.addColorStop(0, 'rgba(0,0,0,0)'); term.addColorStop(1, 'rgba(0,0,0,0.45)');
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = term; ctx.fill();
+      // Crisp cyan rim.
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(95,179,196,0.45)'; ctx.lineWidth = 1.3; ctx.stroke();
     } else {
       ctx.fillStyle = '#0b0f13'; ctx.fillRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
       ctx.strokeStyle = 'rgba(95,179,196,0.10)'; ctx.lineWidth = 1;
       for (var la2 = -60; la2 <= 60; la2 += 30) { var p = project(la2, st.rotLng); ctx.beginPath(); ctx.moveTo(cx - R, p.y); ctx.lineTo(cx + R, p.y); ctx.stroke(); }
       ctx.strokeStyle = 'rgba(95,179,196,0.25)'; ctx.strokeRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
+    }
+  }
+
+  // Procedural dark-emerald landmass speckle sampled over a lat/lng grid and
+  // projected onto the front hemisphere. Deterministic; bounded fan-out.
+  function drawLand(R) {
+    var step = R > 200 ? 5 : 7, rad = step * 0.9;
+    ctx.fillStyle = 'rgba(58,110,84,0.34)';
+    for (var lat = -84; lat <= 84; lat += step) {
+      for (var lng = -180; lng < 180; lng += step) {
+        if (landNoise(lat, lng) < 0.62) continue;
+        var p = project(lat, lng); if (!p.front) continue;
+        ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, Math.PI * 2); ctx.fill();
+      }
     }
   }
   function drawParallel(lat) {
@@ -89,23 +153,40 @@
 
   function activeSet() { return F.applyFilters(D.NODES, D.ROUTES, st.filter); }
 
+  var SEV_T = { critical: 1, high: 0.72, moderate: 0.4, stable: 0.12 };
   function drawRoutes(routes) {
     var t = Date.now() / 1000;
+    var endpoints = [];
     routes.forEach(function (rt) {
       var fn = D.nodeById(rt.from), tn = D.nodeById(rt.to);
       if (!fn || !tn) return;
       var a = project(fn.lat, fn.lng), b = project(tn.lat, tn.lng);
       if (!a.front && !b.front) return;
-      var midx = (a.x + b.x) / 2, midy = (a.y + b.y) / 2 - Math.hypot(b.x - a.x, b.y - a.y) * 0.18;
+      var dist = Math.hypot(b.x - a.x, b.y - a.y);
+      var midx = (a.x + b.x) / 2, midy = (a.y + b.y) / 2 - dist * 0.18;
       var com = (D.COMMODITIES.filter(function (c) { return c.id === rt.commodity; })[0]) || { color: '#5fb3c4' };
+      var depthT = SEV_T[rt.severity] != null ? SEV_T[rt.severity] : 0.4;
+      var glow = GB ? GB.arcColor(depthT) : '#5fb3c4';
+      // Luminous cyan->emerald depth glow underneath the commodity-coloured arc.
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(midx, midy, b.x, b.y);
-      ctx.strokeStyle = com.color; ctx.globalAlpha = 0.5; ctx.lineWidth = 1 + rt.weight / 12; ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = glow; ctx.globalAlpha = 0.16 + depthT * 0.22; ctx.lineWidth = 3.4 + rt.weight / 8; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(midx, midy, b.x, b.y);
+      ctx.strokeStyle = com.color; ctx.globalAlpha = 0.55; ctx.lineWidth = 1 + rt.weight / 12; ctx.stroke(); ctx.globalAlpha = 1;
       // directional particle (only when meaningful: higher severity/weight), respect reduced motion
       if (!REDUCED && (rt.severity === 'critical' || rt.severity === 'high')) {
         var f = (t * 0.25 + rt.weight * 0.05) % 1;
         var qx = qbez(a.x, midx, b.x, f), qy = qbez(a.y, midy, b.y, f);
-        ctx.beginPath(); ctx.arc(qx, qy, 2.2, 0, Math.PI * 2); ctx.fillStyle = com.color; ctx.fill();
+        ctx.beginPath(); ctx.arc(qx, qy, 2.4, 0, Math.PI * 2); ctx.fillStyle = glow; ctx.fill();
       }
+      if (a.front) endpoints.push({ x: a.x, y: a.y, t: depthT });
+      if (b.front) endpoints.push({ x: b.x, y: b.y, t: depthT });
+    });
+    // Pulsing endpoint rings — hubs breathe when motion is allowed.
+    var pulse = REDUCED ? 0 : (Math.sin(Date.now() / 500) + 1) / 2;
+    endpoints.forEach(function (e) {
+      var col = GB ? GB.arcColor(e.t) : '#5fb3c4';
+      ctx.beginPath(); ctx.arc(e.x, e.y, 3 + pulse * (2 + e.t * 4), 0, Math.PI * 2);
+      ctx.strokeStyle = col; ctx.globalAlpha = 0.18 + e.t * 0.22; ctx.lineWidth = 1.1; ctx.stroke(); ctx.globalAlpha = 1;
     });
   }
   function qbez(p0, p1, p2, t) { var u = 1 - t; return u * u * p0 + 2 * u * t * p1 + t * t * p2; }
@@ -129,6 +210,10 @@
     clusters.forEach(function (c) {
       var n = c.items.length, r = n > 1 ? Math.min(22, 8 + n * 2) : nodeRadius(c.items[0]);
       var col = SEVC[c.sev] || '#7d8794';
+      // Soft signal glow beneath every marker — a city/agri light on the surface.
+      var gr = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r + 9);
+      gr.addColorStop(0, col); gr.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalAlpha = 0.28; ctx.beginPath(); ctx.arc(c.x, c.y, r + 9, 0, Math.PI * 2); ctx.fillStyle = gr; ctx.fill(); ctx.globalAlpha = 1;
       if (c.sev === 'critical' && !REDUCED && n === 1) {
         var pulse = (Math.sin(Date.now() / 400) + 1) / 2;
         ctx.beginPath(); ctx.arc(c.x, c.y, r + 4 + pulse * 6, 0, Math.PI * 2); ctx.strokeStyle = col; ctx.globalAlpha = 0.25; ctx.stroke(); ctx.globalAlpha = 1;
@@ -154,14 +239,44 @@
     if (!st.filter.layers.length || st.filter.layers.indexOf('routes') !== -1) drawRoutes(set.routes);
     drawNodes(set.nodes);
     updateSrStatus(set);
+    updateTelemetry(set);
+  }
+
+  // Corner telemetry HUD — operational readout, refreshed each frame.
+  function updateTelemetry(set) {
+    var host = $('#theaterTelemetry'); if (!host || !GB) return;
+    var intel = (A.getIntel && A.getIntel()) || null;
+    var live = 0, total = 0, updatedMs = null;
+    if (intel) {
+      var srcs = intel.sources || []; total = srcs.length;
+      live = srcs.filter(function (s) { return s && (s.status === 'ok' || s.status === 'live'); }).length;
+      if (intel.asOf) { var d = Date.parse(intel.asOf); if (!isNaN(d)) updatedMs = d; }
+    }
+    var rows = GB.buildTelemetry({
+      region: st.filter.region ? st.filter.region : 'Global',
+      sourcesLive: live, sourcesTotal: total,
+      routes: set.routes.length, events: set.nodes.length,
+      updatedMs: updatedMs, nowMs: Date.now(),
+      updatedText: updatedMs == null ? (intel && intel.bundled ? 'bundled' : '—') : null,
+    });
+    host.innerHTML = rows.map(function (r) {
+      return '<div class="tm-row" data-testid="tm-' + r.label.toLowerCase().replace(/\s+/g, '-') + '">' +
+        '<span class="tm-k">' + esc(r.label) + '</span><span class="tm-v">' + esc(r.value) + '</span></div>';
+    }).join('');
   }
 
   /* ================= animation loop ================= */
-  function needsRaf() { return (!REDUCED) && (animTo || st.playing || anyLiveMotion()); }
+  function needsRaf() { return (!REDUCED) && (autoRotate || animTo || st.playing || anyLiveMotion()); }
   function anyLiveMotion() { var s = activeSet(); return s.nodes.some(function (n) { return n.severity === 'critical'; }) || s.routes.some(function (r) { return r.severity === 'critical' || r.severity === 'high'; }); }
-  function loop() {
+  function markActivity() { lastActivity = Date.now(); }
+  function loop(ts) {
     raf = null;
+    var now = ts || (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+    var dt = lastFrameTs ? now - lastFrameTs : 16; lastFrameTs = now;
     if (animTo) stepFlyTo();
+    else if (autoRotate && !dragging && st.view === '3d' && (Date.now() - lastActivity) > 2200) {
+      st.rotLng += GB ? GB.autoRotateStep(REDUCED, dt) : 0;
+    }
     drawScene();
     if (needsRaf() && mounted) raf = requestAnimationFrame(loop);
   }
@@ -317,12 +432,12 @@
 
   /* ================= interactions ================= */
   function bindCanvas() {
-    on(canvas, 'pointerdown', function (e) { dragging = true; lastPt = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+    on(canvas, 'pointerdown', function (e) { dragging = true; markActivity(); lastPt = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
     on(canvas, 'pointermove', function (e) {
       var rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top;
       if (dragging && lastPt) {
         var dx = e.clientX - lastPt.x, dy = e.clientY - lastPt.y; lastPt = { x: e.clientX, y: e.clientY };
-        st.rotLng -= dx * 0.35 / st.zoom; st.rotLat = Math.max(-85, Math.min(85, st.rotLat + dy * 0.35 / st.zoom)); animTo = null; kick();
+        markActivity(); st.rotLng -= dx * 0.35 / st.zoom; st.rotLat = Math.max(-85, Math.min(85, st.rotLat + dy * 0.35 / st.zoom)); animTo = null; kick();
       } else {
         var c = pick(px, py); var hn = c ? c.items[0] : null;
         if (hn !== hoverNode) { hoverNode = hn; canvas.style.cursor = hn ? 'pointer' : 'grab'; showTooltip(c, px, py); kick(); }
@@ -337,11 +452,11 @@
       if (c.items.length === 1) openNode(c.items[0]);
       else { flyTo(c.items[0].lat, c.items[0].lng, Math.min(3, st.zoom + 0.8)); }
     });
-    on(canvas, 'wheel', function (e) { e.preventDefault(); var dir = e.deltaY > 0 ? -1 : 1; zoomBy(dir * 0.15); }, { passive: false });
+    on(canvas, 'wheel', function (e) { e.preventDefault(); markActivity(); var dir = e.deltaY > 0 ? -1 : 1; zoomBy(dir * 0.15); }, { passive: false });
     // keyboard
     canvas.setAttribute('tabindex', '0');
     on(canvas, 'keydown', function (e) {
-      var k = e.key;
+      var k = e.key; markActivity();
       if (k === 'ArrowLeft') { st.rotLng -= 8; kick(); e.preventDefault(); }
       else if (k === 'ArrowRight') { st.rotLng += 8; kick(); e.preventDefault(); }
       else if (k === 'ArrowUp') { st.rotLat = Math.min(85, st.rotLat + 6); kick(); e.preventDefault(); }
@@ -442,11 +557,20 @@
       '<button class="mtool" id="thZoomOut" aria-label="Zoom out" data-testid="th-zoom-out">−</button>' +
       '<button class="mtool" id="thHome" aria-label="Reset view" data-testid="th-home">⌂</button>' +
       '<button class="mtool" id="thToggle" aria-label="Toggle 2D/3D" data-testid="th-toggle">2D</button>' +
+      '<button class="mtool' + (autoRotate ? ' on' : '') + '" id="thRotate" aria-label="Toggle auto-rotation" aria-pressed="' + (autoRotate ? 'true' : 'false') + '" data-testid="th-rotate">⟳</button>' +
       '<button class="mtool" id="thCompass" aria-label="Reset north" data-testid="th-compass">✛</button>';
-    on($('#thZoomIn', host), 'click', function () { zoomBy(0.3); });
-    on($('#thZoomOut', host), 'click', function () { zoomBy(-0.3); });
-    on($('#thHome', host), 'click', resetView);
-    on($('#thCompass', host), 'click', function () { st.rotLat = 12; kick(); });
+    on($('#thZoomIn', host), 'click', function () { markActivity(); zoomBy(0.3); });
+    on($('#thZoomOut', host), 'click', function () { markActivity(); zoomBy(-0.3); });
+    on($('#thHome', host), 'click', function () { markActivity(); resetView(); });
+    on($('#thCompass', host), 'click', function () { markActivity(); st.rotLat = 12; kick(); });
+    var rb = $('#thRotate', host);
+    if (REDUCED && rb) { rb.disabled = true; rb.title = 'Auto-rotation off (reduced motion)'; }
+    on(rb, 'click', function () {
+      if (REDUCED) return; // reduced-motion never auto-rotates
+      autoRotate = !autoRotate; rb.classList.toggle('on', autoRotate);
+      rb.setAttribute('aria-pressed', autoRotate ? 'true' : 'false');
+      markActivity(); kick();
+    });
     on($('#thToggle', host), 'click', function () { st.view = st.view === '3d' ? '2d' : '3d'; $('#thToggle').textContent = st.view === '3d' ? '2D' : '3D'; kick(); syncUrl(); });
   }
 
@@ -626,7 +750,18 @@
   /* ================= mount / render ================= */
   function render(panel) {
     mounted = true;
-    var canDraw = !!document.createElement('canvas').getContext;
+    // Progressive-enhancement renderer selection with a guaranteed fallback.
+    // We probe for a raw WebGL context (informational), but ship no bundled
+    // WebGL/Three.js renderer or CDN texture, so the robust enhanced canvas-2D
+    // globe is the reliable path and the data table is the ultimate fallback.
+    var canvas2d = !!document.createElement('canvas').getContext;
+    var webglRaw = GB ? GB.detectWebGLContext(function () { return document.createElement('canvas'); }) : false;
+    var caps = { canvas2d: canvas2d, webgl: false, webglRaw: webglRaw, reducedMotion: REDUCED };
+    var rsel = GB ? GB.selectRenderer(caps)
+      : { renderer: canvas2d ? 'canvas2d' : 'table', autoRotate: !REDUCED && canvas2d,
+          degraded: !canvas2d, status: canvas2d ? 'Enhanced canvas globe active.' : 'Canvas unavailable — showing data table.' };
+    renderer = rsel.renderer; autoRotate = rsel.autoRotate; lastActivity = 0;
+    var canDraw = renderer !== 'table';
     panel.innerHTML =
       '<div class="mode-head"><div class="eyebrow">Global Agricultural Intelligence Theater</div>' +
       '<h2>Food-trade <em>chokepoints</em>, routes &amp; exposure</h2>' +
@@ -635,6 +770,8 @@
       '<div class="th-searchwrap" id="theaterSearchWrap"></div>' +
       (canDraw ?
         '<div class="th-stage"><div class="th-canvas-wrap"><canvas id="theaterCanvas" role="application" aria-label="Interactive agricultural trade globe"></canvas>' +
+        '<div class="th-telemetry" id="theaterTelemetry" data-testid="theater-telemetry" aria-hidden="true"></div>' +
+        '<div class="th-render-status" id="theaterRenderStatus" data-testid="theater-render-status">' + esc(rsel.status) + '</div>' +
         '<div class="th-toolbar" id="theaterToolbar"></div><div class="th-tip" id="theaterTip" hidden></div></div>' +
         '<div class="th-side"><div class="th-results-h">Results</div><div class="th-results" id="theaterResults"></div></div></div>' +
         legendHtml()

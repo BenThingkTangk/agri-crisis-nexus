@@ -796,6 +796,13 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .mtool{width:36px;height:36px;min-height:36px;border-radius:8px;border:1px solid var(--border);background:rgba(12,14,17,.82);color:var(--text);font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
 .mtool:hover{border-color:var(--cyan);color:var(--cyan);}
 .mtool:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
+.mtool.on{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 0 1px var(--cyan) inset;}
+.mtool:disabled{opacity:.4;cursor:not-allowed;}
+.th-telemetry{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:2px;background:rgba(8,11,14,.72);border:1px solid rgba(95,179,196,.28);border-radius:8px;padding:8px 10px;font:600 10.5px/1.3 var(--mono);pointer-events:none;z-index:4;backdrop-filter:blur(3px);}
+.th-telemetry .tm-row{display:flex;justify-content:space-between;gap:14px;}
+.th-telemetry .tm-k{color:var(--muted);letter-spacing:.04em;text-transform:uppercase;}
+.th-telemetry .tm-v{color:var(--cyan);}
+.th-render-status{position:absolute;bottom:10px;left:10px;background:rgba(8,11,14,.72);border:1px solid rgba(95,179,196,.22);border-radius:6px;padding:4px 8px;font:600 10px/1 var(--mono);color:var(--muted);letter-spacing:.03em;z-index:4;pointer-events:none;}
 .th-tip{position:absolute;pointer-events:none;background:rgba(12,14,17,.94);border:1px solid var(--border);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--text);max-width:200px;z-index:5;}
 .th-tip .tip-s{color:var(--muted);font:500 10.5px/1.4 var(--mono);}
 .th-side{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);max-height:520px;overflow:auto;}
@@ -1004,6 +1011,7 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 <script src="assets/sim-engine.js"></script>
 <script src="assets/theater-filters.js"></script>
 <script src="assets/theater-actions.js"></script>
+<script src="assets/theater-globe.js"></script>
 <!-- ============ APP ============ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
   integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>

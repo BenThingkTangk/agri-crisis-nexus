@@ -346,7 +346,7 @@ async function testCollabRace() {
 // filter/NL/URL semantics, simulation determinism/bounds, and the ATOM action
 // allowlist. These modules attach to `window` and never touch the DOM.
 function loadTheaterModules() {
-  const files = ['theater-data.js', 'sim-engine.js', 'theater-filters.js', 'theater-actions.js'];
+  const files = ['theater-data.js', 'sim-engine.js', 'theater-filters.js', 'theater-actions.js', 'theater-globe.js'];
   const win = {};
   const sandbox = { window: win, module: { exports: {} }, console };
   vm.createContext(sandbox);
@@ -536,6 +536,93 @@ function testTheaterActions() {
   try { bad = ACT.parseAtomActions('```atom-actions\n{not valid json}\n```'); } catch (e) { threw = true; }
   ok('parseAtomActions never throws on invalid JSON', !threw && bad.actions.length === 0 && bad.rejected.length === 1);
   ok('parseAtomActions no block -> empty actions', ACT.parseAtomActions('just prose, no actions').actions.length === 0);
+}
+
+/* ============================ theater globe (renderer/telemetry/motion) ======= */
+// The globe upgrade's decision logic lives in the DOM-free assets/theater-globe.js
+// so it is testable exactly like the other theater modules. We assert renderer
+// selection + guaranteed fallback, reduced-motion auto-rotation disabling,
+// telemetry labels/values, deterministic starfield, and the arc colour ramp.
+// A second block reads assets/theater.js as source to prove the DOM-side wiring
+// (renderer selection call, telemetry HUD, controls, reduced-motion gating).
+function testTheaterGlobe() {
+  section('theater: globe renderer selection + fallback');
+  const win = loadTheaterModules();
+  const GB = win.THEATER_GLOBE;
+  ok('THEATER_GLOBE published', !!GB);
+
+  const webgl = GB.selectRenderer({ canvas2d: true, webgl: true, reducedMotion: false });
+  ok('bundled WebGL available -> webgl renderer', webgl.renderer === 'webgl' && webgl.degraded === false);
+  const canvas = GB.selectRenderer({ canvas2d: true, webgl: false, reducedMotion: false });
+  ok('no bundled WebGL -> enhanced canvas-2D renderer', canvas.renderer === 'canvas2d' && canvas.degraded === false);
+  const table = GB.selectRenderer({ canvas2d: false });
+  ok('no canvas at all -> guaranteed table fallback', table.renderer === 'table' && table.degraded === true);
+  ok('every renderer selection carries a visible status', !!webgl.status && !!canvas.status && !!table.status);
+  ok('selectRenderer never throws on empty caps', (function () { try { return typeof GB.selectRenderer().renderer === 'string'; } catch (e) { return false; } })());
+
+  ok('detectWebGLContext false when factory returns non-canvas', GB.detectWebGLContext(() => ({})) === false);
+  ok('detectWebGLContext false and never throws on throwing factory',
+    GB.detectWebGLContext(() => { throw new Error('no'); }) === false);
+  ok('detectWebGLContext true when a context is obtainable',
+    GB.detectWebGLContext(() => ({ getContext: (t) => (t === 'webgl' ? {} : null) })) === true);
+
+  section('theater: reduced-motion auto-rotation disabling');
+  ok('auto-rotate enabled when motion allowed', GB.autoRotateEnabled(false) === true);
+  ok('auto-rotate disabled under reduced motion', GB.autoRotateEnabled(true) === false);
+  ok('reduced-motion selection sets autoRotate=false',
+    GB.selectRenderer({ canvas2d: true, webgl: false, reducedMotion: true }).autoRotate === false);
+  ok('reduced-motion webgl selection also sets autoRotate=false',
+    GB.selectRenderer({ canvas2d: true, webgl: true, reducedMotion: true }).autoRotate === false);
+  eq('autoRotateStep is exactly zero under reduced motion', GB.autoRotateStep(true, 16), 0);
+  ok('autoRotateStep positive when motion allowed', GB.autoRotateStep(false, 16) > 0);
+  ok('autoRotateStep scales with frame delta', GB.autoRotateStep(false, 32) > GB.autoRotateStep(false, 16));
+  ok('autoRotateStep clamps huge deltas (no runaway spin)',
+    GB.autoRotateStep(false, 100000) === GB.autoRotateStep(false, 100));
+
+  section('theater: corner telemetry labels + values');
+  eq('telemetry labels are the five operational fields',
+    GB.TELEMETRY_LABELS.join(','), 'Region,Live sources,Routes,Events,Updated');
+  const rows = GB.buildTelemetry({ region: 'Suez', sourcesLive: 7, sourcesTotal: 10, routes: 23, events: 41, updatedMs: 1000, nowMs: 6000 });
+  eq('telemetry row order matches labels',
+    rows.map((r) => r.label).join(','), GB.TELEMETRY_LABELS.join(','));
+  eq('telemetry region value', rows[0].value, 'Suez');
+  eq('telemetry live/total value', rows[1].value, '7/10');
+  eq('telemetry routes value', rows[2].value, '23');
+  eq('telemetry events value', rows[3].value, '41');
+  eq('telemetry updated renders relative age', rows[4].value, '5s ago');
+  const empty = GB.buildTelemetry({});
+  eq('telemetry defaults region to Global', empty[0].value, 'Global');
+  eq('telemetry defaults updated to em-dash', empty[4].value, '—');
+  eq('telemetry honors explicit updatedText (bundled)',
+    GB.buildTelemetry({ updatedText: 'bundled' })[4].value, 'bundled');
+  eq('formatAge minutes', GB.formatAge(120000), '2m ago');
+  eq('formatAge hours', GB.formatAge(7200000), '2h ago');
+
+  section('theater: deterministic starfield + arc colour ramp');
+  const s1 = GB.starfield(1337, 50, 800, 500);
+  const s2 = GB.starfield(1337, 50, 800, 500);
+  eq('starfield count honored', s1.length, 50);
+  ok('starfield is deterministic for a seed', JSON.stringify(s1) === JSON.stringify(s2));
+  ok('starfield differs across seeds', JSON.stringify(GB.starfield(42, 50, 800, 500)) !== JSON.stringify(s1));
+  ok('all stars within canvas bounds', s1.every((p) => p.x >= 0 && p.x <= 800 && p.y >= 0 && p.y <= 500 && p.a > 0));
+  ok('arcColor near end is cyan-ish', /^rgb\(95,179,196\)$/.test(GB.arcColor(0)));
+  ok('arcColor far end is emerald-ish', /^rgb\(74,222,150\)$/.test(GB.arcColor(1)));
+  ok('arcColor clamps out-of-range input', GB.arcColor(9) === GB.arcColor(1) && GB.arcColor(-9) === GB.arcColor(0));
+
+  section('theater: globe DOM wiring (assets/theater.js source)');
+  const tsrc = readFileSync(join(ROOT, 'assets', 'theater.js'), 'utf8');
+  ok('consumes THEATER_GLOBE', tsrc.indexOf('window.THEATER_GLOBE') !== -1 && /GB\s*=\s*window\.THEATER_GLOBE/.test(tsrc));
+  ok('performs renderer selection with fallback', tsrc.indexOf('selectRenderer') !== -1 && tsrc.indexOf("renderer !== 'table'") !== -1);
+  ok('renders a visible non-alarm renderer status', tsrc.indexOf('data-testid="theater-render-status"') !== -1);
+  ok('renders corner telemetry HUD', tsrc.indexOf('data-testid="theater-telemetry"') !== -1 && tsrc.indexOf('updateTelemetry') !== -1);
+  ok('adds an auto-rotation control', tsrc.indexOf('data-testid="th-rotate"') !== -1);
+  ok('auto-rotation is gated by reduced motion', /if\s*\(REDUCED\)\s*return;\s*\/\/ reduced-motion never auto-rotates/.test(tsrc));
+  ok('idle auto-rotation drives rotLng via autoRotateStep', tsrc.indexOf('autoRotateStep') !== -1 && tsrc.indexOf('st.rotLng +=') !== -1);
+  ok('needsRaf accounts for autoRotate', /needsRaf[\s\S]*autoRotate/.test(tsrc));
+  ok('draws starfield + procedural land + atmospheric halo', ['drawStarfield', 'drawLand', 'halo'].every((k) => tsrc.indexOf(k) !== -1));
+  ok('preserves existing controls (zoom/home/toggle/compass)',
+    ['data-testid="th-zoom-in"', 'data-testid="th-home"', 'data-testid="th-toggle"', 'data-testid="th-compass"'].every((k) => tsrc.indexOf(k) !== -1));
+  ok('preserves canvas fallback data table', tsrc.indexOf('data-testid="theater-fallback"') !== -1);
 }
 
 /* ============================ ingestion pipeline ============================ */
@@ -737,6 +824,7 @@ function testBrandingSecurity() {
     testTheaterFilters();
     testSimEngine();
     testTheaterActions();
+    testTheaterGlobe();
     testSeverity();
     testNormalize();
     testDedupe();
