@@ -1,0 +1,376 @@
+/* ============================================================
+   REFRESH.CSS — pitch-app aesthetic upgrade
+   Overrides the sci-fi terminal chrome with editorial-tech language
+   inspired by nirmata-investor-pitch.vercel.app.
+   Loads LAST so it wins the cascade.
+   ============================================================ */
+
+/* -------- FONTS: Cabinet Grotesk (display) + Satoshi (body) -------- */
+@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,800,500&f[]=satoshi@500,600,700,400&display=swap');
+
+:root{
+  /* Matte-black palette — near-black, deeper than the old navy */
+  --bg-0:#08090c;   /* app background */
+  --bg-1:#0b0d11;   /* first surface */
+  --bg-2:#10131a;   /* card */
+  --bg-3:#161a24;   /* elevated */
+  --bg-4:#1c2130;   /* hover */
+
+  /* Signature palette — teal → azure gradient, matches pitch */
+  --teal:#00e6d3;
+  --teal-soft:#4de1cf;
+  --azure:#00a7ff;
+  --cyan:#00e6d3;   /* alias — old code refers to --cyan everywhere */
+  --green:#22e6a3;
+  --red:#ff5b6a;
+  --gold:#fac858;
+  --purple:#b478ff;
+  --blue:#4dabff;
+  --orange:#ff8a4c;
+
+  /* Text */
+  --text:#f2f2f2;
+  --text-dim:#a6adba;
+  --text-mute:#6b7180;
+
+  /* Borders */
+  --border:rgba(255,255,255,0.07);
+  --border-2:rgba(0,230,211,0.22);
+  --border-strong:rgba(0,230,211,0.4);
+
+  /* Shadow */
+  --shadow-sm:0 2px 8px rgba(0,0,0,.35);
+  --shadow-md:0 8px 24px rgba(0,0,0,.45);
+  --shadow-lg:0 20px 60px rgba(0,0,0,.55);
+
+  /* Signature gradient */
+  --grad-primary:linear-gradient(90deg,#00e6d3,#00a7ff);
+  --grad-primary-135:linear-gradient(135deg,#00e6d3,#00a7ff);
+  --grad-subtle:linear-gradient(135deg,rgba(0,230,211,.9),rgba(242,242,242,.85));
+
+  /* Fonts */
+  --font-display:'Cabinet Grotesk','Clash Display',system-ui,sans-serif;
+  --font-body:'Satoshi',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono','Space Mono',ui-monospace,monospace;
+  --font-hud:'Satoshi',system-ui,sans-serif;
+}
+
+/* -------- Base -------- */
+html,body{
+  background:var(--bg-0) !important;
+  color:var(--text);
+  font-family:var(--font-body) !important;
+  font-feature-settings:"ss01","cv11","cv02";
+  letter-spacing:-.005em;
+}
+body{font-size:15px;line-height:1.6}
+
+h1,h2,h3,h4,h5{
+  font-family:var(--font-display) !important;
+  font-weight:700 !important;
+  letter-spacing:-.02em !important;
+  line-height:1.1 !important;
+  color:#fff;
+}
+h1{font-size:clamp(2.4rem,4.2vw,3.75rem) !important}
+h2{font-size:clamp(1.6rem,2.6vw,2.25rem) !important}
+h3{font-size:1.35rem !important}
+h4{font-size:.95rem !important;text-transform:uppercase !important;letter-spacing:.14em !important;font-weight:500 !important;color:var(--teal)}
+
+/* -------- Kill heavy CRT effects -------- */
+.scanlines{display:none !important}
+.chromatic{opacity:.35}
+.vignette{background:radial-gradient(ellipse at center,transparent 40%,rgba(8,9,12,.55) 85%,rgba(8,9,12,.9) 100%) !important}
+.aurora-layer{opacity:.4 !important;filter:blur(120px) brightness(.7)}
+#atmosphere{opacity:.65}
+
+/* -------- Classification banner: subtle chip, not a fullwidth red bar -------- */
+.classification-banner{
+  background:rgba(8,9,12,.85) !important;
+  border-bottom:1px solid var(--border) !important;
+  color:rgba(255,255,255,.55) !important;
+  font-family:var(--font-body) !important;
+  font-size:10.5px !important;
+  letter-spacing:.35em !important;
+  padding:8px 20px !important;
+  backdrop-filter:blur(20px);
+}
+.classification-banner::before{display:none}
+
+/* -------- Sidebar: quieter, thinner border, cleaner active state -------- */
+#sidebar{
+  background:rgba(8,9,12,.85) !important;
+  border-right:1px solid var(--border) !important;
+  backdrop-filter:blur(24px);
+}
+.nav-item{
+  color:var(--text-mute) !important;
+  border-radius:12px !important;
+  transition:all .25s cubic-bezier(.4,0,.2,1) !important;
+}
+.nav-item:hover{
+  color:var(--teal) !important;
+  background:rgba(0,230,211,.06) !important;
+  border-color:transparent !important;
+  transform:translateY(-1px);
+}
+.nav-item.active{
+  color:var(--teal) !important;
+  background:rgba(0,230,211,.12) !important;
+  border-color:transparent !important;
+  box-shadow:inset 0 0 0 1px rgba(0,230,211,.35),0 8px 24px rgba(0,230,211,.15) !important;
+}
+.nav-item.active::after{
+  content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);
+  width:3px;height:60%;background:var(--grad-primary);border-radius:0 3px 3px 0;
+}
+
+/* -------- Topbar / brand -------- */
+#topbar{
+  background:linear-gradient(180deg,rgba(8,9,12,.9),rgba(8,9,12,.6)) !important;
+  border-bottom:1px solid var(--border) !important;
+  backdrop-filter:blur(20px) !important;
+}
+#topbar .brand-title,#topbar .logo-title,#topbar h1{
+  font-family:var(--font-display) !important;
+  letter-spacing:-.02em !important;
+  text-transform:none !important;
+  font-weight:700 !important;
+  font-size:22px !important;
+}
+#topbar .brand-sub{
+  font-family:var(--font-mono) !important;
+  font-size:10.5px !important;
+  letter-spacing:.18em !important;
+  color:var(--text-mute) !important;
+  text-transform:uppercase !important;
+  margin-top:2px !important;
+}
+#topbar .live-badge{
+  font-family:var(--font-body) !important;
+  font-size:11px !important;
+  font-weight:600 !important;
+  letter-spacing:.12em !important;
+  padding:6px 12px !important;
+  border-radius:999px !important;
+  border:1px solid rgba(34,230,163,.35) !important;
+  background:rgba(34,230,163,.08) !important;
+  color:var(--green) !important;
+}
+#topbar .stat .num,#topbar .stat-num{
+  font-family:var(--font-display) !important;
+  font-weight:800 !important;
+  letter-spacing:-.02em !important;
+}
+#topbar .stat .lbl,#topbar .stat-lbl{
+  font-family:var(--font-body) !important;
+  font-size:9.5px !important;
+  letter-spacing:.2em !important;
+  color:var(--text-mute) !important;
+  text-transform:uppercase !important;
+  font-weight:500 !important;
+}
+/* Gradient on the second word if wrapped in .grad */
+.grad,.text-grad,[class*="gradient-text"]{
+  background:var(--grad-primary) !important;
+  -webkit-background-clip:text !important;
+  background-clip:text !important;
+  -webkit-text-fill-color:transparent !important;
+  color:transparent !important;
+}
+
+/* -------- Filterbar -------- */
+#filterbar{
+  background:rgba(11,13,17,.8) !important;
+  border-bottom:1px solid var(--border) !important;
+  backdrop-filter:blur(20px);
+}
+.filter-input,.filter-select,select,input[type="text"],input[type="search"]{
+  background:rgba(16,19,26,.85) !important;
+  border:1px solid var(--border) !important;
+  color:var(--text) !important;
+  font-family:var(--font-body) !important;
+  border-radius:10px !important;
+  transition:all .2s ease !important;
+}
+.filter-input::placeholder,input::placeholder{color:var(--text-mute) !important;font-family:var(--font-body) !important}
+.filter-input:focus,input:focus,select:focus{
+  border-color:var(--teal) !important;
+  box-shadow:0 0 0 3px rgba(0,230,211,.12) !important;
+  outline:none !important;
+}
+
+/* -------- Module title block -------- */
+.module h1,.module .module-title,.module .title-block h1,.module > h1{
+  font-family:var(--font-display) !important;
+  font-weight:700 !important;
+  letter-spacing:-.025em !important;
+  color:#fff !important;
+  margin-bottom:8px !important;
+}
+.module .subtitle,.module .module-sub,.module .title-block p{
+  color:var(--text-dim) !important;
+  font-family:var(--font-body) !important;
+  font-size:13.5px !important;
+  letter-spacing:.02em !important;
+}
+
+/* -------- Cards / panels -------- */
+.panel,.card,.intel-card,.pillar-card,.frame-card,.brief-section,.chart-panel,.impact-card,
+.hex,.hex-card,.status-card,.timeline-item,.ops-card,.forecast-card,section.module > div{
+  background:rgba(16,19,26,.65) !important;
+  border:1px solid var(--border) !important;
+  border-radius:14px !important;
+  transition:border-color .2s ease,transform .2s ease !important;
+}
+.panel:hover,.card:hover,.intel-card:hover,.frame-card:hover,.forecast-card:hover{
+  border-color:var(--border-2) !important;
+}
+/* Sci-fi window chrome (mac dots + filename header) → thinner, more editorial */
+.mac-dots,.window-dots{opacity:.5}
+.window-header,.file-header,.panel-header{
+  font-family:var(--font-mono) !important;
+  font-size:11px !important;
+  color:var(--text-mute) !important;
+  letter-spacing:.08em !important;
+  border-bottom:1px solid var(--border) !important;
+}
+
+/* -------- Buttons -------- */
+.btn,button.primary,.primary-btn,.action-btn,
+button[class*="refresh"],button[class*="generate"]{
+  font-family:var(--font-body) !important;
+  font-weight:600 !important;
+  font-size:13px !important;
+  letter-spacing:.02em !important;
+  text-transform:none !important;
+  padding:10px 18px !important;
+  border-radius:10px !important;
+  border:1px solid var(--border-2) !important;
+  background:rgba(0,230,211,.08) !important;
+  color:var(--teal) !important;
+  transition:all .2s cubic-bezier(.4,0,.2,1) !important;
+  cursor:pointer;
+}
+.btn:hover,button.primary:hover,.primary-btn:hover,.action-btn:hover{
+  background:rgba(0,230,211,.16) !important;
+  border-color:var(--teal) !important;
+  transform:translateY(-1px);
+  box-shadow:0 6px 20px rgba(0,230,211,.18) !important;
+}
+/* Filter-pill / tab buttons */
+.tab,.pill,.chip,button.tab,button.pill,button.chip,
+.frame-tab,.section-tab,.brief-tab,.filter-btn{
+  font-family:var(--font-body) !important;
+  font-weight:500 !important;
+  font-size:13px !important;
+  letter-spacing:.005em !important;
+  text-transform:none !important;
+  border-radius:8px !important;
+  padding:8px 14px !important;
+  border:1px solid transparent !important;
+  color:var(--text-dim) !important;
+  background:transparent !important;
+  transition:all .18s ease !important;
+}
+.tab:hover,.pill:hover,.chip:hover,.frame-tab:hover,.section-tab:hover,.filter-btn:hover{
+  color:var(--text) !important;
+  background:rgba(255,255,255,.04) !important;
+}
+.tab.active,.pill.active,.chip.active,
+.frame-tab.active,.section-tab.active,.brief-tab.active,.filter-btn.active{
+  color:var(--teal) !important;
+  background:rgba(0,230,211,.1) !important;
+  border-color:rgba(0,230,211,.25) !important;
+}
+
+/* Badges + status chips */
+.badge,.severity-badge,.status-badge,.tag{
+  font-family:var(--font-body) !important;
+  font-weight:600 !important;
+  font-size:11px !important;
+  letter-spacing:.04em !important;
+  text-transform:uppercase !important;
+  border-radius:6px !important;
+  padding:3px 8px !important;
+}
+
+/* Big numeric stats */
+.stat-number,.big-num,.kpi-value,.metric-value{
+  font-family:var(--font-display) !important;
+  font-weight:800 !important;
+  letter-spacing:-.03em !important;
+  background:var(--grad-primary) !important;
+  -webkit-background-clip:text !important;
+  background-clip:text !important;
+  -webkit-text-fill-color:transparent !important;
+  color:transparent !important;
+}
+.stat-label,.big-num-label,.metric-label{
+  font-family:var(--font-body) !important;
+  font-size:11px !important;
+  letter-spacing:.16em !important;
+  text-transform:uppercase !important;
+  color:var(--text-mute) !important;
+  font-weight:500 !important;
+}
+
+/* -------- Kill "monospace everywhere" — keep it only for HUD/timestamps/data readouts -------- */
+.module p,.module li,.card p,.card li,.intel-card p{
+  font-family:var(--font-body) !important;
+}
+.classification,.top-secret,.classified-label,
+.file-name,.timestamp,[class*="timestamp"],[class*="update-interval"],
+.severity-num,.zone-count,.hud-label{
+  font-family:var(--font-mono) !important;
+  font-size:11px !important;
+  letter-spacing:.08em !important;
+}
+
+/* -------- Password gate: more premium, less HUD -------- */
+.gate-card{
+  background:linear-gradient(180deg,rgba(16,19,26,.9),rgba(11,13,17,.95)) !important;
+  border:1px solid var(--border-2) !important;
+  border-radius:20px !important;
+  box-shadow:0 40px 100px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.02) !important;
+}
+.gate-title{font-family:var(--font-display) !important;font-weight:700 !important;letter-spacing:-.02em !important;font-size:32px !important}
+.gate-btn{
+  background:var(--grad-primary) !important;
+  color:#04070a !important;
+  border:0 !important;
+  font-family:var(--font-body) !important;
+  font-weight:700 !important;
+  letter-spacing:.05em !important;
+  border-radius:12px !important;
+  transition:all .2s ease !important;
+}
+.gate-btn:hover{transform:translateY(-1px);box-shadow:0 12px 32px rgba(0,230,211,.35) !important}
+
+/* -------- Scrollbar: sleeker -------- */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(0,230,211,.25);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:rgba(0,230,211,.45)}
+
+/* -------- ATOM orb: keep signature but softer glow -------- */
+#atom-orb,.atom-orb{filter:drop-shadow(0 8px 32px rgba(0,230,211,.35))}
+
+/* -------- Small touch: subtle hover-lift on interactive rows -------- */
+.intel-card,.frame-card,.forecast-card,.timeline-item{
+  transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease !important;
+}
+.intel-card:hover,.frame-card:hover,.forecast-card:hover{
+  transform:translateY(-2px);
+  box-shadow:0 12px 32px rgba(0,0,0,.35) !important;
+}
+
+/* -------- Selection -------- */
+::selection{background:rgba(0,230,211,.35);color:#fff}
+
+/* -------- Mobile refinements -------- */
+@media (max-width: 768px){
+  h1{font-size:2rem !important}
+  h2{font-size:1.4rem !important}
+  .module .subtitle{font-size:12px !important}
+}
