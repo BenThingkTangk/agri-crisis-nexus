@@ -412,25 +412,49 @@ Ensure valid JSON. Do not include commentary outside the code block.`;
   // -------- Helpers --------
   function parseJson(text) {
     // Try to extract JSON from ```json fenced block or first {...}
-    const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-    const candidate = fenced ? fenced[1] : text;
-    // Find first { ... }
+    // Strip any <think>...</think> blocks the reasoning model may emit
+    const cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+    const fenced = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+    const candidate = fenced ? fenced[1] : cleaned;
     const start = candidate.indexOf('{');
     if (start < 0) return null;
     // Find matching closing brace
-    let depth = 0, end = -1;
+    let depth = 0, end = -1, inStr = false, esc = false;
     for (let i = start; i < candidate.length; i++) {
-      if (candidate[i] === '{') depth++;
-      else if (candidate[i] === '}') {
-        depth--;
-        if (depth === 0) { end = i + 1; break; }
-      }
+      const ch = candidate[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
     }
-    if (end < 0) return null;
-    try {
-      return JSON.parse(candidate.slice(start, end));
-    } catch (e) {
-      console.warn('JSON parse failed', e);
+    // Try full slice first
+    if (end > 0) {
+      try { return JSON.parse(candidate.slice(start, end)); } catch (e) { /* fall through */ }
+    }
+    // Truncation salvage: JSON was cut off. Close open structures gracefully.
+    let slice = candidate.slice(start);
+    // Trim trailing partial token: cut at last complete `}` or `]`
+    let lastClose = Math.max(slice.lastIndexOf('}'), slice.lastIndexOf(']'));
+    if (lastClose > 0) slice = slice.slice(0, lastClose + 1);
+    // Balance braces/brackets
+    let openB = 0, openS = 0, inS = false, es = false;
+    for (let i = 0; i < slice.length; i++) {
+      const c = slice[i];
+      if (es) { es = false; continue; }
+      if (c === '\\') { es = true; continue; }
+      if (c === '"') { inS = !inS; continue; }
+      if (inS) continue;
+      if (c === '{') openB++; else if (c === '}') openB--;
+      if (c === '[') openS++; else if (c === ']') openS--;
+    }
+    // Remove any trailing comma before closing
+    slice = slice.replace(/,\s*$/, '');
+    while (openS-- > 0) slice += ']';
+    while (openB-- > 0) slice += '}';
+    try { return JSON.parse(slice); } catch (e) {
+      console.warn('JSON parse failed after salvage', e);
       return null;
     }
   }
