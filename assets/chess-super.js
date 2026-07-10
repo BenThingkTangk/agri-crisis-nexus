@@ -37,10 +37,10 @@
   ];
 
   const RESOURCES = [
-    { file:2, rank:3, id:'G', name:'Grain Reserve',   bonus:{atk:1} },
-    { file:5, rank:3, id:'W', name:'Water Corridor',  bonus:{atk:1} },
-    { file:2, rank:4, id:'I', name:'Biotech IP',      bonus:{hp:3} },
-    { file:5, rank:4, id:'D', name:'Clinical Data',   bonus:{hp:3} }
+    { file:2, rank:3, id:'G', name:'Grain Reserve',   icon:'🌾', bonus:{atk:1} },
+    { file:5, rank:3, id:'W', name:'Water Corridor',  icon:'💧', bonus:{atk:1} },
+    { file:2, rank:4, id:'I', name:'Biotech IP',      icon:'🔬', bonus:{hp:3} },
+    { file:5, rank:4, id:'D', name:'Clinical Data',   icon:'📊', bonus:{hp:3} }
   ];
 
   const state = {
