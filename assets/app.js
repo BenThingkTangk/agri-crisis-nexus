@@ -141,7 +141,7 @@ async function pollLive(){
   }catch(err){
     liveState.status='degraded';
     liveState.events=[];
-    liveState.sources=(liveState.sources.length?liveState.sources:[{name:'ReliefWeb'},{name:'USGS'},{name:'NASA EONET'}]).map(s=>({name:s.name,status:'down',count:0}));
+    liveState.sources=(liveState.sources.length?liveState.sources:[{name:'GDACS'},{name:'USGS'},{name:'NASA EONET'}]).map(s=>({name:s.name,status:'down',count:0}));
     liveState.asOf=new Date().toISOString();
   }
   paintLive();
@@ -258,7 +258,7 @@ function renderCommand(p){
     </div>
 
     <div class="section">
-      <div class="section-title"><h3>${icon('radio')} Live event rail</h3><span class="meta">public feeds · ReliefWeb · USGS · NASA EONET</span></div>
+      <div class="section-title"><h3>${icon('radio')} Live event rail</h3><span class="meta">public feeds · GDACS · USGS · NASA EONET</span></div>
       <div class="ticker" id="cmdTicker" data-testid="ticker"></div>
     </div>
 

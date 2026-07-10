@@ -6,12 +6,20 @@
 //   GET /api/live            -> normalized events + source health
 //
 // Sources (allowlisted, no API key required):
-//   ReliefWeb (UN OCHA)  — humanitarian disasters/reports
+//   Humanitarian         — ReliefWeb v2 (if RELIEFWEB_APPNAME set) else GDACS
 //   USGS                 — significant earthquakes (M4.5+, past 7 days)
 //   NASA EONET           — open natural-event tracker (drought, wildfire, floods, storms)
+//
+// ReliefWeb note: since 2025-11-01 the ReliefWeb API mandates a pre-approved
+// `appname` (obtained via their registration form). Its v1 endpoints are
+// decommissioned (HTTP 410) and v2 rejects unapproved appnames (HTTP 403). We
+// use the correct v2 POST contract when an approved appname is provided via the
+// RELIEFWEB_APPNAME env var, and otherwise fall back to GDACS — a keyless
+// UN/EC disaster feed — so humanitarian data stays live without registration.
 
 const SOURCE_ALLOWLIST = {
   reliefweb: 'https://api.reliefweb.int',
+  gdacs: 'https://www.gdacs.org',
   usgs: 'https://earthquake.usgs.gov',
   eonet: 'https://eonet.gsfc.nasa.gov',
 };
@@ -38,30 +46,100 @@ function sev(word) {
   return 'moderate';
 }
 
+// Humanitarian source: prefer ReliefWeb v2 when an approved appname is
+// configured, otherwise use the keyless GDACS feed. Returns { name, events }
+// so the source-health block reflects which provider actually served the data.
 async function getReliefWeb() {
-  // Current disasters, latest first. Public appname param, no key.
-  const url = `${SOURCE_ALLOWLIST.reliefweb}/v1/disasters?appname=agri-nexus&profile=list&preset=latest&limit=18`;
-  const j = await fetchJSON(url, 4500);
+  const appname = (process.env.RELIEFWEB_APPNAME || '').trim();
+  if (appname) {
+    try {
+      const events = await getReliefWebV2(appname);
+      if (events.length) return { name: 'ReliefWeb', events };
+    } catch (_) {
+      // ReliefWeb unavailable (e.g. appname not yet approved) — fall through.
+    }
+  }
+  return { name: 'GDACS', events: await getGDACS() };
+}
+
+// Correct current ReliefWeb v2 contract: POST /v2/reports with an approved
+// appname, JSON fields/filter/sort/limit. No scraping. Coarse geo only
+// (ReliefWeb reports do not expose reliable point coordinates).
+async function getReliefWebV2(appname) {
+  const url = `${SOURCE_ALLOWLIST.reliefweb}/v2/reports?appname=${encodeURIComponent(appname)}`;
+  const payload = {
+    fields: {
+      include: ['title', 'date.created', 'url_alias', 'primary_country.name', 'primary_country.iso3', 'source.shortname', 'disaster_type.name'],
+    },
+    filter: {
+      operator: 'OR',
+      conditions: [{ field: 'disaster_type.name', value: ['Drought', 'Flood', 'Food Insecurity', 'Tropical Cyclone', 'Wild Fire', 'Epidemic'] }],
+    },
+    sort: ['date.created:desc'],
+    limit: 18,
+  };
+  const j = await fetchJSON(url, 4500, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
   const now = new Date().toISOString();
   const items = (j.data || []).map((d) => {
     const f = d.fields || {};
-    const country = (f.country && f.country[0] && f.country[0].name) || 'Global';
-    const type = (f.type && f.type[0] && f.type[0].name) || 'Humanitarian';
-    const geo = f.country && f.country[0] && f.country[0].location;
+    const country = (f.primary_country && f.primary_country.name) || 'Global';
+    const type = (f.disaster_type && f.disaster_type[0] && f.disaster_type[0].name) || 'Humanitarian';
     return {
       id: 'rw-' + d.id,
       source: 'ReliefWeb',
-      title: f.name || 'Humanitarian situation update',
+      title: f.title || 'Humanitarian situation update',
       category: type,
-      severity: /famine|food|hunger|drought/i.test(f.name || '') ? 'critical' : sev(f.status),
+      severity: /famine|food|hunger|drought/i.test((f.title || '') + ' ' + type) ? 'critical' : sev(type),
       geography: country,
-      lat: geo ? geo.lat : null,
-      lng: geo ? geo.lon : null,
-      published: f.date && f.date.created ? f.date.created : now,
-      url: (f.url_alias || f.url || 'https://reliefweb.int/disasters'),
+      lat: null,
+      lng: null,
+      published: (f.date && f.date.created) || now,
+      url: f.url_alias || 'https://reliefweb.int',
     };
   });
   return items.filter((i) => AGRI_KEYWORDS.test(i.title + ' ' + i.category));
+}
+
+const GDACS_CATEGORY = { EQ: 'Seismic', TC: 'Tropical Cyclone', FL: 'Flood', DR: 'Drought', VO: 'Volcano', WF: 'Wildfire', TS: 'Tsunami' };
+// Agriculture/climate-relevant disaster types; EQ/VO/TS excluded (USGS covers seismic).
+const GDACS_AGRI_TYPES = new Set(['DR', 'FL', 'TC', 'WF']);
+
+function gdacsSeverity(level) {
+  const l = String(level || '').toLowerCase();
+  if (l === 'red') return 'critical';
+  if (l === 'orange') return 'high';
+  return 'moderate';
+}
+
+// GDACS — Global Disaster Alert and Coordination System (UN OCHA / EC JRC).
+// Public, keyless GeoJSON feed of current disasters.
+async function getGDACS() {
+  const url = `${SOURCE_ALLOWLIST.gdacs}/gdacsapi/api/events/geteventlist/EVENTS4APP`;
+  const j = await fetchJSON(url, 4500);
+  const now = new Date().toISOString();
+  return (j.features || [])
+    .filter((f) => f && f.properties && GDACS_AGRI_TYPES.has(f.properties.eventtype))
+    .map((f) => {
+      const p = f.properties;
+      const coords = (f.geometry && Array.isArray(f.geometry.coordinates)) ? f.geometry.coordinates : [null, null];
+      const report = (p.url && p.url.report) || 'https://www.gdacs.org';
+      return {
+        id: 'gdacs-' + (p.eventtype || 'E') + (p.eventid != null ? p.eventid : ''),
+        source: 'GDACS',
+        title: p.name || p.eventname || (GDACS_CATEGORY[p.eventtype] || 'Disaster alert'),
+        category: GDACS_CATEGORY[p.eventtype] || 'Disaster',
+        severity: gdacsSeverity(p.alertlevel),
+        geography: p.country || 'Global',
+        lat: typeof coords[1] === 'number' ? coords[1] : null,
+        lng: typeof coords[0] === 'number' ? coords[0] : null,
+        published: p.fromdate ? new Date(p.fromdate).toISOString() : now,
+        url: report,
+      };
+    });
 }
 
 async function getUSGS() {
@@ -120,7 +198,7 @@ export default async function handler(req, res) {
 
   const fetchedAt = new Date().toISOString();
   const jobs = [
-    { name: 'ReliefWeb', run: getReliefWeb },
+    { name: 'GDACS', run: getReliefWeb },
     { name: 'USGS', run: getUSGS },
     { name: 'NASA EONET', run: getEONET },
   ];
@@ -129,12 +207,16 @@ export default async function handler(req, res) {
   const sources = [];
   let events = [];
   settled.forEach((r, i) => {
-    const name = jobs[i].name;
-    if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-      sources.push({ name, status: 'ok', count: r.value.length, fetchedAt });
-      events = events.concat(r.value);
+    const fallbackName = jobs[i].name;
+    const v = r.value;
+    // Jobs return either an array of events or { name, events }.
+    const arr = Array.isArray(v) ? v : (v && Array.isArray(v.events) ? v.events : null);
+    if (r.status === 'fulfilled' && arr) {
+      const name = (v && !Array.isArray(v) && v.name) || fallbackName;
+      sources.push({ name, status: 'ok', count: arr.length, fetchedAt });
+      events = events.concat(arr);
     } else {
-      sources.push({ name, status: 'down', count: 0, fetchedAt, error: r.reason ? String(r.reason.message || r.reason) : 'unavailable' });
+      sources.push({ name: fallbackName, status: 'down', count: 0, fetchedAt, error: r.reason ? String(r.reason.message || r.reason) : 'unavailable' });
     }
   });
 
