@@ -110,9 +110,25 @@ export const SOURCES = {
 };
 
 // ---------------------------------------------------------------------------
+// Missing-data sentinels. Upstream feeds encode "no observation" as documented
+// fill values rather than null — NASA POWER uses -999; others commonly use
+// -9999 / 9999 / 99999. These are NOT measurements and must never be surfaced
+// as telemetry (e.g. "mean temp -999°C"). isFillValue also rejects any
+// non-finite input (NaN / Infinity / non-numeric).
+// ---------------------------------------------------------------------------
+export const FILL_SENTINELS = [-999, -999.9, -9999, -99999, 9999, 99999, 999999];
+
+export function isFillValue(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return true;
+  return FILL_SENTINELS.indexOf(n) !== -1;
+}
+
+// ---------------------------------------------------------------------------
 // Normalized event/indicator schema.
 // ---------------------------------------------------------------------------
 function num(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null; }
+function cleanValue(v) { return isFillValue(v) ? null : num(v); }
 function clamp01(v) { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.5; }
 function isoOrNull(v) { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toISOString(); }
 
@@ -142,7 +158,7 @@ export function normalizeEvent(raw, meta) {
     severity: level,
     severityScore: severityScore(level),
     confidence: clamp01(raw.confidence != null ? raw.confidence : (src ? 0.8 : 0.5)),
-    value: num(raw.value),
+    value: cleanValue(raw.value),
     unit: raw.unit || null,
     evidence: raw.evidence === 'modeled' ? 'modeled' : 'observed',
     sourceUrl,

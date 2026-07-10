@@ -26,10 +26,10 @@ import {
   SEVERITY_LEVELS, severityFromLevel, severityFromScale, severityScore,
   normalizeEvent, isValidEvent, dedupeEvents, aggregateStatus,
   withRetry, mapLimit, resetBreakers, cacheClear, breakerFailure, breakerAllows,
-  SOURCES,
+  SOURCES, isFillValue, FILL_SENTINELS,
 } from '../api/_sources.js';
 import { aggregate, clearSnapshots, recordSnapshot, getSnapshots } from '../api/_aggregate.js';
-import { gdacs, usgs, worldbank } from '../api/_adapters.js';
+import { gdacs, usgs, worldbank, power } from '../api/_adapters.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -779,6 +779,69 @@ async function testRealAdapters() {
   ok('World Bank maps high CPI to critical severity', wb[0].severity === 'critical' && wb[0].domain === 'market');
 }
 
+async function testSentinels() {
+  section('ingestion: missing-data sentinels (isFillValue)');
+  ok('NASA POWER -999 is a fill value', isFillValue(-999) === true);
+  ok('all documented sentinels rejected', FILL_SENTINELS.every((s) => isFillValue(s) === true));
+  ok('NaN is a fill value', isFillValue(NaN) === true);
+  ok('Infinity is a fill value', isFillValue(Infinity) === true && isFillValue(-Infinity) === true);
+  ok('non-numeric is a fill value', isFillValue('abc') === true);
+  ok('real measurement is not a fill value', isFillValue(21.4) === false && isFillValue(0) === false);
+
+  section('ingestion: normalizeEvent nulls sentinel/non-finite values');
+  eq('sentinel -999 value -> null', normalizeEvent({ rawId: '1', value: -999 }, { sourceId: 'power' }).value, null);
+  eq('NaN value -> null', normalizeEvent({ rawId: '1', value: NaN }, { sourceId: 'power' }).value, null);
+  eq('real value preserved', normalizeEvent({ rawId: '1', value: 21.4 }, { sourceId: 'power' }).value, 21.4);
+
+  section('ingestion: NASA POWER adapter backfill + no-data');
+  const pt = { name: 'Iowa', lat: 41.9, lon: -93.6 };
+  const now = new Date('2026-01-10T00:00:00Z');
+  // Latest day is a -999 sentinel; adapter must backfill to the prior valid day.
+  const backfill = await power({ fetchImpl: fakeFetch({ 'power.larc.nasa.gov': {
+    properties: { parameter: {
+      T2M: { '20260101': 18.2, '20260102': 19.6, '20260103': -999 },
+      PRECTOTCORR: { '20260101': 1.1, '20260102': 2.3, '20260103': -999 },
+    } },
+  } }), point: pt, now });
+  ok('backfills past -999 to latest valid day', backfill.length === 1 && backfill[0].value === 19.6);
+  ok('title never embeds sentinel', backfill[0].title.indexOf('-999') === -1 && backfill[0].title.indexOf('19.6') !== -1);
+  ok('precip fill on chosen day -> null-safe', backfill[0].value === 19.6);
+
+  // Precip on the backfilled day is itself a sentinel -> extra.precipMm nulled.
+  const precipFill = await power({ fetchImpl: fakeFetch({ 'power.larc.nasa.gov': {
+    properties: { parameter: {
+      T2M: { '20260102': 19.6 },
+      PRECTOTCORR: { '20260102': -999 },
+    } },
+  } }), point: pt, now });
+  ok('sentinel precip nulled in extra', precipFill[0].extra.precipMm === null);
+
+  // All days are -999 -> adapter throws a no-data error (source marked degraded).
+  let noData = false;
+  try {
+    await power({ fetchImpl: fakeFetch({ 'power.larc.nasa.gov': {
+      properties: { parameter: { T2M: { '20260101': -999, '20260102': -999 }, PRECTOTCORR: {} } },
+    } }), point: pt, now });
+  } catch (e) { noData = !!e.noData; }
+  ok('all-sentinel range throws no-data (degraded, not fabricated)', noData);
+
+  // Empty series -> no-data.
+  let emptyNoData = false;
+  try {
+    await power({ fetchImpl: fakeFetch({ 'power.larc.nasa.gov': { properties: { parameter: { T2M: {} } } } }), point: pt, now });
+  } catch (e) { emptyNoData = !!e.noData; }
+  ok('empty T2M series throws no-data', emptyNoData);
+
+  // Implausible extreme (non-sentinel garbage) is skipped in favour of a valid day.
+  const extreme = await power({ fetchImpl: fakeFetch({ 'power.larc.nasa.gov': {
+    properties: { parameter: {
+      T2M: { '20260101': 22.0, '20260102': 5000 },
+      PRECTOTCORR: {},
+    } },
+  } }), point: pt, now });
+  ok('implausible extreme temp skipped for valid day', extreme[0].value === 22.0);
+}
+
 /* ============================ branding + security guards ============================ */
 function testBrandingSecurity() {
   section('branding: AgriOS rebrand + no leakage');
@@ -832,6 +895,7 @@ function testBrandingSecurity() {
     await testRetryConcurrency();
     await testAggregatePipeline();
     await testRealAdapters();
+    await testSentinels();
     testBrandingSecurity();
   } catch (e) {
     console.error('\nFATAL: test harness threw:', e && e.message);

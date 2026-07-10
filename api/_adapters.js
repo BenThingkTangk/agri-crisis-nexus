@@ -19,7 +19,7 @@
 //   9. GDELT          conflict    keyless
 //  10. IMF PortWatch  logistics   keyless
 
-import { fetchJSON, fetchText, severityFromScale } from './_sources.js';
+import { fetchJSON, fetchText, severityFromScale, isFillValue } from './_sources.js';
 
 // A small set of global breadbasket / import-hub reference points used by the
 // point-query weather adapters (Open-Meteo, POWER). Keeping this list short
@@ -156,6 +156,18 @@ export async function openmeteo({ fetchImpl, timeoutMs = 5000, points = REFERENC
 // ------------------------------------------------------------- NASA POWER ----
 // Daily agro-climate (T2M, precip) at one anchor point. Keyless. Emits a single
 // agro-climate indicator; kept to one point to bound latency on serverless.
+//
+// POWER encodes missing observations as the documented fill value -999. We must
+// never surface that as telemetry ("mean temp -999°C"), so we scan the returned
+// range newest-first and backfill to the latest day whose T2M is a real, finite,
+// physically-plausible measurement. If no valid day remains, we emit no event
+// and surface an explicit no-data error so the source is marked degraded rather
+// than reported LIVE with fabricated numbers.
+const POWER_TEMP_MIN = -90; // coldest plausible daily mean surface air temp (°C)
+const POWER_TEMP_MAX = 60;  // hottest plausible daily mean surface air temp (°C)
+
+function powerNoData(reason) { const e = new Error('no-data: ' + reason); e.noData = true; return e; }
+
 export async function power({ fetchImpl, timeoutMs = 6000, point = REFERENCE_POINTS[0], now = new Date() } = {}) {
   const end = new Date(now.getTime() - 2 * 86400000); // POWER NRT lags ~1-2 days
   const start = new Date(end.getTime() - 6 * 86400000);
@@ -166,21 +178,33 @@ export async function power({ fetchImpl, timeoutMs = 6000, point = REFERENCE_POI
   const j = await fetchJSON(url, { fetchImpl, timeoutMs });
   const params = (j.properties && j.properties.parameter) || {};
   const t2m = params.T2M || {};
-  const keys = Object.keys(t2m).sort();
-  const lastKey = keys[keys.length - 1];
-  if (!lastKey) return [];
-  const temp = t2m[lastKey];
-  const precip = (params.PRECTOTCORR && params.PRECTOTCORR[lastKey]);
-  const iso = lastKey.slice(0, 4) + '-' + lastKey.slice(4, 6) + '-' + lastKey.slice(6, 8) + 'T00:00:00Z';
+  const precipAll = params.PRECTOTCORR || {};
+  const keys = Object.keys(t2m).sort(); // ascending YYYYMMDD
+  if (!keys.length) throw powerNoData('empty T2M series');
+
+  // Backfill: walk newest -> oldest, take the first valid (non-fill, in-range) day.
+  let dayKey = null, temp = null;
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const k = keys[i];
+    const t = Number(t2m[k]);
+    if (isFillValue(t)) continue;                       // -999 sentinel / NaN / Infinity
+    if (t < POWER_TEMP_MIN || t > POWER_TEMP_MAX) continue; // implausible extreme
+    dayKey = k; temp = t; break;
+  }
+  if (dayKey == null) throw powerNoData('all days missing/sentinel over requested range');
+
+  const rawPrecip = Number(precipAll[dayKey]);
+  const precip = isFillValue(rawPrecip) ? null : rawPrecip; // precip may still be fill
+  const iso = dayKey.slice(0, 4) + '-' + dayKey.slice(4, 6) + '-' + dayKey.slice(6, 8) + 'T00:00:00Z';
   return [{
-    rawId: 'power-' + point.lat + '_' + point.lon + '-' + lastKey,
+    rawId: 'power-' + point.lat + '_' + point.lon + '-' + dayKey,
     domain: 'weather',
     category: 'Agro-climate',
     title: point.name + ' — mean temp ' + temp + '°C',
-    severity: severityFromScale(Number(temp), [30, 35, 40]),
+    severity: severityFromScale(temp, [30, 35, 40]),
     geography: point.name,
     lat: point.lat, lon: point.lon,
-    value: Number(temp), unit: '°C mean',
+    value: temp, unit: '°C mean',
     published: iso,
     sourceUrl: 'https://power.larc.nasa.gov/',
     confidence: 0.75,
