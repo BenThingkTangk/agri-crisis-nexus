@@ -103,7 +103,11 @@ function bindShell(){
     ham.setAttribute('aria-expanded',open?'true':'false');
   });
   document.addEventListener('keydown',e=>{
-    if(e.key==='Escape'){ closeAtom(); closeDrawer(); }
+    if(e.key==='Escape'){
+      if($('#atom').classList.contains('open')) closeAtom();
+      else if($('#drawer').classList.contains('open')) closeDrawer();
+      else closeMobileNav();
+    }
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); openAtom(); }
   });
 }
@@ -728,6 +732,7 @@ function renderAtomBody(){
   }
 }
 function openAtom(prefill){
+  closeDrawer(); closeMobileNav();
   $('#atom').classList.add('open'); $('#atom').setAttribute('aria-hidden','false');
   if(prefill){ $('#atomInput').value=prefill; setTimeout(sendAtom,50); }
   else setTimeout(()=>$('#atomInput').focus(),120);
@@ -763,7 +768,9 @@ async function sendAtom(){
     pending.content=content; pending.pending=false;
   }catch(err){
     pending.pending=false;
-    pending.content='⚠ ATOM is unavailable right now ('+String(err.message||err).slice(0,90)+').\n\nThe live agent requires the PPLX_KEY environment variable on the server. All bundled intelligence in this command center remains fully available offline — try the Command, Intel, Strategy and War Room modes.';
+    const code=/^HTTP (\d{3})$/.exec(String(err&&err.message));
+    const hint=code?' (server returned '+code[1]+')':'';
+    pending.content='⚠ ATOM is temporarily unavailable'+hint+'.\n\nThe live agent needs the PPLX_KEY environment variable configured on the server. All bundled intelligence in this command center remains fully available offline — try the Command, Intel, Strategy and War Room modes.';
   }
   renderAtomBody(); $('#atomSend').disabled=false; refreshIcons();
 }
