@@ -6,11 +6,24 @@
     },
     "api/live.js": {
       "maxDuration": 15
+    },
+    "api/auth.js": {
+      "maxDuration": 15
+    },
+    "api/teams.js": {
+      "maxDuration": 15
+    },
+    "api/missions.js": {
+      "maxDuration": 15
+    },
+    "api/scenarios.js": {
+      "maxDuration": 15
+    },
+    "api/alerts.js": {
+      "maxDuration": 20
     }
   },
   "rewrites": [
-    { "source": "/api/atom", "destination": "/api/atom" },
-    { "source": "/api/live", "destination": "/api/live" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

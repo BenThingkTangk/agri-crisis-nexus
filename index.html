@@ -649,6 +649,86 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   header#topbar{gap:10px;padding:0 12px;}
   .posture .pstat{border-left:none;padding:0;}
 }
+
+/* ============ COLLABORATION LAYER ============ */
+.btn.icon-only{position:relative;padding:9px 10px;min-height:38px;}
+.alert-badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;
+  background:var(--sev-critical);color:#fff;font:600 10px/17px var(--mono);text-align:center;box-shadow:0 0 0 2px var(--bg-2);}
+.identity-btn .lbl{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.identity-btn .role-tag{font:600 9.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--cyan);margin-left:6px;}
+@media (max-width:760px){ .identity-btn .lbl{display:none;} }
+
+/* Auth / identity forms */
+.auth-form{display:flex;flex-direction:column;gap:12px;}
+.auth-form .field{display:flex;flex-direction:column;gap:5px;}
+.auth-form label{font:600 11px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+.auth-form input{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;
+  padding:11px 12px;font-size:14px;min-height:44px;}
+.auth-form input:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;border-color:var(--cyan);}
+.auth-switch{background:none;border:none;color:var(--cyan);cursor:pointer;font-size:12.5px;padding:4px 0;text-align:left;}
+.auth-err{color:var(--sev-critical);font-size:12.5px;min-height:16px;margin:0;}
+.auth-ok{color:var(--sev-stable);font-size:12.5px;min-height:16px;margin:0;}
+.form-hint{color:var(--muted);font-size:11.5px;margin:0;line-height:1.5;}
+
+/* Team missions */
+.tm-list{display:flex;flex-direction:column;gap:10px;}
+.tm-card{border:1px solid var(--border);border-left:3px solid var(--cyan);border-radius:10px;padding:13px 14px;background:var(--surface);}
+.tm-card.pri-critical{border-left-color:var(--sev-critical);}
+.tm-card.pri-high{border-left-color:var(--sev-high);}
+.tm-card.pri-medium{border-left-color:var(--sev-moderate);}
+.tm-card.pri-low{border-left-color:var(--sev-stable);}
+.tm-card.st-archived{opacity:.55;}
+.tm-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
+.tm-top .tm-title{font-weight:600;font-size:14.5px;margin-right:auto;}
+.tm-obj{color:var(--text-dim);font-size:12.5px;margin:2px 0 8px;white-space:normal;}
+.tm-meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font:500 11.5px/1.4 var(--mono);}
+.tm-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;}
+.tm-status-pill{font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.05em;padding:4px 7px;border-radius:6px;
+  background:var(--bg-2);border:1px solid var(--border);color:var(--text-dim);}
+.st-active .tm-status-pill{color:var(--cyan);border-color:var(--cyan);}
+.st-complete .tm-status-pill{color:var(--sev-stable);border-color:var(--sev-stable);}
+.st-blocked .tm-status-pill{color:var(--sev-critical);border-color:var(--sev-critical);}
+
+/* Alerts */
+.alerts-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
+.alert-item{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border:1px solid var(--border);border-radius:9px;
+  background:var(--surface);margin-bottom:8px;}
+.alert-item.unread{border-left:3px solid var(--cyan);background:rgba(95,179,196,.05);}
+.alert-item .ai-sev{width:9px;height:9px;border-radius:50%;flex:0 0 auto;margin-top:4px;}
+.alert-item .ai-main{flex:1;min-width:0;}
+.alert-item .ai-t{font-size:13.5px;font-weight:500;white-space:normal;}
+.alert-item .ai-s{color:var(--muted);font:500 11px/1.4 var(--mono);margin-top:3px;}
+.alert-item .ai-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.alert-arrival{animation:alertIn .4s ease both;}
+@keyframes alertIn{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
+@media (prefers-reduced-motion:reduce){ .alert-arrival{animation:none;} }
+@keyframes skelShimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+.rule-card{border:1px solid var(--border);border-radius:9px;padding:12px;background:var(--surface);margin-bottom:10px;}
+.rule-card .rc-h{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+.rule-card .rc-h .rc-name{font-weight:600;font-size:13.5px;margin-right:auto;}
+
+/* Scenario history */
+.sh-row{display:flex;gap:10px;align-items:center;padding:11px 12px;border:1px solid var(--border);border-radius:9px;
+  background:var(--surface);margin-bottom:8px;}
+.sh-row .shr-main{flex:1;min-width:0;}
+.sh-row .shr-t{font-weight:600;font-size:13.5px;}
+.sh-row .shr-s{color:var(--muted);font:500 11px/1.4 var(--mono);margin-top:3px;}
+
+/* member rows */
+.member-row{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:9px;
+  background:var(--surface);margin-bottom:8px;}
+.member-row .mr-main{flex:1;min-width:0;}
+.member-row .mr-name{font-weight:600;font-size:13.5px;}
+.member-row .mr-sub{color:var(--muted);font:500 11px/1.4 var(--mono);}
+.member-row select.select{min-height:36px;padding:6px 8px;}
+.invite-copy{word-break:break-all;font:500 11px/1.5 var(--mono);background:var(--bg-2);border:1px solid var(--border);
+  border-radius:8px;padding:10px;color:var(--cyan);margin:8px 0;}
+.team-switcher{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;}
+.team-switcher .ts-opt{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);
+  border-radius:9px;background:var(--surface);cursor:pointer;text-align:left;color:var(--text);width:100%;}
+.team-switcher .ts-opt.active{border-color:var(--cyan);background:rgba(95,179,196,.06);}
+.team-switcher .ts-opt .ts-role{margin-left:auto;font:600 10px/1 var(--mono);text-transform:uppercase;color:var(--muted);}
+.drawer-section{margin:18px 0 10px;font:600 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);}
 </style>
 </head>
 <body>
@@ -702,7 +782,9 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
     <div class="topbar-right">
       <div class="clock" id="clock"><span class="dot">●</span> LIVE<br><span id="clockTime">—</span></div>
       <button class="btn" id="openCmdk" aria-label="Open command palette" data-testid="cmdk-trigger" style="min-height:38px"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span class="lbl mono" style="font-size:11px">⌘K</span></button>
+      <button class="btn icon-only" id="openAlerts" aria-label="Open alerts" data-testid="alerts-trigger" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span class="alert-badge" id="alertCount" data-testid="alert-count" hidden>0</span></button>
       <button class="btn-atom" id="openAtom" data-testid="open-atom"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l2.5 2.5M16.5 16.5 19 19M19 5l-2.5 2.5M7.5 16.5 5 19"/><circle cx="12" cy="12" r="3"/></svg><span class="lbl">Ask ATOM</span></button>
+      <button class="btn identity-btn" id="identityBtn" aria-label="Account and team" data-testid="identity-btn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span class="lbl" id="identityLabel">Sign in</span></button>
     </div>
   </header>
   <div class="nav-scrim" id="navScrim" aria-hidden="true"></div>
@@ -767,5 +849,6 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script src="assets/app.js"></script>
+<script src="assets/collab.js"></script>
 </body>
 </html>

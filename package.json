@@ -1,0 +1,17 @@
+{
+  "name": "agri-crisis-nexus",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AGRI-NEXUS Command Center — live crisis intelligence, teams, missions, war-room scenarios, and alerts.",
+  "scripts": {
+    "migrate": "node api/_migrate.js",
+    "test": "node tests/run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

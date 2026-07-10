@@ -54,6 +54,7 @@ function boot(){
   activateMode('command');
   startLive();
   refreshIcons();
+  if(window.AGRI_COLLAB) window.AGRI_COLLAB.init();
 }
 
 /* Respect reduced motion for JS-driven animation */
@@ -111,6 +112,8 @@ function bindShell(){
   $('#navScrim').addEventListener('click',closeMobileNav);
   $('#openCmdk').addEventListener('click',()=>openCmdk());
   $('#cmdkScrim').addEventListener('click',closeCmdk);
+  const oa=$('#openAlerts'); if(oa) oa.addEventListener('click',()=>{ if(window.AGRI_COLLAB) window.AGRI_COLLAB.openAlerts(); });
+  const ib=$('#identityBtn'); if(ib) ib.addEventListener('click',()=>{ if(window.AGRI_COLLAB) window.AGRI_COLLAB.openIdentity(); });
   document.addEventListener('keydown',e=>{
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); toggleCmdk(); return; }
     if($('#cmdk').classList.contains('open')){ handleCmdkKeys(e); return; }
@@ -257,6 +260,13 @@ function renderCommand(p){
       <div class="missions" id="cmdMissions" data-testid="missions"></div>
     </div>
 
+    <div class="section" id="teamMissionsSection" data-testid="team-missions-section">
+      <div class="section-title"><h3>${icon('users-round')} Team missions</h3>
+        <div class="btn-row"><span class="meta" id="teamMissionsMeta">persistent · team-scoped</span><button class="btn sm primary" id="newMissionBtn" data-testid="new-mission" hidden>${icon('plus')} New mission</button></div>
+      </div>
+      <div id="teamMissions"></div>
+    </div>
+
     <div class="section">
       <div class="section-title"><h3>${icon('radio')} Live event rail</h3><span class="meta">public feeds · GDACS · USGS · NASA EONET</span></div>
       <div class="ticker" id="cmdTicker" data-testid="ticker"></div>
@@ -306,6 +316,7 @@ function renderCommand(p){
 
   // Mission priority queue
   renderMissions();
+  if(window.AGRI_COLLAB) window.AGRI_COLLAB.onCommandRendered();
 
   // Posture + ticker paint from current live state
   updatePosture(); updateTicker();
@@ -872,6 +883,7 @@ function drawStrategyChart(){
 
 /* ================= SIMULATE / WAR ROOM 2.0 ================= */
 let simSel={pillar:null,threat:null}, simIntensity=3, simHorizon='mid';
+let lastSimResult=null; // snapshot of the most recent resolved engagement (for Save Scenario)
 const HORIZON_MOD={near:-4,mid:0,long:6}; // longer horizon lets structural pillars compound
 function renderSimulate(p){
   p.innerHTML=`
@@ -896,10 +908,14 @@ function renderSimulate(p){
     </div>
     <div class="section">
       <div class="section-title"><h3>${icon('crosshair')} Engagement outcome</h3>
-        <div class="btn-row"><button class="btn sm" id="simRestart">${icon('rotate-ccw')} Reset</button><button class="btn sm primary" id="simAtom">${icon('sparkles')} Ask ATOM to war-game</button></div>
+        <div class="btn-row"><button class="btn sm" id="simRestart">${icon('rotate-ccw')} Reset</button><button class="btn sm" id="simSave" data-testid="sim-save" disabled>${icon('save')} Save scenario</button><button class="btn sm primary" id="simAtom">${icon('sparkles')} Ask ATOM to war-game</button></div>
       </div>
       <div class="sim-console" id="simConsole"></div>
       <div id="simExtra"></div>
+    </div>
+    <div class="section" id="scenarioHistorySection" data-testid="scenario-history-section" hidden>
+      <div class="section-title"><h3>${icon('history')} Saved scenarios</h3><span class="meta" id="scenarioHistoryMeta">team-scoped · replayable</span></div>
+      <div id="scenarioHistory"></div>
     </div>`;
   $('#simPillars').innerHTML=D.SIM_PILLARS.map(pl=>`
     <button class="move-card pillar-c" data-id="${pl.id}" data-testid="sim-pillar-${pl.id}"><div class="mi">${pl.short}</div><div><div class="mt">${esc(pl.name)}</div><div class="md">${esc(pl.desc)}</div></div></button>`).join('');
@@ -915,7 +931,10 @@ function renderSimulate(p){
     const tn=simSel.threat?D.SIM_THREATS.find(x=>x.id===simSel.threat).name:'a systemic threat';
     openAtom('War-game deploying '+pn+' against '+tn+' at intensity '+simIntensity+'/5 over a '+simHorizon+' horizon. Compare three courses of action with effectiveness, residual risk, trade-offs and a recommendation.');
   });
+  const saveBtn=$('#simSave');
+  if(saveBtn) saveBtn.addEventListener('click',()=>{ if(window.AGRI_COLLAB) window.AGRI_COLLAB.saveScenario(); });
   resolveSim();
+  if(window.AGRI_COLLAB) window.AGRI_COLLAB.onSimRendered();
 }
 // deterministic effectiveness: base pairing ± intensity penalty ± horizon mod, clamped
 function simEff(pillar,threat,intensity,horizon,coaMod){
@@ -938,7 +957,10 @@ function resolveSim(){
   const c=$('#simConsole'), extra=$('#simExtra'); if(!c)return;
   if(!simSel.pillar||!simSel.threat){
     c.innerHTML=`<div class="outcome muted">${icon('mouse-pointer-click','ic')}  Select one pillar and one threat to model an engagement.\n\nAdjust intensity and horizon to see the effectiveness, engagement sequence, before/after vectors and three courses of action update deterministically.</div>`;
-    if(extra) extra.innerHTML=''; refreshIcons(); return;
+    if(extra) extra.innerHTML=''; lastSimResult=null;
+    const sb0=$('#simSave'); if(sb0) sb0.disabled=true;
+    if(window.AGRI_COLLAB) window.AGRI_COLLAB.onSimResolved();
+    refreshIcons(); return;
   }
   const pillar=simSel.pillar, threat=simSel.threat;
   const o=D.SIM_OUTCOMES[pillar+'_'+threat];
@@ -987,6 +1009,19 @@ function resolveSim(){
       </div>`).join('')}
     </div>
     <p class="muted" style="font-size:11px;margin-top:12px;font-family:var(--mono)">Effectiveness = base pairing model ± intensity penalty ± horizon modifier ± COA modifier, clamped 5–97%. Deterministic — no randomness. Recommended COA: <strong style="color:var(--text)">${esc(coas.find(c=>c.eff===bestEff).name)}</strong>.</p>`;
+  // snapshot for Save Scenario (persistence)
+  lastSimResult={
+    title:pn+' vs '+tn,
+    threat:tn, pillar:pn,
+    params:{pillarId:pillar,threatId:threat,intensity:simIntensity,horizon:simHorizon},
+    result:{effectiveness:eff,rating:rating,residual:100-eff,
+      recommendedCoa:coas.find(c=>c.eff===bestEff).name,
+      coas:coas.map(co=>({name:co.name,eff:co.eff,tempo:co.tempo})),
+      before:Object.keys(baseVec).reduce((a,k)=>{a[k]=Math.min(95,baseVec[k]+simIntensity*4);return a;},{}),
+      after:after}
+  };
+  const sb=$('#simSave'); if(sb) sb.disabled=false;
+  if(window.AGRI_COLLAB) window.AGRI_COLLAB.onSimResolved();
   refreshIcons();
 }
 
@@ -1262,6 +1297,32 @@ async function sendAtom(prompt){
   if(stageTimer) clearInterval(stageTimer);
   renderAtomBody(); $('#atomSend').disabled=false; refreshIcons();
 }
+
+/* ================= COLLAB BRIDGE ================= */
+/* Exposes the internals the collaboration layer (assets/collab.js) needs,
+   without collab reaching into module-private scope. Kept intentionally small. */
+window.AGRI_APP = {
+  openDrawer, closeDrawer, openAtom, activateMode, refreshIcons,
+  esc, icon, badge, el, reduced: REDUCED,
+  // War Room integration
+  getSimSnapshot: ()=> lastSimResult ? JSON.parse(JSON.stringify(lastSimResult)) : null,
+  applyScenario: (params)=>{
+    if(!params) return;
+    activateMode('simulate');
+    setTimeout(()=>{
+      if(params.pillarId){ simSel.pillar=params.pillarId; }
+      if(params.threatId){ simSel.threat=params.threatId; }
+      if(params.intensity){ simIntensity=+params.intensity; const si=$('#simInt'); if(si){ si.value=simIntensity; } const iv=$('#intVal'); if(iv) iv.textContent=simIntensity+' / 5'; }
+      if(params.horizon){ simHorizon=params.horizon; const sh=$('#simHor'); if(sh) sh.value=simHorizon; }
+      $$('#simPillars .move-card').forEach(x=>x.classList.toggle('selected',x.dataset.id===simSel.pillar));
+      $$('#simThreats .move-card').forEach(x=>x.classList.toggle('selected',x.dataset.id===simSel.threat));
+      resolveSim();
+      const host=$('#simConsole'); if(host) host.scrollIntoView({behavior:'smooth',block:'nearest'});
+    },180);
+  },
+  // War Room threat/pillar catalogs for the New-mission composer + labels
+  pillars: (window.AGRI && window.AGRI.PILLARS) ? window.AGRI.PILLARS.map(p=>p.name) : [],
+};
 
 /* ================= EXPORTS ================= */
 function download(name,content,type){const b=new Blob([content],{type});const u=URL.createObjectURL(b);const a=el('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
