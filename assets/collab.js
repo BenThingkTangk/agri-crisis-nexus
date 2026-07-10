@@ -125,6 +125,10 @@
         session = j.authenticated ? j.session : null;
         paintIdentity();
         if (session) startPolling(); else stopPolling();
+        // Session resolves asynchronously, often *after* Command/War Room have
+        // already rendered their signed-out placeholders. Re-render every
+        // collaboration surface now so a restored session is reflected.
+        softRefresh();
         return session;
       })
       .catch(function (err) {
@@ -132,6 +136,7 @@
         session = null;
         paintIdentity();
         stopPolling();
+        softRefresh();
         throw err;
       });
   }

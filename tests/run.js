@@ -12,6 +12,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import vm from 'node:vm';
 
 import { hashPassword, verifyPassword, generateToken, hashToken, safeEqual } from '../api/_crypto.js';
 import {
@@ -171,6 +172,166 @@ function testMigration() {
   ok('cascades on delete somewhere', sql.includes('on delete cascade'));
 }
 
+/* ============================ frontend race regression ============================ */
+// Regression for the boot-order race fixed in this commit: boot() renders the
+// Command panel (activateMode('command') -> onCommandRendered) BEFORE the async
+// AGRI_COLLAB.init()/refreshSession() resolves. On a page reload with a valid
+// session cookie, the Command panel first paints its signed-out placeholder;
+// refreshSession() must then re-render every collaboration surface so the
+// restored session's missions/scenarios/alerts/identity actually appear.
+//
+// We load the real assets/collab.js browser IIFE inside a node:vm context with
+// hand-rolled window/document/fetch stubs (no jsdom dependency) and assert:
+//   1) with a null session, onCommandRendered() shows the placeholder and does
+//      NOT fetch /api/missions;
+//   2) after refreshSession() restores the session, the collaboration surfaces
+//      are re-rendered from the server (missions/scenarios/alerts fetched, real
+//      mission card painted, identity label + alert bell updated).
+
+function makeEl(id) {
+  const listeners = {};
+  return {
+    id: id || '',
+    innerHTML: '',
+    textContent: '',
+    hidden: false,
+    disabled: false,
+    title: '',
+    value: '',
+    onclick: null,
+    _attrs: {},
+    style: { cssText: '', setProperty() {} },
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    dataset: {},
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; },
+    removeAttribute(k) { delete this._attrs[k]; },
+    addEventListener(t, fn) { (listeners[t] || (listeners[t] = [])).push(fn); },
+    removeEventListener() {},
+    appendChild(c) { return c; },
+    removeChild() {},
+    remove() {},
+    animate() { return { onfinish: null }; },
+    focus() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+}
+
+function buildCollabSandbox() {
+  const registry = {};
+  const surfaces = ['#teamMissions', '#teamMissionsMeta', '#identityLabel', '#identityBtn',
+    '#openAlerts', '#alertCount', '#newMissionBtn', '#scenarioHistorySection', '#scenarioHistory',
+    '#simSave'];
+  surfaces.forEach((s) => { registry[s] = makeEl(s); });
+
+  const documentStub = {
+    body: makeEl('body'),
+    documentElement: makeEl('html'),
+    querySelector(sel) { return registry[sel] || null; },
+    querySelectorAll() { return []; },
+    createElement() { return makeEl(); },
+    getElementById(id) { return registry['#' + id] || null; },
+    addEventListener() {},
+  };
+
+  const SESSION = {
+    user: { id: 'u1', email: 'owner@example.com', displayName: 'Owner One' },
+    activeTeamId: 't1', role: 'owner', memberships: [], csrfToken: 'csrf-1',
+  };
+  const MISSION = {
+    id: 'm1', title: 'Restored mission', objective: 'Persisted across reload',
+    priority: 'high', status: 'active', pillar: 'Secure Infrastructure',
+    geography: '', assignee_id: null, created_by_name: 'Owner One',
+    created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-01T00:00:00Z',
+  };
+
+  const fetchLog = [];
+  function fetchStub(path, opts) {
+    fetchLog.push({ path, method: (opts && opts.method) || 'GET' });
+    let body = {};
+    if (path.indexOf('/api/auth?action=session') === 0) body = { authenticated: true, session: SESSION };
+    else if (path.indexOf('/api/missions') === 0) body = { missions: [MISSION] };
+    else if (path.indexOf('/api/scenarios') === 0) body = { scenarios: [] };
+    else if (path.indexOf('/api/alerts') === 0) body = { alerts: [], unread: 0 };
+    return Promise.resolve({ ok: true, status: 200, json() { return Promise.resolve(body); } });
+  }
+
+  const A = {
+    esc: (s) => String(s == null ? '' : s),
+    icon: () => '',
+    reduced: true,
+    refreshIcons() {},
+    getSimSnapshot() { return null; },
+    applyScenario() {},
+    activateMode() {},
+    openDrawer() {},
+    closeDrawer() {},
+    pillars: [],
+    badge: () => '',
+    el: () => makeEl(),
+  };
+
+  const windowStub = { AGRI_APP: A };
+  const sandbox = {
+    window: windowStub,
+    document: documentStub,
+    fetch: fetchStub,
+    navigator: { clipboard: { writeText: () => Promise.resolve() }, userAgent: 'test' },
+    location: { href: 'https://app.example.com/', origin: 'https://app.example.com', search: '' },
+    URLSearchParams,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    console,
+  };
+  return { sandbox, registry, fetchLog, windowStub };
+}
+
+async function flush() {
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+}
+
+async function testCollabRace() {
+  section('frontend: session-restore re-render race (regression)');
+  const src = readFileSync(join(ROOT, 'assets', 'collab.js'), 'utf8');
+  const { sandbox, registry, fetchLog, windowStub } = buildCollabSandbox();
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { filename: 'assets/collab.js' });
+
+  const collab = windowStub.AGRI_COLLAB;
+  ok('collab IIFE published window.AGRI_COLLAB', !!collab);
+  ok('exposes refreshSession bridge', collab && typeof collab.refreshSession === 'function');
+
+  // Phase 1: Command panel renders while session is still null (pre-auth boot).
+  collab.onCommandRendered();
+  await flush();
+  ok('signed-out placeholder rendered first',
+    registry['#teamMissions'].innerHTML.indexOf('Sign in to plan') !== -1);
+  ok('no /api/missions fetch while signed out',
+    !fetchLog.some((c) => c.path.indexOf('/api/missions') === 0));
+
+  // Phase 2: async session resolution restores the signed-in state.
+  const restored = await collab.refreshSession();
+  await flush();
+
+  ok('session resolved to authenticated', restored && restored.role === 'owner');
+  ok('fetched session on refresh', fetchLog.some((c) => c.path.indexOf('/api/auth?action=session') === 0));
+  ok('re-rendered team missions from server (the fix)',
+    fetchLog.some((c) => c.path.indexOf('/api/missions') === 0));
+  ok('re-loaded scenario history', fetchLog.some((c) => c.path.indexOf('/api/scenarios') === 0));
+  ok('synced alerts for restored session', fetchLog.some((c) => c.path.indexOf('/api/alerts') === 0));
+
+  ok('placeholder replaced by real mission card',
+    registry['#teamMissions'].innerHTML.indexOf('Sign in to plan') === -1 &&
+    registry['#teamMissions'].innerHTML.indexOf('Restored mission') !== -1);
+  ok('identity label shows restored owner',
+    registry['#identityLabel'].innerHTML.indexOf('Owner One') !== -1);
+  ok('alert bell revealed for signed-in user', registry['#openAlerts'].hidden === false);
+  ok('new-mission affordance revealed for owner', registry['#newMissionBtn'].hidden === false);
+}
+
 /* ============================ run ============================ */
 (async function main() {
   console.log('AGRI-NEXUS collaboration test suite');
@@ -180,6 +341,7 @@ function testMigration() {
     await testValidation();
     testHttp();
     testMigration();
+    await testCollabRace();
   } catch (e) {
     console.error('\nFATAL: test harness threw:', e && e.message);
     process.exit(1);
