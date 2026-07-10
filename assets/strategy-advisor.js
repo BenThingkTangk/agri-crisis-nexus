@@ -166,25 +166,19 @@
     renderFrame(frameId);
 
     try {
-      const prompt = frame.prompt + `\n\nRespond in this JSON format inside a \`\`\`json code block:
+      const prompt = frame.prompt + `\n\nReturn EXACTLY 4 insights. Keep each 'detail' under 350 characters. Respond ONLY with a JSON code block, no commentary:
+\`\`\`json
 {
   "frame": "${frameId}",
-  "generated_at": "ISO timestamp",
+  "generated_at": "ISO",
   "insights": [
-    {
-      "title": "sharp headline",
-      "detail": "2-3 sentence explanation with specifics",
-      "pillar": "secure|coord|bio|clinical|cross",
-      "urgency": 1-10,
-      "confidence": 1-10,
-      "kpi": "concrete metric or answer that would resolve/measure this",
-      "tags": ["signal","risk","move","opportunity"]
-    }
+    {"title":"sharp headline","detail":"<=350 chars with specifics","pillar":"secure|coord|bio|clinical|cross","urgency":1-10,"confidence":1-10,"kpi":"concrete metric","tags":["signal","risk","move","opportunity"]}
   ],
-  "synthesis": "one-paragraph strategic synthesis for Ben and Joel",
-  "questions_for_atom": ["3 followup questions the executive should ask ATOM to drill deeper"]
+  "synthesis": "<=350 char strategic synthesis",
+  "questions_for_atom": ["q1","q2","q3"]
 }
-Ensure valid JSON. Do not include commentary outside the code block.`;
+\`\`\`
+Valid JSON only. No text outside the code block.`;
 
       const res = await fetch('/api/atom', {
         method: 'POST',

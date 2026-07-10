@@ -119,7 +119,7 @@ export default async function handler(req, res) {
       model: selectedModel,
       messages: fullMessages,
       temperature: 0.3,
-      max_tokens: mode === 'deep' ? 8000 : (mode === 'reasoning' ? 6000 : 2000),
+      max_tokens: mode === 'deep' ? 8000 : (mode === 'reasoning' ? 4000 : 2000),
       stream: !!stream,
       return_citations: true
     };
