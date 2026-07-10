@@ -19,6 +19,7 @@ function refreshIcons(){ if(window.lucide) try{ lucide.createIcons(); }catch(e){
 const MODES = [
   {id:'command', label:'Command', icon:'layout-dashboard'},
   {id:'map', label:'Map', icon:'globe'},
+  {id:'theater', label:'Theater', icon:'radar'},
   {id:'intel', label:'Intel', icon:'newspaper'},
   {id:'strategy', label:'Strategy', icon:'target'},
   {id:'simulate', label:'War Room', icon:'swords'},
@@ -51,10 +52,22 @@ function boot(){
   bindShell();
   buildAtom();
   buildCmdk();
-  activateMode('command');
+  activateMode(bootStartMode());
   startLive();
   refreshIcons();
   if(window.AGRI_COLLAB) window.AGRI_COLLAB.init();
+}
+/* If the URL carries shareable theater state, stash it and open the Theater. */
+function bootStartMode(){
+  try{
+    if(window.THEATER_FILTERS && location.search){
+      const s=window.THEATER_FILTERS.parseState(location.search);
+      const hasTheater=(s.layers&&s.layers.length)||(s.commodity&&s.commodity.length)||(s.severity&&s.severity.length)||
+        (s.category&&s.category.length)||(s.evidence&&s.evidence.length)||s.region||s.sel||s.sim;
+      if(hasTheater){ window.__THEATER_PENDING__=s; return 'theater'; }
+    }
+  }catch(e){}
+  return 'command';
 }
 
 /* Respect reduced motion for JS-driven animation */
@@ -81,11 +94,13 @@ function activateMode(id){
   if(id==='map') setTimeout(initMap,60);
   if(id==='resources') setTimeout(()=>drawResourceCharts(currentResTab),60);
   if(id==='strategy') setTimeout(drawStrategyChart,60);
+  // theater: pause its rAF loop when not visible; resume on entry
+  if(window.THEATER&&window.THEATER.setActive){ if(id==='theater') setTimeout(()=>window.THEATER.setActive(true),60); else window.THEATER.setActive(false); }
 }
 
 function renderMode(id){
   const p=$('#panel-'+id);
-  ({command:renderCommand,map:renderMap,intel:renderIntel,strategy:renderStrategy,
+  ({command:renderCommand,map:renderMap,theater:renderTheater,intel:renderIntel,strategy:renderStrategy,
     simulate:renderSimulate,resources:renderResources,atom:renderAtomMode}[id])(p);
   refreshIcons();
 }
@@ -491,6 +506,14 @@ function updateTicker(){
     if(url) node.addEventListener('click',()=>window.open(url,'_blank','noopener'));
   });
   refreshIcons();
+}
+
+/* ================= GEOSPATIAL THEATER ================= */
+function renderTheater(p){
+  if(window.THEATER && window.THEATER.render){ window.THEATER.render(p); return; }
+  p.innerHTML=`<div class="mode-head"><div class="eyebrow">Global Agricultural Intelligence Theater</div>
+    <h2>Theater <em>unavailable</em></h2>
+    <p class="lede">The geospatial theater modules failed to load. All bundled intelligence remains available in the Command, Map, Intel, Strategy and War Room modes.</p></div>`;
 }
 
 /* ================= MAP ================= */
@@ -1210,7 +1233,8 @@ function renderAtomBody(){
       if(m.pending) inner='<span class="spinner"></span> '+esc(m.stage||'analyzing…');
       else if(m.role==='assistant'&&m.ui) inner=renderAtomUI(m.ui,i);
       else inner=esc(m.content);
-      return `<div class="atom-msg ${m.role}"><div class="who">${m.role==='user'?'You':'ATOM'}</div><div class="bubble">${inner}</div></div>`;
+      const note=(m.role==='assistant'&&m.actionNote)?`<div class="au-block au-gen">${icon('zap')} ${esc(m.actionNote)} · view in Theater</div>`:'';
+      return `<div class="atom-msg ${m.role}"><div class="who">${m.role==='user'?'You':'ATOM'}</div><div class="bubble">${note}${inner}</div></div>`;
     }).join('');
     // wire follow-up chips
     $$('#atomBody .au-followups button').forEach(btn=>btn.addEventListener('click',()=>sendAtom(btn.dataset.q)));
@@ -1283,7 +1307,19 @@ async function sendAtom(prompt){
       body:JSON.stringify({messages:atomHistory.filter(m=>!m.pending).map(m=>({role:m.role,content:m.content})),mode:atomMode,stream:false,context:ctx})});
     if(!res.ok){ throw new Error('HTTP '+res.status); }
     const data=await res.json();
-    const content = data?.choices?.[0]?.message?.content || 'No content returned.';
+    let content = data?.choices?.[0]?.message?.content || 'No content returned.';
+    // Extract + execute allowlisted theater actions (validated schema; never arbitrary code).
+    if(window.THEATER_ACTIONS && window.THEATER && window.THEATER.executeActions){
+      const actx={ nodeIds:(window.THEATER_DATA&&window.THEATER_DATA.NODE_BY_ID)||null };
+      const pa=window.THEATER_ACTIONS.parseAtomActions(content, actx);
+      if(pa.actions.length||pa.rejected.length) content=pa.text||content;
+      if(pa.actions.length){
+        activateMode('theater');
+        const acts=pa.actions.slice();
+        setTimeout(()=>{ try{ window.THEATER.executeActions(acts); }catch(e){} },220);
+        pending.actionNote=pa.actions.length+' theater action'+(pa.actions.length>1?'s':'')+' applied';
+      }
+    }
     const parsed=parseAtomUI(content);
     pending.pending=false;
     if(parsed){ pending.ui=parsed.ui; pending.content=parsed.text||content; }
@@ -1306,8 +1342,16 @@ window.AGRI_APP = {
   esc, icon, badge, el, reduced: REDUCED,
   // War Room integration
   getSimSnapshot: ()=> lastSimResult ? JSON.parse(JSON.stringify(lastSimResult)) : null,
+  // Theater/Food-War sim writes its snapshot here so collab's Save Scenario can read it.
+  setSimSnapshot: (snap)=>{ lastSimResult = snap || null; },
   applyScenario: (params)=>{
     if(!params) return;
+    // Food War scenarios replay into the geospatial theater, not the classic War Room.
+    if(params.type==='foodwar'){
+      activateMode('theater');
+      setTimeout(()=>{ if(window.THEATER&&window.THEATER.replay) window.THEATER.replay(params); },200);
+      return;
+    }
     activateMode('simulate');
     setTimeout(()=>{
       if(params.pillarId){ simSel.pillar=params.pillarId; }

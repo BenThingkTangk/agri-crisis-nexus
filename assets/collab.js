@@ -980,5 +980,6 @@
     onSimRendered: onSimRendered,
     onSimResolved: onSimResolved,
     saveScenario: saveScenario,
+    openMissionComposer: openMissionComposer,
   };
 })();
