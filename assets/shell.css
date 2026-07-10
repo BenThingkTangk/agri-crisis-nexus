@@ -47,6 +47,11 @@ body{
   margin: 0 !important;
 }
 #topbar{ display: none !important; }  /* replaced by new nav */
+#app > nav#sidebar,
+#app > header#topbar,
+#app > #filterbar { display: none !important; }
+/* main-content is emptied after relocation; hide via [data-shell-hide] class */
+#main-content[data-shell-hide]{ display: none !important; }
 
 /* -------- Shell top nav (sticky) -------- */
 .shell-nav{

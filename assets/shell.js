@@ -86,8 +86,8 @@
 
     // Section 0 — Command hero
     shell.appendChild(buildHeroSection());
-    // Sections 1–7 — module-hosted
-    for (const s of SECTIONS.slice(1)) shell.appendChild(buildSection(s));
+    // Sections 1..N-2 — module-hosted (skip last which is ask)
+    for (const s of SECTIONS.slice(1, -1)) shell.appendChild(buildSection(s));
     // Ask ATOM final section (uses existing ATOM launcher, but shows a big landing card)
     shell.appendChild(buildAskSection());
     // Footer
@@ -240,6 +240,9 @@
     document.querySelectorAll('.module').forEach(m => {
       if (!m.closest('.shell-section')) m.classList.remove('active');
     });
+    // Now safe to hide the now-empty main-content wrapper
+    const mc = document.getElementById('main-content');
+    if (mc) mc.setAttribute('data-shell-hide', '1');
   }
 
   function wireActiveNav(){
@@ -326,22 +329,32 @@
     }, 500);
   }
 
+  function boot(){
+    try {
+      if (window._shellBooted) return;
+      window._shellBooted = true;
+      buildNav();
+      buildShell();
+      relocateModules();
+      wireActiveNav();
+      updateHeroStats();
+      seedMarquee();
+      initAllModules();
+      // Kill the fixed filterbar that lives above main-content
+      const fb = document.getElementById('filterbar'); if (fb) fb.style.display = 'none';
+      window.dispatchEvent(new CustomEvent('shell:ready'));
+    } catch (e) {
+      console.error('Shell build failed:', e);
+    }
+  }
+
+  function pollForModules(attempt = 0){
+    const modCount = document.querySelectorAll('.module').length;
+    if (modCount >= 13) { boot(); return; }
+    if (attempt >= 60) { console.warn('Shell: gave up waiting for modules; booting anyway'); boot(); return; }
+    setTimeout(() => pollForModules(attempt + 1), 300);
+  }
+
   // -------- Init --------
-  whenReady(() => {
-    // Wait a beat for legacy DOM
-    setTimeout(() => {
-      try {
-        buildNav();
-        buildShell();
-        relocateModules();
-        wireActiveNav();
-        updateHeroStats();
-        seedMarquee();
-        initAllModules();
-        window.dispatchEvent(new CustomEvent('shell:ready'));
-      } catch (e) {
-        console.error('Shell build failed:', e);
-      }
-    }, 150);
-  });
+  whenReady(() => setTimeout(() => pollForModules(0), 100));
 })();
