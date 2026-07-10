@@ -110,10 +110,10 @@ export default async function handler(req, res) {
 
     // Model selection based on mode
     let selectedModel = model;
-    if (mode === 'reasoning') selectedModel = 'sonar-reasoning';
+    if (mode === 'reasoning') selectedModel = 'sonar-reasoning-pro';
     if (mode === 'deep') selectedModel = 'sonar-deep-research';
     if (mode === 'quick') selectedModel = 'sonar';
-    if (mode === 'build') selectedModel = 'sonar-reasoning';
+    if (mode === 'build') selectedModel = 'sonar-reasoning-pro';
 
     const pplxBody = {
       model: selectedModel,

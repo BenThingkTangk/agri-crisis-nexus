@@ -58,7 +58,7 @@
         <div class="strategy-header-l">
           <div class="strategy-eyebrow">◆ NIRMATA HOLDINGS · STRATEGY ADVISOR</div>
           <div class="strategy-title">What we should build. What we should answer. What we should do next.</div>
-          <div class="strategy-sub">Powered by sonar-reasoning · Refreshed on-demand · Ben O'Leary (CQO) + Joel Bedard (Co-founder)</div>
+          <div class="strategy-sub">Powered by sonar-reasoning-pro · Refreshed on-demand · Ben O'Leary (CQO) + Joel Bedard (Co-founder)</div>
         </div>
         <div class="strategy-header-r">
           <button id="strategy-refresh-all" class="strategy-btn strategy-btn-primary">↻ REFRESH ALL FRAMES</button>
@@ -93,7 +93,7 @@
         <div class="strategy-empty">
           <div class="strategy-empty-icon">◆</div>
           <div class="strategy-empty-title">Pick a strategic lens above</div>
-          <div class="strategy-empty-sub">ATOM will reason through the latest agri-crisis signals via sonar-reasoning and surface the sharpest 5-6 insights for that frame — tied to Nirmata's four pillars.</div>
+          <div class="strategy-empty-sub">ATOM will reason through the latest agri-crisis signals via sonar-reasoning-pro and surface the sharpest 5-6 insights for that frame — tied to Nirmata's four pillars.</div>
           <button id="strategy-run-first" class="strategy-btn strategy-btn-primary">GENERATE STRATEGIC BRIEFING</button>
         </div>
       </div>
@@ -244,7 +244,7 @@ Ensure valid JSON. Do not include commentary outside the code block.`;
             <span></span><span></span><span></span>
           </div>
           <div class="strategy-loading-label">ATOM reasoning through <strong>${frame.label}</strong>…</div>
-          <div class="strategy-loading-sub">sonar-reasoning · scanning global signals · mapping to Nirmata pillars</div>
+          <div class="strategy-loading-sub">sonar-reasoning-pro · scanning global signals · mapping to Nirmata pillars</div>
         </div>`;
       return;
     }
