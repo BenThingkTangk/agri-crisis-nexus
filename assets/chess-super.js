@@ -1,167 +1,416 @@
-/* ==============================================================
-   CHESS SUPERCHARGE — Live moves feed + ATOM strategist mode
-   Enhances existing chess board without replacing it
-   ============================================================== */
+/* ================================================================
+   CHESS-SUPER.JS — Nirmata vs. The Crisis
+   Fully interactive strategic board game.
+
+   You play as Nirmata (4 pillar pieces) vs. 8 agri-crisis threats.
+   Click a piece, click a valid square, ATOM narrates the move.
+   Turn-based: after your move, the crisis retaliates.
+
+   Board: 8x8 grid.
+   - Nirmata pillars start on rank 1 (bottom row):
+       Secure(SI), Coordination(CO), RegenBio(RB), Clinical(CL)
+       centered at files d,e,f,g.
+   - Threats occupy rank 7 (top row), 8 pieces across files a-h:
+       Famine, Hormuz, Palantir, Deere, Bayer, ExportBan, Drought, Locust
+   - Neutral: rank 4 & 5 have "resource zones" (grain, water, biotech IP,
+     clinical data) that give bonuses when captured.
+   ================================================================ */
 (function(){
   'use strict';
 
-  function inject() {
-    // Find chess pane
-    const pane = document.querySelector('.module[data-mod="chess"]')
-      || document.querySelector('[data-tab-pane="chess"]')
-      || document.getElementById('pane-chess')
-      || document.querySelector('.chess-board')?.closest('.tab-pane, .pane, .module');
-    if (!pane) return setTimeout(inject, 1000);
+  const PILLARS = [
+    { id:'SI', name:'Secure Infrastructure', short:'SEC', icon:'🛡️', hp: 10, atk: 3, moves: ['line'], file: 3 },
+    { id:'CO', name:'Coordination Layer',    short:'COORD', icon:'🧭', hp: 8, atk: 2, moves: ['knight','diag'], file: 4 },
+    { id:'RB', name:'Regenerative Biology',  short:'BIO', icon:'🧬', hp: 12, atk: 2, moves: ['line'], file: 5 },
+    { id:'CL', name:'Clinical Intelligence', short:'CLIN', icon:'🩺', hp: 9, atk: 4, moves: ['diag','knight'], file: 6 }
+  ];
 
-    // Only inject once
-    if (document.getElementById('chess-super-panel')) return;
+  const THREATS = [
+    { id:'FAM', name:'Famine Cascade',      icon:'☠️',  hp: 8, atk: 3, moves:['line'],   file: 0 },
+    { id:'HRZ', name:'Hormuz Shock',         icon:'⚓', hp: 9, atk: 3, moves:['diag'],   file: 1 },
+    { id:'PAL', name:'Palantir Lock-in',     icon:'🕸️', hp: 10, atk: 2, moves:['line'],  file: 2 },
+    { id:'DEE', name:'Deere Platform',       icon:'🚜', hp: 8, atk: 2, moves:['knight'], file: 3 },
+    { id:'BAY', name:'Bayer Digital-Bio',    icon:'💊', hp: 9, atk: 2, moves:['diag'],   file: 4 },
+    { id:'EXP', name:'Export Bans',          icon:'🚫', hp: 7, atk: 4, moves:['line'],   file: 5 },
+    { id:'DRT', name:'Drought Wave',         icon:'🏜️', hp: 10, atk: 2, moves:['knight'],file: 6 },
+    { id:'LOC', name:'Locust Swarm',         icon:'🦗', hp: 6, atk: 3, moves:['diag'],   file: 7 }
+  ];
 
-    const panel = document.createElement('div');
-    panel.id = 'chess-super-panel';
-    panel.className = 'panel';
-    panel.style.cssText = 'margin-top:16px;background:linear-gradient(180deg,rgba(255,45,85,.03),transparent);border:1px solid rgba(255,45,85,.2);border-radius:12px;overflow:hidden';
-    panel.innerHTML = `
-      <div class="panel-header" style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(255,45,85,.06);border-bottom:1px solid rgba(255,45,85,.15)">
-        <div class="win-dots">
-          <span style="background:#ff5f57"></span>
-          <span style="background:#ffbd2e"></span>
-          <span style="background:#28c840"></span>
-        </div>
-        <div style="font-family:'Clash Display',sans-serif;font-weight:600;font-size:13px;letter-spacing:.18em;color:#ff2d55">
-          ◉ LIVE GEOPOLITICAL MOVES · PAST 72H
-        </div>
-        <div style="margin-left:auto;display:flex;gap:8px">
-          <button class="chess-live-toggle active" id="chess-live-toggle">
-            <span style="width:6px;height:6px;border-radius:50%;background:#00ffb3;box-shadow:0 0 8px #00ffb3"></span>
-            LIVE
-          </button>
-          <button class="chess-live-toggle" id="chess-atom-strategist" style="border-color:rgba(0,229,255,.4);color:#00e5ff">
-            ◉ ATOM STRATEGIST
-          </button>
-        </div>
+  const RESOURCES = [
+    { file:2, rank:3, id:'G', name:'Grain Reserve',   bonus:{atk:1} },
+    { file:5, rank:3, id:'W', name:'Water Corridor',  bonus:{atk:1} },
+    { file:2, rank:4, id:'I', name:'Biotech IP',      bonus:{hp:3} },
+    { file:5, rank:4, id:'D', name:'Clinical Data',   bonus:{hp:3} }
+  ];
+
+  const state = {
+    board: null,       // 8x8 array of pieces or nulls
+    turn: 'nirmata',   // 'nirmata' | 'crisis'
+    selected: null,    // {file, rank} of selected piece
+    validMoves: [],    // [{file, rank, capture: bool}]
+    log: [],           // move history
+    over: false,
+    winner: null,
+    turnCount: 0
+  };
+
+  function makePiece(base, side){
+    return { ...base, side, hp: base.hp, atkMod: 0, hpMod: 0 };
+  }
+
+  function initBoard(){
+    const b = Array.from({length:8}, () => Array.from({length:8}, () => null));
+    for (const p of PILLARS) b[0][p.file] = makePiece(p, 'nirmata');
+    for (const t of THREATS) b[7][t.file] = makePiece(t, 'crisis');
+    for (const r of RESOURCES) b[r.rank][r.file] = { ...r, side: 'resource' };
+    state.board = b;
+    state.turn = 'nirmata';
+    state.selected = null;
+    state.validMoves = [];
+    state.log = [];
+    state.over = false;
+    state.winner = null;
+    state.turnCount = 0;
+  }
+
+  function inBounds(f, r){ return f>=0 && f<8 && r>=0 && r<8; }
+
+  function computeMoves(piece, from){
+    const moves = [];
+    const patterns = piece.moves;
+    const rng = piece.side === 'nirmata' ? 1 : -1;
+
+    if (patterns.includes('line')){
+      // 4 orthogonal directions, distance 1-3
+      for (const [df, dr] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        for (let d=1; d<=3; d++){
+          const nf = from.file + df*d, nr = from.rank + dr*d;
+          if (!inBounds(nf,nr)) break;
+          const occ = state.board[nr][nf];
+          if (occ){
+            if (occ.side !== piece.side && occ.side !== piece.side) moves.push({file:nf,rank:nr,capture:true});
+            break;
+          }
+          moves.push({file:nf,rank:nr,capture:false});
+        }
+      }
+    }
+    if (patterns.includes('diag')){
+      for (const [df,dr] of [[1,1],[-1,1],[1,-1],[-1,-1]]){
+        for (let d=1; d<=3; d++){
+          const nf = from.file + df*d, nr = from.rank + dr*d;
+          if (!inBounds(nf,nr)) break;
+          const occ = state.board[nr][nf];
+          if (occ){
+            if (occ.side !== piece.side) moves.push({file:nf,rank:nr,capture:true});
+            break;
+          }
+          moves.push({file:nf,rank:nr,capture:false});
+        }
+      }
+    }
+    if (patterns.includes('knight')){
+      for (const [df,dr] of [[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]]){
+        const nf = from.file + df, nr = from.rank + dr;
+        if (!inBounds(nf,nr)) continue;
+        const occ = state.board[nr][nf];
+        if (occ && occ.side === piece.side) continue;
+        moves.push({file:nf,rank:nr,capture:!!occ});
+      }
+    }
+    // Dedup
+    const seen = new Set();
+    return moves.filter(m => {
+      const k = `${m.file},${m.rank}`;
+      if (seen.has(k)) return false; seen.add(k); return true;
+    });
+  }
+
+  function movePiece(from, to){
+    const piece = state.board[from.rank][from.file];
+    if (!piece) return;
+    const target = state.board[to.rank][to.file];
+    let narrative = `${piece.icon} ${piece.short || piece.id} moves ${sqName(from)} → ${sqName(to)}`;
+    let capture = null;
+    if (target){
+      if (target.side === 'resource'){
+        // Absorb bonus
+        if (target.bonus.atk) piece.atkMod = (piece.atkMod||0) + target.bonus.atk;
+        if (target.bonus.hp)  { piece.hpMod = (piece.hpMod||0) + target.bonus.hp; piece.hp += target.bonus.hp; }
+        narrative += ` — captured ${target.name} (+${target.bonus.atk ? `${target.bonus.atk} ATK` : `${target.bonus.hp} HP`})`;
+      } else {
+        // Combat
+        const attackerAtk = piece.atk + (piece.atkMod||0);
+        const defenderAtk = target.atk + (target.atkMod||0);
+        target.hp -= attackerAtk;
+        piece.hp -= Math.floor(defenderAtk / 2);  // counter-damage
+        narrative += ` — engages ${target.icon} ${target.name}: dealt ${attackerAtk}, took ${Math.floor(defenderAtk/2)}`;
+        if (target.hp <= 0){
+          narrative += ` — ${target.name} eliminated`;
+          capture = target;
+        } else {
+          narrative += ` — ${target.name} HP ${target.hp}`;
+          // Attacker doesn't take target's square if defender survives
+          state.board[from.rank][from.file] = piece.hp > 0 ? piece : null;
+          if (piece.hp <= 0){
+            narrative += ` — ${piece.name} destroyed in the exchange`;
+          }
+          state.log.push(narrative);
+          return;
+        }
+      }
+    }
+    state.board[to.rank][to.file] = piece;
+    state.board[from.rank][from.file] = null;
+    if (piece.hp <= 0){
+      state.board[to.rank][to.file] = null;
+      narrative += ` — ${piece.name} destroyed`;
+    }
+    state.log.push(narrative);
+  }
+
+  function sqName({file, rank}){
+    return 'abcdefgh'[file] + (rank+1);
+  }
+
+  function endTurn(){
+    state.turnCount++;
+    // Check win
+    const nirmataLeft = countSide('nirmata');
+    const crisisLeft  = countSide('crisis');
+    if (nirmataLeft === 0){ state.over = true; state.winner = 'crisis'; render(); return; }
+    if (crisisLeft === 0){  state.over = true; state.winner = 'nirmata'; render(); return; }
+    state.turn = state.turn === 'nirmata' ? 'crisis' : 'nirmata';
+    if (state.turn === 'crisis') setTimeout(crisisAI, 900);
+    render();
+  }
+
+  function countSide(side){
+    let n = 0;
+    for (const row of state.board) for (const cell of row) if (cell && cell.side === side) n++;
+    return n;
+  }
+
+  function crisisAI(){
+    if (state.over) return;
+    // Find all crisis pieces, pick the one with best move (capture > advance)
+    const candidates = [];
+    for (let r=0; r<8; r++) for (let f=0; f<8; f++){
+      const p = state.board[r][f];
+      if (p && p.side === 'crisis'){
+        const moves = computeMoves(p, {file:f, rank:r});
+        for (const m of moves){
+          let score = 0;
+          if (m.capture){
+            const tgt = state.board[m.rank][m.file];
+            if (tgt && tgt.side === 'nirmata') score += 100 + tgt.hp;
+            else if (tgt && tgt.side === 'resource') score += 30;
+          }
+          score -= m.rank * 2;  // prefer moving down toward Nirmata
+          candidates.push({from:{file:f,rank:r}, to:m, score});
+        }
+      }
+    }
+    if (!candidates.length){ endTurn(); return; }
+    candidates.sort((a,b) => b.score - a.score);
+    const best = candidates[0];
+    movePiece(best.from, best.to);
+    endTurn();
+  }
+
+  // -------- RENDERING --------
+  function render(){
+    const host = document.getElementById('chess-host');
+    if (!host) return;
+    host.innerHTML = `
+      <div class="chess-wrap">
+        <div class="chess-board">${renderBoard()}</div>
+        <div class="chess-side">${renderHUD()}</div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px">
-        <div>
-          <div style="font-family:'Space Mono',monospace;font-size:10px;color:#7d8ba0;margin-bottom:8px;letter-spacing:.1em">◉ LIVE MOVES</div>
-          <div id="chess-live-feed" style="max-height:280px;overflow-y:auto">
-            <div style="padding:12px;color:#7d8ba0;font-family:'Rajdhani',sans-serif;font-size:12px;text-align:center">Awaiting live intel from Perplexity Sonar…</div>
+      <div class="chess-log" id="chess-log">${renderLog()}</div>
+    `;
+    wireBoard();
+  }
+
+  function renderBoard(){
+    let html = '';
+    // Rank labels + squares; render from rank 7 down to 0 for visual top-down
+    for (let r = 7; r >= 0; r--){
+      for (let f = 0; f < 8; f++){
+        const light = (f + r) % 2 === 0;
+        const piece = state.board[r][f];
+        const isValid = state.validMoves.some(m => m.file === f && m.rank === r);
+        const isSelected = state.selected && state.selected.file === f && state.selected.rank === r;
+        const capture = state.validMoves.find(m => m.file === f && m.rank === r)?.capture;
+        html += `<div class="chess-sq ${light?'light':'dark'} ${isValid?'valid':''} ${isSelected?'selected':''} ${capture?'capture':''}" data-file="${f}" data-rank="${r}">`;
+        if (piece){
+          html += `<div class="chess-piece ${piece.side}" title="${piece.name} · HP ${piece.hp || ''}">
+            <span class="chess-icon">${piece.icon}</span>
+            ${piece.hp !== undefined ? `<span class="chess-hp">${piece.hp}</span>` : ''}
+          </div>`;
+        }
+        if (isValid && !piece){ html += `<div class="chess-dot"></div>`; }
+        html += `</div>`;
+      }
+    }
+    return html;
+  }
+
+  function renderHUD(){
+    const nirmataPieces = [];
+    const crisisPieces = [];
+    for (let r=0; r<8; r++) for (let f=0; f<8; f++){
+      const p = state.board[r][f];
+      if (!p) continue;
+      if (p.side === 'nirmata') nirmataPieces.push(p);
+      else if (p.side === 'crisis') crisisPieces.push(p);
+    }
+    const winBanner = state.over
+      ? `<div class="chess-banner ${state.winner === 'nirmata' ? 'win':'lose'}">
+           ${state.winner === 'nirmata' ? '◆ Nirmata prevails' : '⚠ Crisis prevails'}
+           <button class="chess-btn" id="chess-restart">Play Again</button>
+         </div>`
+      : '';
+    const turnBanner = state.over ? '' : `
+      <div class="chess-turn ${state.turn}">
+        ${state.turn === 'nirmata' ? '◆ Your move' : '⚙ Crisis is planning…'}
+      </div>`;
+    return `
+      ${winBanner}
+      ${turnBanner}
+      <div class="chess-roster">
+        <div class="chess-roster-h">Nirmata Pillars</div>
+        ${nirmataPieces.map(p => `
+          <div class="chess-roster-item">
+            <span class="chess-icon">${p.icon}</span>
+            <div class="chess-roster-body">
+              <div class="chess-roster-name">${p.name}</div>
+              <div class="chess-roster-stats">HP ${p.hp} · ATK ${p.atk + (p.atkMod||0)}</div>
+            </div>
           </div>
-        </div>
-        <div>
-          <div style="font-family:'Space Mono',monospace;font-size:10px;color:#7d8ba0;margin-bottom:8px;letter-spacing:.1em">◉ ACTOR PROBE</div>
-          <select id="chess-actor-select" style="width:100%;padding:8px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#fff;font-family:'Rajdhani',sans-serif;font-size:12px;margin-bottom:8px">
-            <option value="">— select actor for deep probe —</option>
-          </select>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-            <button class="chess-live-toggle" data-probe="moves" style="border-color:rgba(255,45,85,.4);color:#ff2d55">NEXT MOVES</button>
-            <button class="chess-live-toggle" data-probe="weak" style="border-color:rgba(245,200,66,.4);color:#f5c842">WEAK POINTS</button>
-            <button class="chess-live-toggle" data-probe="lever" style="border-color:rgba(0,229,255,.4);color:#00e5ff">OUR LEVERS</button>
-            <button class="chess-live-toggle" data-probe="counter" style="border-color:rgba(191,95,255,.4);color:#bf5fff">COUNTER-PLAYS</button>
-          </div>
-          <div id="actor-probe-result" style="margin-top:12px;padding:10px;background:rgba(0,0,0,.3);border-radius:8px;font-family:'Satoshi',sans-serif;font-size:11px;color:#a8b4c8;min-height:60px;line-height:1.5">
-            Pick an actor and a probe type to interrogate their playbook via ATOM.
-          </div>
-        </div>
+        `).join('')}
       </div>
-      <div style="padding:0 16px 16px">
-        <div style="font-family:'Space Mono',monospace;font-size:10px;color:#7d8ba0;margin-bottom:8px;letter-spacing:.1em">◉ AI-GENERATED CHESS SCENARIOS</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="chess-live-toggle" data-cscen="ru-wheat">RU cuts Ukraine wheat pipeline</button>
-          <button class="chess-live-toggle" data-cscen="cn-embargo">CN embargoes AU wheat</button>
-          <button class="chess-live-toggle" data-cscen="in-rice">IN full rice export halt</button>
-          <button class="chess-live-toggle" data-cscen="us-fert">US fertilizer weaponized</button>
-          <button class="chess-live-toggle" data-cscen="tr-corridor">TR closes Bosphorus grain traffic</button>
-          <button class="chess-live-toggle" data-cscen="opec-food">OPEC-style food cartel forms</button>
-        </div>
+      <div class="chess-roster">
+        <div class="chess-roster-h">Active Threats</div>
+        ${crisisPieces.map(p => `
+          <div class="chess-roster-item threat">
+            <span class="chess-icon">${p.icon}</span>
+            <div class="chess-roster-body">
+              <div class="chess-roster-name">${p.name}</div>
+              <div class="chess-roster-stats">HP ${p.hp} · ATK ${p.atk}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="chess-actions">
+        <button class="chess-btn" id="chess-restart-2">↻ New Game</button>
+        <button class="chess-btn chess-btn-primary" id="chess-ask-atom">Ask ATOM for a strategy</button>
       </div>
     `;
-    pane.appendChild(panel);
+  }
 
-    // Populate actor select from CHESS_ACTORS
-    const sel = document.getElementById('chess-actor-select');
-    if (window.CHESS_ACTORS && sel) {
-      window.CHESS_ACTORS.forEach(a => {
-        const opt = document.createElement('option');
-        opt.value = a.name || a.actor || a.country || '';
-        opt.textContent = `${a.name || a.actor || a.country} ${a.role ? '· ' + a.role : ''}`;
-        sel.appendChild(opt);
-      });
+  function renderLog(){
+    if (!state.log.length) return `<div class="chess-log-empty">Move a pillar to begin. Click a piece, then click a highlighted square.</div>`;
+    return `
+      <div class="chess-log-h">Move Log</div>
+      <div class="chess-log-list">
+        ${state.log.slice(-8).reverse().map((entry, i) => `
+          <div class="chess-log-item">
+            <span class="chess-log-turn">T${state.log.length - i}</span>
+            <span>${entry}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function wireBoard(){
+    document.querySelectorAll('.chess-sq').forEach(sq => {
+      sq.addEventListener('click', () => onSquareClick(+sq.dataset.file, +sq.dataset.rank));
+    });
+    const restart = document.getElementById('chess-restart') || document.getElementById('chess-restart-2');
+    if (restart) restart.addEventListener('click', () => { initBoard(); render(); });
+    const restart2 = document.getElementById('chess-restart-2');
+    if (restart2 && restart2 !== restart) restart2.addEventListener('click', () => { initBoard(); render(); });
+    const ask = document.getElementById('chess-ask-atom');
+    if (ask) ask.addEventListener('click', () => {
+      const brief = buildStrategicBrief();
+      if (window.ATOM && ATOM.ask) ATOM.ask(brief, { mode: 'reasoning' });
+    });
+  }
+
+  function onSquareClick(file, rank){
+    if (state.over || state.turn !== 'nirmata') return;
+    const piece = state.board[rank][file];
+    // If we have a selection, and this is a valid move, execute
+    if (state.selected){
+      const move = state.validMoves.find(m => m.file === file && m.rank === rank);
+      if (move){
+        movePiece(state.selected, {file, rank});
+        state.selected = null;
+        state.validMoves = [];
+        endTurn();
+        return;
+      }
+      // Otherwise: reselect if own piece
+      if (piece && piece.side === 'nirmata'){
+        state.selected = {file, rank};
+        state.validMoves = computeMoves(piece, {file, rank});
+      } else {
+        state.selected = null;
+        state.validMoves = [];
+      }
+      render();
+      return;
     }
-
-    // Wire live toggle
-    document.getElementById('chess-live-toggle').onclick = () => {
-      window.LIVE?.toggle();
-      document.getElementById('chess-live-toggle').classList.toggle('active');
-    };
-    document.getElementById('chess-atom-strategist').onclick = () => {
-      window.ATOM?.ask(
-        'You are now the Chief Strategist. Based on the current chess board, tell me: (1) the single highest-EV move each major state actor will play in the next 30 days, (2) the top three moves Nirmata Holdings should make to position across these vectors, (3) the two black-swan risks not on our board yet. Cite sources.',
-        { mode: 'reasoning' }
-      );
-    };
-
-    // Actor probe buttons
-    panel.querySelectorAll('[data-probe]').forEach(btn => {
-      btn.onclick = async () => {
-        const actor = sel.value;
-        if (!actor) { flash(document.getElementById('actor-probe-result'), 'Select an actor first.'); return; }
-        const probe = btn.dataset.probe;
-        const prompts = {
-          moves: `What are the 3 highest-probability moves ${actor} will make in the global food/agriculture chessboard over the next 60 days? For each: move description, probability %, trigger conditions, market impact. Cite sources.`,
-          weak: `What are the 3 most exploitable weak points of ${actor} in the current food/agriculture geopolitical landscape? For each: weakness, why it matters, who could exploit it. Cite sources.`,
-          lever: `What are the specific levers Nirmata Holdings (across its four pillars: Secure Infrastructure / post-quantum crypto, Coordination Layer / human-centered ops, Regenerative Biology / soil & biotech, Clinical Intelligence / decision AI) could pull vis-à-vis ${actor} in the current food-war landscape? Give 3 concrete plays. Cite sources.`,
-          counter: `List 3 concrete counter-plays that other actors (state or corporate) would deploy against ${actor}'s recent moves in agriculture/food/commodities. Include cost, timeline, probability of success. Cite sources.`
-        };
-        const box = document.getElementById('actor-probe-result');
-        box.innerHTML = '<span class="atom-typing"><span></span><span></span><span></span></span> Probing…';
-        const result = await window.ATOM?.silentQuery(prompts[probe], 'reasoning');
-        if (result && result.text) {
-          const clean = result.text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-          box.innerHTML = renderMd(clean) + (result.citations?.length
-            ? `<div style="margin-top:8px;padding-top:6px;border-top:1px dashed rgba(255,255,255,.08);font-family:'Space Mono',monospace;font-size:9px;color:#7d8ba0">${result.citations.slice(0,4).map((c,i)=>`<a href="${c}" target="_blank" style="color:#00e5ff;margin-right:8px">[${i+1}]</a>`).join('')}</div>`
-            : '');
-        } else {
-          box.textContent = 'Signal degraded. Retry.';
-        }
-      };
-    });
-
-    // Chess scenarios
-    panel.querySelectorAll('[data-cscen]').forEach(btn => {
-      btn.onclick = () => {
-        const s = btn.dataset.cscen;
-        const map = {
-          'ru-wheat': 'Russia cuts all Ukraine wheat pipeline access',
-          'cn-embargo': 'China embargoes Australian wheat imports fully',
-          'in-rice': 'India halts all rice exports for 12 months',
-          'us-fert': 'US weaponizes fertilizer/phosphate exports vs. adversaries',
-          'tr-corridor': 'Turkey closes Bosphorus to grain traffic',
-          'opec-food': 'A food-exporter cartel (BR-AR-RU-UA-KZ) forms on OPEC model'
-        };
-        window.ATOM?.ask(
-          `Chess scenario: "${map[s]}". Play out the next 6 moves in this game — who moves next, what tools they use, cascade effects, and where Nirmata Holdings positions to profit / mitigate. Emit an atom-artifact with type "scenario".`,
-          { mode: 'reasoning' }
-        );
-      };
-    });
+    // No selection: only allow selecting own piece
+    if (piece && piece.side === 'nirmata'){
+      state.selected = {file, rank};
+      state.validMoves = computeMoves(piece, {file, rank});
+      render();
+    }
   }
 
-  function renderMd(text) {
-    return text
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/\*\*(.+?)\*\*/g,'<strong style="color:#00e5ff">$1</strong>')
-      .replace(/\*(.+?)\*/g,'<em style="color:#f5c842">$1</em>')
-      .replace(/\[(\d+)\]/g,'<sup style="color:#00e5ff">[$1]</sup>')
-      .replace(/^-\s+(.+)$/gm,'<div style="margin:3px 0;padding-left:12px;border-left:2px solid rgba(0,229,255,.3)">$1</div>')
-      .replace(/\n\n/g,'<br><br>').replace(/\n/g,'<br>');
+  function buildStrategicBrief(){
+    const nir = [];
+    const cri = [];
+    for (let r=0; r<8; r++) for (let f=0; f<8; f++){
+      const p = state.board[r][f];
+      if (!p || p.side === 'resource') continue;
+      const item = `${p.name} at ${sqName({file:f,rank:r})} (HP ${p.hp})`;
+      if (p.side === 'nirmata') nir.push(item); else cri.push(item);
+    }
+    return `We're playing Nirmata vs. the Crisis on the strategic board.
+Nirmata pieces: ${nir.join('; ')}.
+Active threats: ${cri.join('; ')}.
+Last few moves: ${state.log.slice(-3).join(' | ') || '(none yet)'}.
+Give me the sharpest next-move recommendation, why, and what to watch for from the crisis retaliation. Keep it tactical and specific.`;
   }
 
-  function flash(el, msg) {
-    if (!el) return;
-    const prev = el.innerHTML;
-    el.innerHTML = `<span style="color:#f5c842">${msg}</span>`;
-    setTimeout(()=>el.innerHTML = prev, 2000);
+  function mount(){
+    let host = document.getElementById('chess-host');
+    if (!host){
+      const mod = document.querySelector('.module[data-mod="chess"]');
+      if (!mod) return false;
+      // Inject a fresh host inside the module
+      mod.innerHTML = `
+        <div style="max-width: 1180px; margin: 0 auto;">
+          <div id="chess-host"></div>
+        </div>
+      `;
+      host = mod.querySelector('#chess-host');
+    }
+    initBoard();
+    render();
+    return true;
   }
 
-  window.addEventListener('atom:ready', () => setTimeout(inject, 800));
+  // Retry until the module exists
+  function tryMount(attempt = 0){
+    if (mount()) return;
+    if (attempt < 30) setTimeout(() => tryMount(attempt+1), 400);
+  }
+
+  document.addEventListener('DOMContentLoaded', () => setTimeout(() => tryMount(0), 200));
+  window.addEventListener('shell:ready', () => setTimeout(() => tryMount(0), 200));
 })();

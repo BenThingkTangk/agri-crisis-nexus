@@ -539,6 +539,8 @@ main{margin-left:var(--sidebar-w);padding:32px 32px 80px;position:relative;z-ind
 <link rel="stylesheet" href="/assets/strategy-brief.css">
 <link rel="stylesheet" href="/assets/mobile.css">
 <link rel="stylesheet" href="/assets/refresh.css">
+<link rel="stylesheet" href="/assets/chess.css">
+<link rel="stylesheet" href="/assets/shell.css">
 </head>
 <body>
 <div class="classification-banner">⚠ STRATEGIC INTELLIGENCE — AGRI-CRISIS NEXUS — CHIEF QUANTUM OFFICER EYES ONLY ⚠</div>
@@ -2025,7 +2027,9 @@ function buildModuleOps(){
    MAP INITIALIZATION
    ============================================================ */
 function initMap(){
-  const map=L.map('crisis-map',{zoomControl:true,worldCopyJump:true,minZoom:2}).setView([15,20],3);
+  const el=document.getElementById('crisis-map'); if(!el) return;
+  const map=L.map('crisis-map',{zoomControl:true,worldCopyJump:true,minZoom:2,scrollWheelZoom:false}).setView([15,20],3);
+  window._crisisMap=map;
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
     attribution:'© CartoDB',subdomains:'abcd',maxZoom:19
   }).addTo(map);
@@ -2784,5 +2788,6 @@ document.addEventListener('DOMContentLoaded',()=>{
 <script src="/assets/strategy-advisor.js" defer></script>
 <script src="/assets/daily-brief.js" defer></script>
 <script src="/assets/scroll-fix.js" defer></script>
+<script src="/assets/shell.js" defer></script>
 </body>
 </html>
