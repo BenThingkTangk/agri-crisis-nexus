@@ -1106,13 +1106,23 @@ function testDesignSystem() {
   ok('open drawer cancels transform to translateX(0)', /nav#modes\.open\{[^}]*transform:translateX\(0\)/.test(html));
   ok('closed drawer slid off-screen by single transform', /nav#modes\{[^}]*transform:translateX\(-100%\)/.test(html));
   ok('drawer anchored at left:0 (no negative positional offset)', /nav#modes\{[^}]*left:0/.test(html));
-  // Stacking: drawer must sit above the sticky header so tabs are tappable.
+  // Stacking topology. nav#modes is a DOM descendant of header#topbar, so the
+  // header's z-index establishes the stacking context that traps the drawer;
+  // the scrim is a root-level sibling of the header. The invariant that makes
+  // tabs tappable is: scrim BELOW the header context (< header z-index) yet
+  // above #workspace content (> 0). If the scrim ever rises above the header
+  // again it repaints over the entire header subtree — including the drawer —
+  // and intercepts every tab hit-test. This guards against that recurrence.
   const headerZ = Number((html.match(/header#topbar\{[^}]*z-index:(\d+)/) || [])[1]);
   const drawerZ = Number((html.match(/nav#modes\{[^}]*z-index:(\d+)/) || [])[1]);
   const scrimZ = Number((html.match(/\.nav-scrim\{[^}]*z-index:(\d+)/) || [])[1]);
+  const headerBlock = (html.match(/<header id="topbar">[\s\S]*?<\/header>/) || [''])[0];
   ok('header z-index parsed', Number.isFinite(headerZ));
-  ok('drawer z-index above header (no header interception)', drawerZ > headerZ);
-  ok('scrim z-index below drawer, above header', scrimZ > headerZ && scrimZ < drawerZ);
+  ok('drawer (nav#modes) is nested inside the header stacking context', /id="modes"/.test(headerBlock));
+  ok('scrim is a root-level sibling, not inside the header context', !/nav-scrim/.test(headerBlock));
+  ok('scrim z-index below the header stacking context (cannot cover drawer)', scrimZ < headerZ);
+  ok('scrim z-index above workspace content (still overlays for tap-close)', scrimZ > 0);
+  ok('drawer z-index parsed (resolved within header context)', Number.isFinite(drawerZ));
   // Closed drawer must not expose focusable/clickable off-screen tabs.
   ok('closed drawer is visibility:hidden', /nav#modes\{[^}]*visibility:hidden/.test(html));
   ok('open drawer is visibility:visible', /nav#modes\.open\{[^}]*visibility:visible/.test(html));
