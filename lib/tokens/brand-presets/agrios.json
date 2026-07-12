@@ -1,0 +1,64 @@
+{
+  "$schema": "../design-tokens.json",
+  "presetId": "agrios",
+  "extends": "base.json",
+  "description": "AgriOS brand override + content preset. Keeps the standard teal/cyan accent-primary and semantic traffic-light statuses; substitutes AgriOS/ATOM/Nirmata Holdings identity and General Sans + JetBrains Mono type. No fabricated investor metrics — figures surface only from live ingestion/model metadata at runtime.",
+  "overrides": {
+    "brandName": "AgriOS · A Nirmata Holdings Company",
+    "typography": {
+      "fontDisplay": "\"General Sans\", \"Cabinet Grotesk\", ui-sans-serif, system-ui, sans-serif",
+      "fontBody": "\"General Sans\", \"Inter\", ui-sans-serif, system-ui, sans-serif",
+      "fontMono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace"
+    },
+    "colorTokens": {
+      "accentPrimary": "174 100% 45%",
+      "accentPrimaryForeground": "210 15% 4%"
+    }
+  },
+  "content": {
+    "companyName": "AgriOS",
+    "parentCompany": "Nirmata Holdings",
+    "productName": "ATOM",
+    "productRole": "AI intelligence layer",
+    "flagshipProducts": [
+      "Command Center — live agricultural crisis picture",
+      "Theater Map — geospatial risk & event overlay",
+      "Food War Simulation — scenario stress modeling",
+      "ATOM GenUI — evidence-linked analytical briefings"
+    ],
+    "marketCategory": "Agricultural crisis intelligence",
+    "targetBuyer": "Strategic operators, food-security analysts, and crisis-response planners",
+    "strategicNarrative": "AgriOS turns fragmented global food-system signals into a command-grade operating picture, with ATOM synthesizing observed, modeled, and live data into decisions.",
+    "pillars": [
+      "Live Ingestion",
+      "Theater Awareness",
+      "Scenario Simulation",
+      "Decision Intelligence"
+    ],
+    "ingestionSources": [
+      "FAO", "FEWS NET", "ACLED", "WFP", "USDA WASDE", "USDA NASS Quick Stats",
+      "NOAA", "World Bank", "ReliefWeb", "Comtrade", "GDACS"
+    ],
+    "moatLayers": [
+      "Multi-source normalized ingestion with provenance",
+      "Transparent modeled/observed/live/stale labeling",
+      "Scenario simulation tied to real baselines"
+    ],
+    "proofPoints": [
+      "Provenance-linked source health per feed",
+      "Explicit known-gaps disclosure surfaced in-product"
+    ],
+    "callToActionPrimary": "Open Command Center",
+    "callToActionSecondary": "Ask ATOM",
+    "complianceOrTrustSignals": [
+      "Server-side environment-variable secret handling",
+      "Restricted access gate",
+      "No secret exposure in logs, responses, or provenance URLs"
+    ],
+    "chartsAndBenchmarks": [
+      "Source-health matrix", "Risk KPI strip", "Scenario output deltas"
+    ],
+    "founderStory": "",
+    "valuationOrOutcomeLanguage": ""
+  }
+}

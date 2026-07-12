@@ -49,7 +49,9 @@ function initGate(){
 function boot(){
   buildNav();
   startClock();
+  initTheme();
   bindShell();
+  bindScrollProgress();
   buildAtom();
   buildCmdk();
   activateMode(bootStartMode());
@@ -79,14 +81,47 @@ function buildNav(){
   MODES.forEach(m=>{
     const b=el('button','mode-tab',`${icon(m.icon)}<span>${m.label}</span>`);
     b.dataset.mode=m.id;
+    b.setAttribute('role','tab');
     b.setAttribute('aria-label',m.label+' mode');
+    b.setAttribute('aria-selected','false');
+    b.setAttribute('aria-controls','panel-'+m.id);
+    b.id='tab-'+m.id;
+    b.tabIndex=-1;
     b.addEventListener('click',()=>{activateMode(m.id); closeMobileNav();});
+    b.addEventListener('keydown',handleTabKeys);
     nav.appendChild(b);
+  });
+  // Panels are tabpanels controlled by the tablist.
+  $$('.mode-panel').forEach(p=>{
+    p.setAttribute('role','tabpanel');
+    p.setAttribute('tabindex','0');
+    if(p.dataset.mode) p.setAttribute('aria-labelledby','tab-'+p.dataset.mode);
   });
 }
 
+// Roving-tabindex arrow-key navigation across the mode tablist.
+function handleTabKeys(e){
+  const keys=['ArrowRight','ArrowLeft','Home','End'];
+  if(keys.indexOf(e.key)===-1) return;
+  e.preventDefault();
+  const tabs=$$('.mode-tab');
+  const cur=tabs.indexOf(e.currentTarget);
+  let next=cur;
+  if(e.key==='ArrowRight') next=(cur+1)%tabs.length;
+  else if(e.key==='ArrowLeft') next=(cur-1+tabs.length)%tabs.length;
+  else if(e.key==='Home') next=0;
+  else if(e.key==='End') next=tabs.length-1;
+  const t=tabs[next];
+  if(t){ activateMode(t.dataset.mode); t.focus(); }
+}
+
 function activateMode(id){
-  $$('.mode-tab').forEach(t=>t.classList.toggle('active',t.dataset.mode===id));
+  $$('.mode-tab').forEach(t=>{
+    const on=t.dataset.mode===id;
+    t.classList.toggle('active',on);
+    t.setAttribute('aria-selected',on?'true':'false');
+    t.tabIndex=on?0:-1;
+  });
   $$('.mode-panel').forEach(p=>p.classList.toggle('active',p.dataset.mode===id));
   if(!rendered[id]){ renderMode(id); rendered[id]=true; }
   $('#workspace').scrollTop=0;
@@ -146,6 +181,53 @@ function bindShell(){
   });
 }
 function closeMobileNav(){ $('#modes').classList.remove('open'); $('#navScrim').classList.remove('open'); $('#hamburger').setAttribute('aria-expanded','false'); }
+
+/* ================= THEME (dark default; JS-memory only, no storage) =================
+   Persistence via browser storage is prohibited, so preference lives in memory
+   for the session and otherwise follows the OS via matchMedia. */
+let themeState='dark';
+function applyTheme(t){
+  themeState=(t==='light')?'light':'dark';
+  document.documentElement.setAttribute('data-theme',themeState);
+  const btn=$('#themeToggle');
+  if(btn){
+    const toLight=themeState==='dark';
+    btn.setAttribute('aria-pressed',themeState==='light'?'true':'false');
+    btn.setAttribute('aria-label',toLight?'Switch to light theme':'Switch to dark theme');
+  }
+  // Re-theme token-bound charts already instantiated (colors read at build time).
+  if(typeof rethemeCharts==='function') rethemeCharts();
+}
+function initTheme(){
+  // Dark is the product default; honor an explicit OS light preference at load.
+  let initial='dark';
+  try{ if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) initial='light'; }catch(e){}
+  applyTheme(initial);
+  const btn=$('#themeToggle');
+  if(btn) btn.addEventListener('click',()=>applyTheme(themeState==='dark'?'light':'dark'));
+}
+// Rebuild token-bound charts so a theme switch recolors them.
+function rethemeCharts(){
+  try{
+    if(typeof resCharts==='object'&&resCharts){
+      Object.keys(resCharts).forEach(k=>{ if(resCharts[k]&&resCharts[k].destroy){ resCharts[k].destroy(); resCharts[k]=null; } });
+      if(rendered.resources) drawResourceCharts(currentResTab);
+    }
+  }catch(e){}
+}
+
+/* Header scroll-progress rule bound to the single #workspace scroll region. */
+function bindScrollProgress(){
+  const ws=$('#workspace'), bar=$('#scrollProgress');
+  if(!ws||!bar) return;
+  const update=()=>{
+    const max=ws.scrollHeight-ws.clientHeight;
+    const pct=max>0?Math.min(100,Math.max(0,(ws.scrollTop/max)*100)):0;
+    bar.style.width=pct.toFixed(1)+'%';
+  };
+  ws.addEventListener('scroll',update,{passive:true});
+  update();
+}
 
 /* ================= LIVE DATA LAYER ================= */
 let liveState={status:'connecting',events:[],sources:[],asOf:null,paused:false};
@@ -255,6 +337,32 @@ function intelLabel(){
   const s=intelData.status;
   return s==='live'?'LIVE':s==='partial'?'PARTIAL':s==='stale'?'STALE':s==='connecting'?'SYNCING':'DEGRADED · BUNDLED INTEL';
 }
+/* Operational transparency: surface real outages, modeled proxies, staleness and
+   confidence limits from live source-health/summary metadata. Invents no new
+   risks — every line is derived from observed state. Rendered as a native
+   <details> disclosure (keyboard-accessible, no color-only encoding). */
+function knownGaps(){
+  const sm=intelData.summary, st=intelData.status;
+  const srcs=intelData.sources||[];
+  const gaps=[];
+  const down=srcs.filter(s=>s.status==='down').map(s=>s.name||s.id);
+  const stale=srcs.filter(s=>s.status==='stale').map(s=>s.name||s.id);
+  const off=srcs.filter(s=>s.status==='disabled').map(s=>s.name||s.id);
+  if(down.length) gaps.push(['Source outage',`No live data from: ${down.join(', ')}. Affected signals fall back to modeled or bundled values.`]);
+  if(stale.length) gaps.push(['Stale feeds',`Last successful pull is aging for: ${stale.join(', ')}. Treat counts as lagging indicators.`]);
+  if(off.length) gaps.push(['Standby sources',`Not currently ingesting (config/standby): ${off.join(', ')}.`]);
+  if(sm&&sm.modeled>0) gaps.push(['Modeled proxies',`${sm.modeled} of ${sm.total} events are modeled estimates, not direct observations. Labeled MODELED throughout.`]);
+  if(intelData.bundled) gaps.push(['Bundled fallback active','Live aggregate is unavailable or empty; curated bundled intelligence is being shown. Figures are illustrative baselines, not real-time.']);
+  if(st==='partial') gaps.push(['Partial coverage','Some sources responded and others did not; the picture is incomplete for this cycle.']);
+  const conf=intelData.bundled?'LOW · bundled':(sm&&sm.sourcesOk===sm.sourcesTotal?'HIGH · all sources live':'MODERATE · partial live');
+  if(!gaps.length) gaps.push(['No unresolved gaps detected','All tracked sources reported and no modeled fallback is active for this cycle.']);
+  const rows=gaps.map(([t,d])=>`<li class="kg-item"><span class="kg-t">${esc(t)}</span><span class="kg-d">${esc(d)}</span></li>`).join('');
+  return `<details class="known-gaps" data-testid="known-gaps">
+    <summary>${icon('alert-triangle','ic')} Known gaps &amp; model limits <span class="kg-conf mono">confidence: ${esc(conf)}</span></summary>
+    <ul class="kg-list">${rows}</ul>
+    <p class="kg-foot mono">Derived from live source-health and aggregate metadata as of ${esc(intelData.asOf?relTime(intelData.asOf):'—')}. Modeled and observed values are labeled inline.</p>
+  </details>`;
+}
 // Render the source-health rail + fused events for the Data → Live Feeds tab.
 function drawSourceHealth(){
   const host=$('#res-feeds'); if(!host) return;
@@ -294,6 +402,7 @@ function drawSourceHealth(){
         ${signalBubble(pillTl,intelLabel(),intelData.asOf?relTime(intelData.asOf):'')}${refreshCtl}</div>
       <div class="cf" style="margin:10px 0 4px">${stats}</div>
       ${trafficLegend()}
+      ${knownGaps()}
     </div>
     <div class="section"><div class="section-title"><h3>${icon('server')} Per-source status</h3><span class="meta">green live · amber stale · red down · cyan modeled</span></div>
       <div class="sh-list" data-testid="source-health-list">${rows}</div>
@@ -724,7 +833,7 @@ function drawMarkers(){
   if(!mapObj) return;
   mapLayerGroup.clearLayers();
   const layer=LAYERS.find(l=>l.id===activeLayer);
-  const cc={critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'};
+  const cc=(window.RendererTheme?RendererTheme.severityMap():{critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'});
   D.COUNTRIES.forEach(c=>{
     const val=layer.metric(c), tl=layer.color(c);
     const r=6+Math.round(val/8);
@@ -762,7 +871,7 @@ function updateLiveOverlay(){
   if(!mapObj||!liveLayerGroup) return;
   liveLayerGroup.clearLayers();
   if(!liveOverlayOn) return;
-  const cc={critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'};
+  const cc=(window.RendererTheme?RendererTheme.severityMap():{critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'});
   liveState.events.filter(e=>typeof e.lat==='number'&&typeof e.lng==='number').forEach(e=>{
     const m=L.circleMarker([e.lat,e.lng],{radius:5,color:'#fff',weight:1,fillColor:cc[e.severity]||'#7d8794',fillOpacity:.9});
     m.bindPopup(`<b>${esc(e.title)}</b><br><span class="popup-src">${esc(e.source||'')} · ${esc(e.category||'')} · ${esc(relTime(e.published))}</span><br><a href="${esc(e.url||'#')}" target="_blank" rel="noopener">Open source →</a>`);
@@ -1315,10 +1424,13 @@ function buildResCountries(){
 }
 function drawResourceCharts(tab){
   if(!window.Chart) return;
-  const axis={grid:{color:'rgba(255,255,255,.06)'},ticks:{color:'#8b877d',font:{size:11}}};
-  const legendOpt={labels:{color:'#b4afa4',font:{size:11},boxWidth:12}};
+  const RT=window.RendererTheme;
+  const gridCol=RT?RT.grid():'rgba(255,255,255,.06)';
+  const axisCol=RT?RT.axisLabel():'#8b877d';
+  const axis={grid:{color:gridCol},ticks:{color:axisCol,font:{size:11}}};
+  const legendOpt={labels:{color:axisCol,font:{size:11},boxWidth:12}};
   if(tab==='markets'&&!resCharts.prices&&$('#chartPrices')){
-    const cols={wheat:'#e2483d',rice:'#5fb3c4',maize:'#e8913c',soy:'#5ba86f',coffee:'#bf8f5f',cocoa:'#d9b23a'};
+    const cols=RT?RT.commodity():{wheat:'#e2483d',rice:'#5fb3c4',maize:'#e8913c',soy:'#5ba86f',coffee:'#bf8f5f',cocoa:'#d9b23a'};
     resCharts.prices=new Chart($('#chartPrices'),{type:'line',
       data:{labels:D.MONTHS_24,datasets:Object.keys(D.COMMODITY_PRICES).map(k=>{const s=D.COMMODITY_PRICES[k],b=s[0];return {label:k,data:s.map(v=>Math.round(v/b*1000)/10),borderColor:cols[k],backgroundColor:'transparent',borderWidth:2,pointRadius:0,tension:.3};})},
       options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:legendOpt,tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.parsed.y} (base 100 = ${D.MONTHS_24[0]})`}}},scales:{x:axis,y:{...axis,title:{display:true,text:'Index (base 100)',color:'#8b877d',font:{size:11}}}}}});
@@ -1326,19 +1438,19 @@ function drawResourceCharts(tab){
   if(tab==='water'&&!resCharts.aquifer&&$('#chartAquifer')){
     const aq=[...D.AQUIFERS].sort((a,b)=>b.depletion-a.depletion);
     resCharts.aquifer=new Chart($('#chartAquifer'),{type:'bar',
-      data:{labels:aq.map(a=>a.name),datasets:[{label:'Depletion %',data:aq.map(a=>a.depletion),backgroundColor:aq.map(a=>({critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a'}[a.tl]||'#5ba86f'))}]},
+      data:{labels:aq.map(a=>a.name),datasets:[{label:'Depletion %',data:aq.map(a=>a.depletion),backgroundColor:aq.map(a=>RT?RT.severity(a.tl):({critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a'}[a.tl]||'#5ba86f'))}]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:ctx=>'~'+aq[ctx.dataIndex].years+' yr to critical'}}},scales:{x:{...axis,max:100},y:{...axis,ticks:{color:'#b4afa4',font:{size:10}}}}}});
   }
   if(tab==='ai'&&!resCharts.ai&&$('#chartAI')){
     resCharts.ai=new Chart($('#chartAI'),{type:'radar',
       data:{labels:D.AI_GAPS.map(g=>g.name),datasets:[
-        {label:'Urgency',data:D.AI_GAPS.map(g=>g.urgency),borderColor:'#e2483d',backgroundColor:'rgba(226,72,61,.15)',borderWidth:2,pointRadius:2},
-        {label:'Solution maturity',data:D.AI_GAPS.map(g=>g.maturity),borderColor:'#5fb3c4',backgroundColor:'rgba(95,179,196,.12)',borderWidth:2,pointRadius:2}]},
+        {label:'Urgency',data:D.AI_GAPS.map(g=>g.urgency),borderColor:RT?RT.danger():'#e2483d',backgroundColor:RT?RT.danger(0.15):'rgba(226,72,61,.15)',borderWidth:2,pointRadius:2},
+        {label:'Solution maturity',data:D.AI_GAPS.map(g=>g.maturity),borderColor:RT?RT.accent():'#5fb3c4',backgroundColor:RT?RT.accent(0.12):'rgba(95,179,196,.12)',borderWidth:2,pointRadius:2}]},
       options:{responsive:true,maintainAspectRatio:false,plugins:{legend:legendOpt},scales:{r:{angleLines:{color:'rgba(255,255,255,.08)'},grid:{color:'rgba(255,255,255,.08)'},pointLabels:{color:'#b4afa4',font:{size:10}},ticks:{color:'#5f5c55',backdropColor:'transparent'},min:0,max:100}}}});
   }
   if(tab==='chain'&&!resCharts.token&&$('#chartToken')){
     resCharts.token=new Chart($('#chartToken'),{type:'line',
-      data:{labels:D.TOKEN_TRAJ.years,datasets:[{label:'Tokenized agri market ($B)',data:D.TOKEN_TRAJ.vals,borderColor:'#5fb3c4',backgroundColor:'rgba(95,179,196,.14)',borderWidth:2,fill:true,tension:.35,pointRadius:3}]},
+      data:{labels:D.TOKEN_TRAJ.years,datasets:[{label:'Tokenized agri market ($B)',data:D.TOKEN_TRAJ.vals,borderColor:RT?RT.accent():'#5fb3c4',backgroundColor:RT?RT.accent(0.14):'rgba(95,179,196,.14)',borderWidth:2,fill:true,tension:.35,pointRadius:3}]},
       options:{responsive:true,maintainAspectRatio:false,plugins:{legend:legendOpt},scales:{x:axis,y:{...axis,type:'logarithmic',title:{display:true,text:'$B (log)',color:'#8b877d'}}}}});
   }
 }

@@ -1,0 +1,97 @@
+{
+  "$schema": "../design-tokens.json",
+  "presetId": "base",
+  "description": "Structural + default token layer for the universal strategic portal design system. Content-free: brand presets supply overrides + a content payload. Structural constants MUST NOT be overridden by brand presets.",
+  "structural": {
+    "layout": {
+      "navHeightDesktop": "81px",
+      "navHeightMobile": "64px",
+      "maxWidthContent": "1200px",
+      "maxWidthWide": "1440px",
+      "maxWidthProse": "720px",
+      "gridColumnsDesktop": 12,
+      "gridColumnsMobile": 1,
+      "gutter": "1.5rem"
+    },
+    "surface": {
+      "glassBlur": "20px"
+    },
+    "radius": {
+      "card": "1rem",
+      "pill": "9999px",
+      "sm": "0.625rem"
+    },
+    "spacing": {
+      "unit": "0.25rem",
+      "cardPad": "1.5rem",
+      "cardPadLarge": "2rem",
+      "sectionY": "6rem",
+      "sectionYLarge": "8rem"
+    },
+    "typographyFloors": {
+      "bodyMin": "1rem",
+      "captionMin": "0.75rem",
+      "numeric": "tabular-nums lining-nums"
+    },
+    "motion": {
+      "durationInteraction": "180ms",
+      "durationEntry": "300ms",
+      "durationChart": "700ms",
+      "staggerStep": "50ms",
+      "easingStandard": "cubic-bezier(0.4, 0, 0.2, 1)",
+      "easingEmphasis": "cubic-bezier(0.16, 1, 0.3, 1)",
+      "reducedMotion": "disable transforms, parallax, conic rotation, and particle fields; keep opacity and color transitions under 120ms"
+    }
+  },
+  "defaultColorTokens": {
+    "dark": {
+      "background": "210 15% 4%",
+      "backgroundElevated": "210 14% 7%",
+      "foreground": "0 0% 95%",
+      "foregroundMuted": "210 8% 65%",
+      "foregroundFaint": "210 8% 45%",
+      "border": "210 12% 18%",
+      "borderStrong": "210 12% 26%",
+      "surface": "210 14% 8%",
+      "surfaceAlt": "210 14% 11%",
+      "accentPrimary": "174 100% 45%",
+      "accentPrimaryForeground": "210 15% 4%",
+      "accentSecondary": "266 70% 62%",
+      "accentTertiary": "38 92% 58%",
+      "success": "152 60% 45%",
+      "warning": "38 92% 55%",
+      "danger": "0 72% 55%",
+      "info": "217 91% 60%"
+    },
+    "light": {
+      "background": "210 20% 98%",
+      "backgroundElevated": "0 0% 100%",
+      "foreground": "210 24% 12%",
+      "foregroundMuted": "210 10% 34%",
+      "foregroundFaint": "210 9% 48%",
+      "border": "210 16% 84%",
+      "borderStrong": "210 16% 70%",
+      "surface": "0 0% 100%",
+      "surfaceAlt": "210 20% 95%",
+      "accentPrimary": "174 85% 32%",
+      "accentPrimaryForeground": "0 0% 100%",
+      "accentSecondary": "266 60% 50%",
+      "accentTertiary": "38 85% 40%",
+      "success": "152 55% 32%",
+      "warning": "38 88% 38%",
+      "danger": "0 68% 45%",
+      "info": "217 80% 45%"
+    }
+  },
+  "defaultTypography": {
+    "fontDisplay": "\"Cabinet Grotesk\", \"General Sans\", ui-sans-serif, system-ui, sans-serif",
+    "fontBody": "\"Satoshi\", \"General Sans\", ui-sans-serif, system-ui, sans-serif",
+    "fontMono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace"
+  },
+  "contentPlaceholders": [
+    "companyName", "parentCompany", "productName", "flagshipProducts", "marketCategory",
+    "targetBuyer", "strategicNarrative", "tractionMetrics", "moatLayers", "proofPoints",
+    "callToActionPrimary", "callToActionSecondary", "complianceOrTrustSignals",
+    "chartsAndBenchmarks", "founderStory", "valuationOrOutcomeLanguage"
+  ]
+}

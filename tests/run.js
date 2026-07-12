@@ -1018,6 +1018,90 @@ function testBrandingSecurity() {
   ok('accessible traffic legend present', app.indexOf("data-testid=\"traffic-legend\"") !== -1);
 }
 
+/* ==================== design system (universal strategic portal) ==================== */
+function testDesignSystem() {
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const app = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+  const rt = readFileSync(join(ROOT, 'assets', 'renderer-theme.js'), 'utf8');
+
+  section('design-system: token files');
+  const tokens = JSON.parse(readFileSync(join(ROOT, 'lib', 'tokens', 'design-tokens.json'), 'utf8'));
+  const base = JSON.parse(readFileSync(join(ROOT, 'lib', 'tokens', 'brand-presets', 'base.json'), 'utf8'));
+  const brand = JSON.parse(readFileSync(join(ROOT, 'lib', 'tokens', 'brand-presets', 'agrios.json'), 'utf8'));
+  ok('design-tokens.json parses', !!tokens && typeof tokens === 'object');
+  ok('accent-primary is the standard teal', tokens.colorTokens.accentPrimary === '174 100% 45%');
+  ok('nav height 81px desktop', tokens.layoutTokens.navHeight === '81px');
+  ok('nav height 64px mobile', tokens.layoutTokens.navHeightMobile === '64px');
+  ok('glass blur 20px', tokens.surfaceTokens.glassBlur === '20px');
+  ok('card radius 1rem', tokens.radiusTokens.card === '1rem');
+  ok('card pad 1.5rem / 2rem', tokens.spacingTokens.cardPad === '1.5rem' && tokens.spacingTokens.cardPadLarge === '2rem');
+  ok('motion 180/300/700ms', tokens.motionTokens.durationInteraction === '180ms' && tokens.motionTokens.durationEntry === '300ms' && tokens.motionTokens.durationChart === '700ms');
+  ok('max 5 chart series', tokens.chartTokens.maxSeriesPerChart === 5);
+
+  section('design-system: brand-swap architecture');
+  ok('base.json is content-free (no content payload)', !('content' in base) && !!base.structural);
+  ok('base.json keeps structural constants', base.structural.layout.navHeightDesktop === '81px' && base.structural.surface.glassBlur === '20px');
+  ok('base.json lists 16 content placeholders', Array.isArray(base.contentPlaceholders) && base.contentPlaceholders.length === 16);
+  ok('agrios preset extends base', brand.extends === 'base.json');
+  ok('agrios keeps teal accent override', brand.overrides.colorTokens.accentPrimary === '174 100% 45%');
+  ok('agrios content: AgriOS / Nirmata / ATOM', brand.content.companyName === 'AgriOS' && brand.content.parentCompany === 'Nirmata Holdings' && brand.content.productName === 'ATOM');
+  ok('agrios preset has no fabricated valuation/founder claims', brand.content.valuationOrOutcomeLanguage === '' && brand.content.founderStory === '');
+  ok('agrios preset carries no forbidden sibling brands', ['clinixAI','antimatterai','rrg.bio','thingktangk','HumanOS'].every(b => JSON.stringify(brand).indexOf(b) === -1));
+
+  section('design-system: CSS variable map + themes');
+  ok('html defaults to dark theme', /<html[^>]*data-theme="dark"/.test(html));
+  ok(':root light fallback defines semantic tokens', html.indexOf('--background:210 20% 98%') !== -1 && html.indexOf('--foreground:210 24% 12%') !== -1);
+  ok('dark canonical block present', /\[data-theme="dark"\]\{[\s\S]*--background:210 15% 4%/.test(html));
+  ok('accent-primary teal in dark block', html.indexOf('--accent-primary:174 100% 45%') !== -1);
+  ok('chart tokens chart-1..5 present', ['--chart-1','--chart-2','--chart-3','--chart-4','--chart-5'].every(c => html.indexOf(c) !== -1));
+  ok('legacy cyan alias maps to accent', /--cyan:hsl\(var\(--accent-primary\)\)/.test(html));
+  ok('legacy red alias maps to danger (status only)', /--red:hsl\(var\(--danger\)\)/.test(html));
+  ok('structural header height 81px + mobile 64px', html.indexOf('--header-h:81px') !== -1 && html.indexOf('--header-h:64px') !== -1);
+  ok('body meets 16px floor', /font-size:16px;line-height:1\.5;/.test(html));
+
+  section('design-system: primary accent migration (no red-as-primary)');
+  ok('primary button uses accent, not red', /\.btn\.primary\{background:var\(--accent\)/.test(html) && html.indexOf('.btn.primary{background:var(--red)') === -1);
+  ok('ATOM button uses accent', /\.btn-atom\{[\s\S]*background:var\(--accent\)/.test(html) && html.indexOf('.btn-atom{\n  background:var(--red)') === -1);
+  ok('active tab marker uses accent', /\.mode-tab\.active \.ic\{color:var\(--accent\);?\}/.test(html));
+  ok('two-tone headline accent clause uses accent', html.indexOf('.mode-head h2 em{font-style:normal;color:var(--accent);}') !== -1);
+
+  section('design-system: app shell + a11y');
+  ok('skip-to-content link present and first', /<a href="#workspace" class="skip-link"/.test(html));
+  ok('header scroll-progress element present', html.indexOf('id="scrollProgress"') !== -1);
+  ok('scroll progress bound to #workspace in JS', app.indexOf('bindScrollProgress') !== -1 && /ws\.addEventListener\('scroll'/.test(app));
+  ok('theme toggle control present', html.indexOf('data-testid="theme-toggle"') !== -1);
+  ok('theme uses JS memory + matchMedia (no storage)', app.indexOf('prefers-color-scheme') !== -1 && !/localStorage|sessionStorage|indexedDB/i.test(app));
+  ok('nav is a tablist', /id="modes"[^>]*role="tablist"/.test(html));
+  ok('tabs get role=tab + aria-selected + aria-controls', app.indexOf("setAttribute('role','tab')") !== -1 && app.indexOf("aria-selected") !== -1 && app.indexOf("aria-controls") !== -1);
+  ok('panels get role=tabpanel', app.indexOf("setAttribute('role','tabpanel')") !== -1);
+  ok('arrow-key roving nav implemented', app.indexOf('handleTabKeys') !== -1 && app.indexOf('ArrowRight') !== -1 && app.indexOf('ArrowLeft') !== -1);
+
+  section('design-system: reduced motion');
+  ok('reduced-motion media query present', html.indexOf('@media (prefers-reduced-motion: reduce)') !== -1);
+  ok('reduced-motion disables animation, keeps short opacity/color', /prefers-reduced-motion: reduce\)\{[\s\S]*animation:none[\s\S]*transition-property:opacity/.test(html));
+  ok('reduced-motion caps transition duration <120ms', /transition-duration:100ms !important/.test(html));
+
+  section('design-system: transparency disclosure');
+  ok('known-gaps disclosure rendered', html.indexOf('.known-gaps') !== -1 && app.indexOf('data-testid="known-gaps"') !== -1);
+  ok('known-gaps derives from real source/summary metadata', /function knownGaps\(\)\{[\s\S]*intelData\.summary[\s\S]*intelData\.sources/.test(app));
+  ok('known-gaps distinguishes down/stale/standby + modeled', app.indexOf("s.status==='down'") !== -1 && app.indexOf("s.status==='stale'") !== -1 && app.indexOf('Modeled proxies') !== -1);
+  ok('known-gaps surfaces a confidence level', app.indexOf('confidence:') !== -1);
+
+  section('design-system: renderer theme + charts');
+  ok('renderer-theme.js loaded before app.js', html.indexOf('assets/renderer-theme.js') !== -1 && html.indexOf('assets/renderer-theme.js') < html.indexOf('assets/app.js'));
+  ok('renderer theme exposes severity + series + grid', rt.indexOf('severityMap') !== -1 && rt.indexOf('series') !== -1 && rt.indexOf('grid') !== -1);
+  ok('renderer theme reads CSS token variables at runtime', rt.indexOf('getComputedStyle') !== -1 && rt.indexOf('--accent-primary') !== -1);
+  ok('charts bind grid/axis/series to renderer theme', app.indexOf('RT.grid()') !== -1 && app.indexOf('RT.axisLabel()') !== -1);
+  ok('map markers use tokenized severity map', /RendererTheme\?RendererTheme\.severityMap\(\)/.test(app));
+
+  section('design-system: globe fallback preserved');
+  const globe = readFileSync(join(ROOT, 'assets', 'theater-globe.js'), 'utf8');
+  ok('globe retains webgl capability + fallback path', globe.indexOf('getContext') !== -1 && (globe.indexOf('experimental-webgl') !== -1 || globe.indexOf('webgl') !== -1));
+
+  section('design-system: mobile touch targets');
+  ok('44px touch targets on mobile controls', /min-height:44px;min-width:44px;/.test(html));
+}
+
 /* ===================== account auth (env-backed) ===================== */
 async function testAccounts() {
   // ---- fake, test-only credentials generated at runtime (never real) ----
@@ -1282,6 +1366,7 @@ async function testAccounts() {
     await testSentinels();
     await testNass();
     testBrandingSecurity();
+    testDesignSystem();
     await testAccounts();
   } catch (e) {
     console.error('\nFATAL: test harness threw:', e && e.message);

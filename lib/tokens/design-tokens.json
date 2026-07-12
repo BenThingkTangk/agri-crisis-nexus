@@ -1,0 +1,211 @@
+{
+  "brandNameTemplate": "[COMPANY_NAME] [PORTAL_SUFFIX]",
+  "brandArchetype": "The Strategist-Sovereign: a high-conviction operator-founder brand that fuses infrastructure credibility with civilizational-scale market narrative",
+  "toneOfVoice": {
+    "register": "high-conviction, declarative, evidence-forward",
+    "sentenceStyle": "short, numbered, slogan-capable",
+    "personaTraits": ["confident", "precise", "transparent about risk", "systems-minded", "non-hype but ambitious"],
+    "prohibited": ["exclamation-heavy copy", "unqualified superlatives without a metric", "filler adjectives", "emoji"]
+  },
+  "visualMode": {
+    "default": "dark",
+    "lightFallback": true,
+    "themeToggle": "optional, persisted via data-theme attribute and localStorage",
+    "elevationPhilosophy": "borders and glow over drop shadows; light mode uses soft shadows and higher-contrast borders instead of glow"
+  },
+  "colorTokens": {
+    "background": "210 15% 4%",
+    "backgroundElevated": "210 14% 7%",
+    "foreground": "0 0% 95%",
+    "foregroundMuted": "210 8% 65%",
+    "foregroundFaint": "210 8% 45%",
+    "border": "210 12% 18%",
+    "borderStrong": "210 12% 26%",
+    "surface": "210 14% 8%",
+    "surfaceAlt": "210 14% 11%",
+    "overlay": "210 15% 4%",
+    "accentPrimary": "174 100% 45%",
+    "accentPrimaryForeground": "210 15% 4%",
+    "accentSecondary": "266 70% 62%",
+    "accentTertiary": "38 92% 58%",
+    "chart1": "174 100% 45%",
+    "chart2": "266 70% 62%",
+    "chart3": "38 92% 58%",
+    "chart4": "217 91% 60%",
+    "chart5": "340 75% 60%",
+    "success": "152 60% 45%",
+    "warning": "38 92% 55%",
+    "danger": "0 72% 55%",
+    "info": "217 91% 60%"
+  },
+  "typographyTokens": {
+    "fontDisplay": "var(--font-display), \"Cabinet Grotesk\", \"General Sans\", \"Satoshi\", ui-sans-serif, system-ui, sans-serif",
+    "fontBody": "var(--font-body), \"Satoshi\", \"General Sans\", ui-sans-serif, system-ui, -apple-system, sans-serif",
+    "fontMono": "var(--font-mono), \"Menlo\", \"JetBrains Mono\", ui-monospace, SFMono-Regular, monospace",
+    "scale": {
+      "xs": "0.75rem",
+      "sm": "0.875rem",
+      "base": "1rem",
+      "lg": "1.125rem",
+      "xl": "1.25rem",
+      "2xl": "1.5rem",
+      "3xl": "1.875rem",
+      "4xl": "2.25rem",
+      "5xl": "3rem",
+      "6xl": "3.75rem",
+      "7xl": "4.5rem",
+      "8xl": "6rem"
+    },
+    "lineHeight": {
+      "tight": "1.1",
+      "snug": "1.25",
+      "normal": "1.5",
+      "relaxed": "1.65"
+    },
+    "tracking": {
+      "tighter": "-0.04em",
+      "tight": "-0.02em",
+      "normal": "0em",
+      "wide": "0.04em",
+      "wider": "0.08em",
+      "widest": "0.16em"
+    },
+    "numeric": "tabular-nums lining-nums"
+  },
+  "spacingTokens": {
+    "unit": "0.25rem",
+    "0": "0rem",
+    "1": "0.25rem",
+    "2": "0.5rem",
+    "3": "0.75rem",
+    "4": "1rem",
+    "5": "1.25rem",
+    "6": "1.5rem",
+    "8": "2rem",
+    "10": "2.5rem",
+    "12": "3rem",
+    "16": "4rem",
+    "20": "5rem",
+    "24": "6rem",
+    "32": "8rem",
+    "40": "10rem",
+    "sectionY": "6rem",
+    "sectionYLarge": "8rem",
+    "cardPad": "1.5rem",
+    "cardPadLarge": "2rem"
+  },
+  "radiusTokens": {
+    "none": "0px",
+    "sm": "0.375rem",
+    "md": "0.625rem",
+    "lg": "1rem",
+    "xl": "1.25rem",
+    "2xl": "1.5rem",
+    "full": "9999px",
+    "card": "1rem",
+    "pill": "9999px"
+  },
+  "shadowTokens": {
+    "none": "none",
+    "sm": "0 1px 2px 0 hsl(210 15% 4% / 0.3)",
+    "md": "0 4px 12px -2px hsl(210 15% 4% / 0.35)",
+    "lg": "0 12px 32px -8px hsl(210 15% 4% / 0.45)",
+    "glowAccent": "0 0 40px -8px hsl(var(--accent-primary) / 0.35)",
+    "glowAccentStrong": "0 0 64px -6px hsl(var(--accent-primary) / 0.5)",
+    "insetHairline": "inset 0 1px 0 0 hsl(0 0% 100% / 0.04)"
+  },
+  "borderTokens": {
+    "hairline": "1px solid hsl(var(--border) / 1)",
+    "hairlineStrong": "1px solid hsl(var(--border-strong) / 1)",
+    "accent": "1px solid hsl(var(--accent-primary) / 0.4)",
+    "focusRing": "2px solid hsl(var(--accent-primary) / 0.6)",
+    "conicEdgeWidth": "1px"
+  },
+  "layoutTokens": {
+    "maxWidthContent": "1200px",
+    "maxWidthWide": "1440px",
+    "maxWidthProse": "720px",
+    "navHeight": "81px",
+    "navHeightMobile": "64px",
+    "gridColumnsDesktop": 12,
+    "gridColumnsMobile": 1,
+    "gutter": "1.5rem",
+    "sectionDividerStyle": "hairline top border with radial fade at edges"
+  },
+  "motionTokens": {
+    "durationInteraction": "180ms",
+    "durationEntry": "300ms",
+    "durationChart": "700ms",
+    "staggerStep": "50ms",
+    "easingStandard": "cubic-bezier(0.4, 0, 0.2, 1)",
+    "easingEmphasis": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "reducedMotion": "disable transforms, parallax, conic rotation, and particle fields; keep opacity and color transitions under 120ms",
+    "backgroundLoopDuration": "18s",
+    "backgroundLoopOpacity": 0.12
+  },
+  "chartTokens": {
+    "gridStroke": "hsl(var(--border) / 0.5)",
+    "axisLabel": "hsl(var(--foreground-muted) / 1)",
+    "seriesColors": ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"],
+    "positive": "hsl(var(--success) / 1)",
+    "negative": "hsl(var(--danger) / 1)",
+    "highlightOpacity": 1,
+    "dimmedOpacity": 0.5,
+    "maxSeriesPerChart": 5,
+    "tooltipSurface": "hsl(var(--surface-alt) / 0.98)"
+  },
+  "surfaceTokens": {
+    "glassBlur": "20px",
+    "glassBackground": "hsl(var(--background) / 0.6)",
+    "cardBackground": "hsl(0 0% 100% / 0.03)",
+    "cardBackgroundAccent": "hsl(var(--accent-primary) / 0.06)",
+    "cardBorder": "hsl(0 0% 100% / 0.08)",
+    "elevatedZIndexNav": 50,
+    "elevatedZIndexOverlay": 100
+  },
+  "iconographyTokens": {
+    "style": "line icons, 1.5px stroke, geometric, no fill unless status dot",
+    "sizeSm": "16px",
+    "sizeMd": "20px",
+    "sizeLg": "24px",
+    "library": "lucide-react as default, swappable per brand",
+    "colorRule": "inherit currentColor, accent only for active or primary states"
+  },
+  "dataVizTokens": {
+    "chartTypesAllowed": ["line", "area", "bar", "horizontalBar", "radar", "scatter", "gauge", "progressRow", "timeline", "comparisonMatrix"],
+    "chartTypesDisallowed": ["3dChart", "pieOverFourSlices", "dualAxisLineBar"],
+    "dataInkPrinciple": "remove gridlines and chart borders that do not carry data; label directly on the data where possible",
+    "labelPlacement": "direct labels preferred over legends beyond 3 series",
+    "simulatorPattern": "slider input drives recomputed KPI outputs with 700ms eased transitions"
+  },
+  "narrativeTokens": {
+    "arc": ["overview_traction", "timing_signal", "product_system", "proof_team", "benchmark_competition", "moat", "opportunity", "gtm_demand", "roadmap", "economics_financials", "outcome_valuation", "investment_cta", "transparency_ethics_gaps", "resources_footer"],
+    "sectionEyebrowStyle": "uppercase, letter-spaced, flanked by short horizontal rules",
+    "headlineStyle": "two-tone: neutral clause plus accent-colored clause",
+    "quoteBlockStyle": "large serif-free pull quote, left accent bar, attribution in caption size"
+  },
+  "CTAStyleTokens": {
+    "primary": {
+      "background": "hsl(var(--accent-primary) / 1)",
+      "foreground": "hsl(var(--accent-primary-foreground) / 1)",
+      "radius": "var(--radius-pill)",
+      "hover": "brightness(1.08) plus glow-accent shadow"
+    },
+    "secondary": {
+      "background": "transparent",
+      "foreground": "hsl(var(--foreground) / 1)",
+      "border": "hsl(var(--border-strong) / 1)",
+      "radius": "var(--radius-pill)",
+      "hover": "border becomes accent at 0.5 opacity"
+    },
+    "footerClusterLayout": "two CTAs side by side desktop, stacked full-width mobile",
+    "maxCTAsPerSection": 2
+  },
+  "sectionPatternTokens": {
+    "hero": "full viewport, centered column, trust pill, two-tone headline, subtitle, glass stat strip, dual CTA, scroll cue",
+    "standard": "eyebrow, two-tone headline, subhead, content grid",
+    "dataHeavy": "eyebrow plus headline followed by KPI grid or chart panel with supporting copy in a side rail",
+    "narrative": "prose column max 720px with pull quotes and no charts",
+    "ctaFooter": "contained panel with border, headline, two CTAs, trust or compliance microcopy below"
+  }
+}
