@@ -123,8 +123,21 @@ function activateMode(id){
     t.tabIndex=on?0:-1;
   });
   $$('.mode-panel').forEach(p=>p.classList.toggle('active',p.dataset.mode===id));
+  // A mode switch is a context change: dismiss transient overlays that belong to
+  // the mode we're leaving (e.g. the alert-rules drawer must not linger over the
+  // War Room). Leaves the persistent ATOM assistant alone.
+  closeDrawer(); closeCmdk(); closeMobileNav();
   if(!rendered[id]){ renderMode(id); rendered[id]=true; }
-  $('#workspace').scrollTop=0;
+  // Reset the single scroll region to the top. Without this, switching from a
+  // deeply scrolled view (Command/Intel) to a shorter one (War Room) keeps the
+  // old scrollTop and shows an empty dark viewport below the real content.
+  const ws=$('#workspace');
+  if(ws){
+    ws.scrollTop=0;
+    // Some surfaces (War Room) hydrate asynchronously after session resolves;
+    // re-pin to top on the next frame so late layout can't restore the offset.
+    if(window.requestAnimationFrame) requestAnimationFrame(()=>{ ws.scrollTop=0; });
+  }
   refreshIcons();
   // lazy init heavy modules
   if(id==='map') setTimeout(initMap,60);

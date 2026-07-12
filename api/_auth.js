@@ -4,9 +4,10 @@
 // determines the active team + the caller's role in it. Every write endpoint
 // runs the result through requireRole() before mutating.
 
-import { query } from './_db.js';
+import { query, withTransaction } from './_db.js';
 import { hashToken, generateToken } from './_crypto.js';
 import { getSessionToken, sendError, isSameOrigin } from './_http.js';
+import { resolveAccount } from './_accounts.js';
 
 const SESSION_TTL_DAYS = 30;
 
@@ -96,6 +97,117 @@ export async function resolveAuth(req) {
 // or sends a 401 and returns null.
 export async function requireAuth(req, res) {
   const ctx = await resolveAuth(req);
+  if (!ctx) {
+    sendError(res, 401, 'unauthenticated', 'Sign in to continue.');
+    return null;
+  }
+  return ctx;
+}
+
+// ---------------------------------------------------------------------------
+// Shared authentication bridge for collaboration surfaces
+// ---------------------------------------------------------------------------
+// Two identity layers exist: the DB-backed team session (cookie -> sessions
+// row, this file) and the env-backed account layer (bearer token, _accounts.js
+// — the production operator sign-in). Collaboration endpoints must honor BOTH,
+// so an operator signed in via the account layer still gets a real, team-scoped
+// context. resolveAnyAuth() prefers a live DB session and otherwise maps the
+// account identity onto a durable per-account workspace team.
+
+// Account roles (operator/owner) -> DB team roles. Owner keeps high-impact
+// reach; operator maps to analyst so it clears the analyst write boundary.
+const ACCOUNT_TO_TEAM_ROLE = { owner: 'owner', operator: 'analyst' };
+
+// Placeholder credential columns for account-provisioned user rows. These rows
+// exist ONLY for foreign-key/team scoping; the account layer never verifies a
+// password against them (the signed bearer token is authoritative), so this
+// marker can never authenticate through the DB login path.
+const ACCOUNT_PROVISIONED = 'account-provisioned-no-db-login';
+
+function accountTeamSlug(emailNorm) {
+  const base = String(emailNorm).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return 'acct-' + (base || 'operator');
+}
+
+// Idempotently ensure a DB user + personal team + membership exist for an
+// account identity, returning an auth context shaped like resolveAuth's output.
+async function ensureAccountContext(acct) {
+  const emailNorm = String(acct.email || '').trim().toLowerCase();
+  const teamRole = ACCOUNT_TO_TEAM_ROLE[acct.role] || 'analyst';
+
+  // Fast path: the workspace already exists — one SELECT in steady state.
+  const existing = await query(
+    `SELECT u.id AS user_id, u.email, u.display_name, tm.team_id, tm.role
+       FROM users u JOIN team_members tm ON tm.user_id = u.id
+      WHERE u.email_norm = $1 ORDER BY tm.created_at ASC LIMIT 1`,
+    [emailNorm]
+  );
+  if (existing.rows.length) {
+    const r = existing.rows[0];
+    if (r.role !== teamRole) {
+      await query('UPDATE team_members SET role = $1 WHERE team_id = $2 AND user_id = $3', [
+        teamRole, r.team_id, r.user_id,
+      ]);
+    }
+    return accountCtx(r.user_id, r.email, r.display_name, r.team_id, teamRole);
+  }
+
+  // Provision the workspace once, atomically.
+  const provisioned = await withTransaction(async (client) => {
+    const u = await client.query(
+      `INSERT INTO users (email, email_norm, display_name, password_hash, password_salt, is_active)
+       VALUES ($1,$2,$3,$4,$5,TRUE)
+       ON CONFLICT (email_norm) DO UPDATE SET display_name = EXCLUDED.display_name
+       RETURNING id, email, display_name`,
+      [acct.email, emailNorm, acct.name || acct.email, ACCOUNT_PROVISIONED, ACCOUNT_PROVISIONED]
+    );
+    const userId = u.rows[0].id;
+    const slug = accountTeamSlug(emailNorm);
+    const teamName = (acct.name ? acct.name + '’s Workspace' : 'Command Team');
+    const t = await client.query(
+      `INSERT INTO teams (name, slug, created_by) VALUES ($1,$2,$3)
+       ON CONFLICT (slug) DO UPDATE SET name = teams.name
+       RETURNING id`,
+      [teamName, slug, userId]
+    );
+    const teamId = t.rows[0].id;
+    await client.query(
+      `INSERT INTO team_members (team_id, user_id, role) VALUES ($1,$2,$3)
+       ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+      [teamId, userId, teamRole]
+    );
+    return { userId, email: u.rows[0].email, displayName: u.rows[0].display_name, teamId };
+  });
+  return accountCtx(provisioned.userId, provisioned.email, provisioned.displayName, provisioned.teamId, teamRole);
+}
+
+function accountCtx(userId, email, displayName, teamId, role) {
+  return {
+    sessionId: null,
+    csrfSecret: null,
+    user: { id: userId, email, displayName },
+    teamId,
+    role,
+    memberships: [{ teamId, role, name: null, slug: null }],
+    rawToken: null,
+    account: true,
+  };
+}
+
+// Resolve an auth context from EITHER layer. A valid DB session wins (full team
+// features); otherwise a valid account bearer is mapped to its workspace team.
+export async function resolveAnyAuth(req) {
+  const dbCtx = await resolveAuth(req);
+  if (dbCtx) return dbCtx;
+  const acct = resolveAccount(req);
+  if (!acct) return null;
+  return ensureAccountContext(acct);
+}
+
+// Guard used by collaboration endpoints: accepts either identity layer, or
+// sends an honest 401 sign-in error.
+export async function requireAnyAuth(req, res) {
+  const ctx = await resolveAnyAuth(req);
   if (!ctx) {
     sendError(res, 401, 'unauthenticated', 'Sign in to continue.');
     return null;

@@ -101,6 +101,12 @@ function testRbac() {
   ok('admin NOT >= owner', !roleAtLeast('admin', 'owner'));
   ok('unknown role has no power', !roleAtLeast('nobody', 'viewer'));
   ok('null role rejected', !roleAtLeast(null, 'viewer'));
+
+  // Account→team role mapping boundary (the production owner must clear the
+  // analyst write gate on alerts/missions/collab). owner→owner, operator→analyst.
+  ok('account owner (→owner) clears analyst write boundary', roleAtLeast('owner', 'analyst'));
+  ok('account operator (→analyst) clears analyst write boundary', roleAtLeast('analyst', 'analyst'));
+  ok('operator mapping does NOT reach owner-only actions', !roleAtLeast('analyst', 'owner'));
 }
 
 /* ============================ validation ============================ */
@@ -464,6 +470,196 @@ async function testWarRoomCollab() {
   const sync = registry['#wrSync'].textContent;
   ok('sync label states online count + last sync (honest near-real-time)',
     /online/.test(sync) && /synced/.test(sync));
+}
+
+// ---------------------------------------------------------------------------
+// Phase III shared-auth propagation (regression for the production QA failure:
+// account-authenticated owner got 401s from alerts/rules/missions/collab and
+// the surfaces showed a misleading "0 alerts" instead of an honest sign-in
+// state). We drive the real assets/collab.js IIFE with a window.AGRIOS_AUTH
+// (env-backed account layer) stub and a header-capturing fetch.
+// ---------------------------------------------------------------------------
+function buildAuthSandbox(opts) {
+  opts = opts || {};
+  const registry = {};
+  const surfaces = ['#teamMissions', '#teamMissionsMeta', '#identityLabel', '#identityBtn',
+    '#openAlerts', '#alertCount', '#newMissionBtn', '#scenarioHistorySection', '#scenarioHistory',
+    '#simSave', '#warRoom', '#wrBody', '#wrSync'];
+  surfaces.forEach((s) => { registry[s] = makeEl(s); });
+
+  const documentStub = {
+    body: makeEl('body'),
+    documentElement: makeEl('html'),
+    querySelector(sel) { return registry[sel] || null; },
+    querySelectorAll() { return []; },
+    createElement() { return makeEl(); },
+    getElementById(id) { return registry['#' + id] || null; },
+    addEventListener() {},
+  };
+
+  const SESSION = {
+    user: { id: 'u1', email: 'owner@example.com', displayName: 'DB Owner' },
+    activeTeamId: 't1', role: 'owner', memberships: [], csrfToken: 'csrf-1',
+  };
+  const MISSION = {
+    id: 'm1', title: 'Bridged mission', objective: 'Reachable via account bearer',
+    priority: 'high', status: 'active', pillar: 'Secure Infrastructure',
+    geography: '', assignee_id: null, created_by_name: 'DB Owner',
+    created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-01T00:00:00Z',
+  };
+
+  const fetchLog = [];
+  function fetchStub(path, fopts) {
+    const headers = (fopts && fopts.headers) || {};
+    fetchLog.push({ path, method: (fopts && fopts.method) || 'GET', headers });
+    // Per-path status override lets a test force a 401 (session-expired) case.
+    const status = (opts.status && opts.status(path)) || 200;
+    let body = {};
+    if (path.indexOf('/api/auth?action=session') === 0) {
+      body = opts.dbAuthenticated
+        ? { authenticated: true, session: SESSION }
+        : { authenticated: false };
+    } else if (path.indexOf('/api/missions') === 0) body = { missions: [MISSION] };
+    else if (path.indexOf('/api/scenarios') === 0) body = { scenarios: [] };
+    else if (path.indexOf('/api/collab') === 0) body = { ok: true, members: [], online: 0, messages: [], serverTime: '2026-07-12T00:00:00Z' };
+    else if (path.indexOf('/api/alerts') === 0) body = { ok: status === 200, alerts: [], unread: 0, open: 0, message: status === 401 ? 'Sign in to continue.' : undefined };
+    return Promise.resolve({ ok: status < 400, status, json() { return Promise.resolve(body); } });
+  }
+
+  const A = {
+    esc: (s) => String(s == null ? '' : s),
+    icon: () => '',
+    reduced: true,
+    refreshIcons() {},
+    getSimSnapshot() { return null; },
+    applyScenario() {}, activateMode() {}, openDrawer() {}, closeDrawer() {},
+    pillars: [], badge: () => '', el: () => makeEl(),
+  };
+  const windowStub = { AGRI_APP: A };
+
+  // Optional env-backed account layer (assets/auth.js surface). onChange stores
+  // the callback AND fires it immediately, exactly like the real implementation,
+  // so subscribing is equivalent to reacting to the current auth state.
+  const authChangeCbs = [];
+  if (opts.account) {
+    windowStub.AGRIOS_AUTH = {
+      isAuthed() { return true; },
+      getRole() { return opts.account.role; },
+      isOwner() { return opts.account.role === 'owner'; },
+      getSession() { return { user: { email: opts.account.email, name: opts.account.name, role: opts.account.role }, expiresAt: '2026-12-31T00:00:00Z' }; },
+      authHeader() { return { Authorization: 'Bearer ' + opts.account.token }; },
+      onChange(cb) { authChangeCbs.push(cb); cb(); },
+    };
+  }
+
+  const sandbox = {
+    window: windowStub, document: documentStub, fetch: fetchStub,
+    navigator: { clipboard: { writeText: () => Promise.resolve() }, userAgent: 'test' },
+    location: { href: 'https://app.example.com/', origin: 'https://app.example.com', search: '' },
+    URLSearchParams, setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {}, console,
+  };
+  return { sandbox, registry, fetchLog, windowStub, authChangeCbs };
+}
+
+async function testPhase3AccountAuth() {
+  const src = readFileSync(join(ROOT, 'assets', 'collab.js'), 'utf8');
+
+  // --- Case 1: account owner (no DB session) is bridged onto Phase III ---------
+  section('frontend: account bearer bridges Phase III surfaces (regression)');
+  {
+    const { sandbox, registry, fetchLog, windowStub, authChangeCbs } = buildAuthSandbox({
+      dbAuthenticated: false,
+      account: { email: 'ben@nirmata.example', name: 'Ben', role: 'owner', token: 'ACCT-TOKEN-OWNER' },
+    });
+    vm.createContext(sandbox);
+    vm.runInContext(src, sandbox, { filename: 'assets/collab.js' });
+    const collab = windowStub.AGRI_COLLAB;
+
+    collab.onCommandRendered();
+    collab.init();
+    await flush();
+
+    ok('collab subscribed to AGRIOS_AUTH.onChange (login/logout broadcast)', authChangeCbs.length === 1);
+    ok('DB session endpoint was consulted first', fetchLog.some((c) => c.path.indexOf('/api/auth?action=session') === 0));
+    // Every authenticated request must carry the account bearer so the server
+    // bridge (requireAnyAuth) can map it onto the workspace team.
+    const authed = fetchLog.filter((c) => c.path.indexOf('/api/auth?action=session') !== 0);
+    ok('made at least one Phase III request', authed.length > 0);
+    ok('alerts/missions/collab requests carry the account bearer',
+      authed.every((c) => c.headers && c.headers.Authorization === 'Bearer ACCT-TOKEN-OWNER'));
+    ok('session-fetch itself carries the bearer',
+      fetchLog.some((c) => c.path.indexOf('/api/auth?action=session') === 0 && c.headers.Authorization === 'Bearer ACCT-TOKEN-OWNER'));
+    // Owner must clear the analyst write boundary and load real data — NOT a
+    // signed-out "0 alerts" placeholder.
+    ok('team missions fetched for account owner (not signed-out)',
+      fetchLog.some((c) => c.path.indexOf('/api/missions') === 0));
+    ok('placeholder replaced by real mission for account owner',
+      registry['#teamMissions'].innerHTML.indexOf('Sign in to plan') === -1 &&
+      registry['#teamMissions'].innerHTML.indexOf('Bridged mission') !== -1);
+    ok('alert bell revealed for account owner', registry['#openAlerts'].hidden === false);
+    ok('new-mission affordance revealed (owner ≥ analyst boundary)', registry['#newMissionBtn'].hidden === false);
+  }
+
+  // --- Case 2: a 401 mid-session yields an honest sign-in state, not "0 alerts" -
+  section('frontend: 401 renders honest sign-in state, never "0 alerts" (regression)');
+  {
+    const { sandbox, registry, windowStub } = buildAuthSandbox({
+      dbAuthenticated: true, // the session endpoint resolves once...
+      // ...but the session has expired server-side: every scoped request 401s.
+      status: (p) => (p.indexOf('/api/auth?action=session') === 0 ? 200 : 401),
+    });
+    vm.createContext(sandbox);
+    vm.runInContext(src, sandbox, { filename: 'assets/collab.js' });
+    const collab = windowStub.AGRI_COLLAB;
+
+    collab.onCommandRendered();
+    await collab.refreshSession();
+    await flush();
+
+    // handleAuthLost() must have dropped the session so the identity repaints to
+    // a sign-in prompt (no AGRIOS_AUTH present here, so collab owns the label).
+    ok('session dropped after 401 → identity shows sign-in', registry['#identityLabel'].textContent === 'Sign in');
+    ok('alert bell hidden once signed out (not a 0-count all-clear)', registry['#openAlerts'].hidden === true);
+    ok('team missions render a sign-in state, not real mission data',
+      registry['#teamMissions'].innerHTML.indexOf('Sign in') !== -1 &&
+      registry['#teamMissions'].innerHTML.indexOf('Bridged mission') === -1);
+  }
+}
+
+// Source-level guards for the shared-auth wiring and the mode-switch fix. These
+// complement the functional tests above and pin the exact contract in code.
+function testPhase3AuthWiringSource() {
+  section('phase3: shared-auth wiring (source contract)');
+  const collab = readFileSync(join(ROOT, 'assets', 'collab.js'), 'utf8');
+  const app = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+  const authApi = readFileSync(join(ROOT, 'api', '_auth.js'), 'utf8');
+  const alertsApi = readFileSync(join(ROOT, 'api', 'alerts.js'), 'utf8');
+  const missionsApi = readFileSync(join(ROOT, 'api', 'missions.js'), 'utf8');
+  const collabApi = readFileSync(join(ROOT, 'api', 'collab.js'), 'utf8');
+
+  // Client: bearer attach + account fallback + honest 401.
+  ok('api() merges AGRIOS_AUTH.authHeader() into request headers', /AGRIOS_AUTH[\s\S]{0,120}authHeader\(\)/.test(collab) && collab.indexOf('headers[hk] = ah[hk]') !== -1);
+  ok('api() drops the session on HTTP 401 (handleAuthLost)', /status === 401[\s\S]{0,320}handleAuthLost\(\)/.test(collab));
+  ok('init() subscribes to AGRIOS_AUTH.onChange', /AGRIOS_AUTH[\s\S]{0,80}onChange/.test(collab));
+  ok('refreshSession() falls back to accountSession() when DB unauth', collab.indexOf('accountSession() || null') !== -1);
+  ok('renderAlertsList() guards on !session with honest signed-out state', /function renderAlertsList\(\)\s*\{[\s\S]{0,600}?if \(!session\)[\s\S]{0,400}?alerts-signedout/.test(collab));
+  ok('signed-out alerts never render a "0 alerts" summary', collab.indexOf('Sign in to load alerts') !== -1);
+  ok('loadRules() guards on !session (rules-signedout)', /function loadRules\(\)\s*\{[\s\S]{0,400}?if \(!session\)[\s\S]{0,300}?rules-signedout/.test(collab));
+
+  // Server: shared bridge + endpoint routing.
+  ok('_auth exports resolveAnyAuth + requireAnyAuth', /export async function resolveAnyAuth/.test(authApi) && /export async function requireAnyAuth/.test(authApi));
+  ok('bridge maps account owner→owner, operator→analyst', /owner:\s*'owner'[\s\S]{0,40}operator:\s*'analyst'/.test(authApi));
+  ok('alerts endpoint uses requireAnyAuth', /requireAnyAuth/.test(alertsApi));
+  ok('missions endpoint uses requireAnyAuth', /requireAnyAuth/.test(missionsApi));
+  ok('collab endpoint uses requireAnyAuth', /requireAnyAuth/.test(collabApi));
+
+  section('phase3: mode-switch scroll reset + transient overlay close (source contract)');
+  const am = (app.match(/function activateMode\(id\)\{[\s\S]*?\n\}/) || [''])[0];
+  ok('activateMode resets #workspace scrollTop to 0', /ws\.scrollTop\s*=\s*0/.test(am));
+  ok('activateMode re-pins scrollTop on next animation frame (async hydration)', /requestAnimationFrame\([^)]*\)\s*=>\s*\{\s*ws\.scrollTop\s*=\s*0/.test(am));
+  ok('activateMode closes the detail drawer on mode change', /activateMode[\s\S]*?closeDrawer\(\)/.test(am) || am.indexOf('closeDrawer()') !== -1);
+  ok('activateMode closes the command palette on mode change', am.indexOf('closeCmdk()') !== -1);
+  ok('activateMode closes the mobile nav on mode change', am.indexOf('closeMobileNav()') !== -1);
 }
 
 /* ============================ geospatial theater + Food War engine ============================ */
@@ -2059,6 +2255,8 @@ function testPhase3Hygiene() {
     testPhase3Hygiene();
     await testCollabRace();
     await testWarRoomCollab();
+    await testPhase3AccountAuth();
+    testPhase3AuthWiringSource();
     testTheaterData();
     testTheaterFilters();
     testSimEngine();

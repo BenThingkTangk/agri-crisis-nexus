@@ -11,13 +11,13 @@
 
 import { query } from './_db.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
-import { requireAuth, requireWrite, audit } from './_auth.js';
+import { requireAnyAuth, requireWrite, audit } from './_auth.js';
 import { str, optionalUuid, oneOf, ValidationError } from './_validate.js';
 import { presenceFreshness, parseMentions } from './_intel.js';
 
 export default async function handler(req, res) {
   const action = (req.query && req.query.action) || 'state';
-  const ctx = await requireAuth(req, res);
+  const ctx = await requireAnyAuth(req, res);
   if (!ctx) return;
   if (!ctx.teamId) return sendError(res, 403, 'no_team', 'No active team.');
   try {

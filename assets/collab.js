@@ -97,6 +97,13 @@
     var headers = { accept: 'application/json' };
     if (opts.body !== undefined) headers['content-type'] = 'application/json';
     if (session && session.csrfToken) headers['x-csrf-token'] = session.csrfToken;
+    // Attach the env-backed account bearer (assets/auth.js) so an operator
+    // signed in through the account layer reaches the same collaboration
+    // endpoints as a DB team session — the server bridges both (see _auth.js).
+    if (window.AGRIOS_AUTH && typeof window.AGRIOS_AUTH.authHeader === 'function') {
+      var ah = window.AGRIOS_AUTH.authHeader();
+      for (var hk in ah) { if (Object.prototype.hasOwnProperty.call(ah, hk)) headers[hk] = ah[hk]; }
+    }
     return fetch(path, {
       method: opts.method || 'GET',
       credentials: 'same-origin',
@@ -107,6 +114,9 @@
         if (r.status === 401) {
           var e = new Error(j.message || 'Sign in to continue.');
           e.authRequired = true;
+          // Honest session-expired state: drop our cached session so every
+          // surface renders a sign-in prompt instead of misleading empty data.
+          handleAuthLost();
           throw e;
         }
         if (!r.ok || j.ok === false) {
@@ -122,9 +132,45 @@
      ============================================================ */
   function init() {
     injectStyles();
-    refreshSession().catch(function () { paintIdentity(); });
-    // Pre-fill invite token banner if arriving via an invite link.
-    // (Handled inside the auth form when opened.)
+    // When the env-backed account layer is present it owns login/logout; react
+    // to its changes immediately (onChange also fires once right away, which
+    // performs the initial session resolve — no full reload needed).
+    if (window.AGRIOS_AUTH && typeof window.AGRIOS_AUTH.onChange === 'function') {
+      window.AGRIOS_AUTH.onChange(function () { refreshSession().catch(function () { paintIdentity(); }); });
+    } else {
+      refreshSession().catch(function () { paintIdentity(); });
+    }
+  }
+
+  // Build a collaboration session from the env-backed account layer, mapping the
+  // account role (operator/owner) to the team role vocabulary used here. Owner
+  // keeps high-impact reach; operator maps to analyst so it clears write gates —
+  // mirrors the server bridge in _auth.js.
+  function accountSession() {
+    var AA = window.AGRIOS_AUTH;
+    if (!AA || typeof AA.isAuthed !== 'function' || !AA.isAuthed()) return null;
+    var s = (typeof AA.getSession === 'function' && AA.getSession()) || null;
+    var acctRole = (typeof AA.getRole === 'function' && AA.getRole()) || (s && s.user && s.user.role) || 'operator';
+    var email = (s && s.user && s.user.email) || '';
+    var name = (s && s.user && s.user.name) || email || 'Operator';
+    return {
+      account: true,
+      user: { id: 'account:' + email, email: email, displayName: name },
+      role: acctRole === 'owner' ? 'owner' : 'analyst',
+      activeTeamId: null,
+      memberships: [],
+      csrfToken: null,
+    };
+  }
+
+  // Server rejected our credentials mid-session (expiry/DB unreachable). Drop the
+  // cached session so surfaces show an honest sign-in state rather than "0 alerts".
+  function handleAuthLost() {
+    if (!session) return;
+    session = null;
+    stopPolling();
+    paintIdentity();
+    softRefresh();
   }
 
   // Phase III presentation lives in the enhancement layer (same pattern as the
@@ -169,7 +215,10 @@
   function refreshSession() {
     return api('/api/auth?action=session')
       .then(function (j) {
-        session = j.authenticated ? j.session : null;
+        // Prefer a live DB team session; otherwise fall back to the env-backed
+        // account identity (the production owner sign-in), which the server
+        // bridges onto a durable per-account workspace team.
+        session = j.authenticated ? j.session : (accountSession() || null);
         paintIdentity();
         if (session) startPolling(); else stopPolling();
         // Session resolves asynchronously, often *after* Command/War Room have
@@ -179,12 +228,14 @@
         return session;
       })
       .catch(function (err) {
-        // Network/DB down: degrade to unauthenticated, keep app usable.
-        session = null;
+        // DB session endpoint unreachable: still honor an account session so
+        // the account-authenticated owner isn't shown a signed-out War Room.
+        session = accountSession() || null;
         paintIdentity();
-        stopPolling();
+        if (session) startPolling(); else stopPolling();
         softRefresh();
-        throw err;
+        if (!session) throw err;
+        return session;
       });
   }
 
@@ -1052,6 +1103,17 @@
   function renderAlertsList() {
     var host = $('#collabAlerts');
     if (!host) return;
+    // Honest signed-out state: never render "0 alerts" for an unauthenticated
+    // (or session-expired) viewer — that reads as "all clear" when in fact we
+    // simply couldn't load the feed.
+    if (!session) {
+      var sum0 = $('[data-testid="alerts-summary"]');
+      if (sum0) sum0.textContent = 'Sign in to load alerts';
+      host.innerHTML = '<div class="empty" data-testid="alerts-signedout" style="padding:18px;text-align:center;color:var(--muted)">' +
+        icon('lock') + '<div style="margin-top:6px">Sign in to load your team’s alert center.</div></div>';
+      A.refreshIcons();
+      return;
+    }
     var summary = $('[data-testid="alerts-summary"]');
     if (summary) {
       summary.textContent = alertsState.alerts.length + ' alert' + (alertsState.alerts.length === 1 ? '' : 's') +
@@ -1215,6 +1277,12 @@
   function loadRules() {
     var host = $('#collabRules');
     if (!host) return;
+    if (!session) {
+      host.innerHTML = '<div class="empty" data-testid="rules-signedout" style="padding:16px;text-align:center;color:var(--muted)">' +
+        icon('lock') + '<div style="margin-top:6px">Sign in to view and manage alert rules.</div></div>';
+      A.refreshIcons();
+      return;
+    }
     host.innerHTML = skeleton(2);
     api('/api/alerts?action=rules').then(function (j) {
       if (!j.rules.length) {

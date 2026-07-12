@@ -10,7 +10,7 @@
 
 import { query, withTransaction } from './_db.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
-import { requireAuth, requireWrite, roleAtLeast, audit } from './_auth.js';
+import { requireAnyAuth, requireWrite, roleAtLeast, audit } from './_auth.js';
 import {
   str, uuid, optionalUuid, oneOf, optionalOneOf, optionalDate, jsonObject,
   MISSION_STATUS, MISSION_PRIORITY, PILLARS, ValidationError,
@@ -31,7 +31,7 @@ const SELECT = `
     LEFT JOIN users c ON c.id = m.created_by`;
 
 export default async function handler(req, res) {
-  const ctx = await requireAuth(req, res);
+  const ctx = await requireAnyAuth(req, res);
   if (!ctx) return;
   if (!ctx.teamId) return sendError(res, 403, 'no_team', 'No active team.');
   try {
