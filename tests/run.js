@@ -1140,6 +1140,25 @@ function testDesignSystem() {
   ok('Escape closes the mobile drawer', /e\.key==='Escape'[\s\S]*?closeMobileNav\(\)/.test(app));
   ok('selecting a mode closes the drawer', /activateMode\(m\.id\); closeMobileNav\(\)/.test(app));
   ok('scrim tap closes the drawer', /\$\('#navScrim'\)\.addEventListener\('click',closeMobileNav\)/.test(app));
+
+  section('design-system: root horizontal containment (off-canvas panels)');
+  // Closed off-canvas fixed panels (#atom, .drawer) slide off the right edge via
+  // translateX(100%); their layout box overflows the viewport to the right and
+  // would inflate documentElement.scrollWidth past clientWidth (measured 385>320
+  // at 320px). The root must clip the x axis so scrollWidth<=clientWidth.
+  ok('root clips horizontal overflow with overflow-x:clip', /html\{[^}]*overflow-x:clip/.test(html));
+  // Must be `clip`, not `hidden`: clip does not create a scroll container, so it
+  // neither forces overflow-y to auto nor adds a second vertical scroll region.
+  ok('root does not use overflow:hidden (would create a scroll container)', !/html\{[^}]*overflow:hidden/.test(html));
+  // Single vertical scroll region preserved: body never scrolls, #workspace does.
+  ok('body stays overflow:hidden (no body scrolling)', /body\{[\s\S]*?overflow:hidden/.test(html));
+  ok('#workspace remains the single vertical scroller', /main#workspace\{[^}]*overflow-y:auto/.test(html));
+  // Off-canvas panels close by sliding right (this is what overflows without clip).
+  ok('ATOM panel closes off-canvas via translateX(100%)', /#atom\{[^}]*transform:translateX\(100%\)/.test(html));
+  ok('detail drawer closes off-canvas via translateX(100%)', /\.drawer\{[^}]*transform:translateX\(100%\)/.test(html));
+  // Open panels are viewport-capped (vw) so the open state fits without overflow.
+  ok('ATOM panel width capped to viewport (vw)', /#atom\{[^}]*width:min\([^)]*vw\)/.test(html));
+  ok('detail drawer width capped to viewport (vw)', /\.drawer\{[^}]*width:min\([^)]*vw\)/.test(html));
 }
 
 /* ===================== account auth (env-backed) ===================== */

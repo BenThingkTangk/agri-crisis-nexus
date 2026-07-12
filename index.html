@@ -137,6 +137,15 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;height:100%;}
+/* Contain horizontal overflow at the viewport. Off-canvas fixed panels (#atom,
+   .drawer) slide off the right edge via translateX(100%) when closed, which
+   would otherwise inflate documentElement.scrollWidth past clientWidth. `clip`
+   (not `hidden`) clips the x axis WITHOUT creating a scroll container, so it
+   neither introduces a second vertical scroll region nor forces overflow-y to
+   auto — #workspace stays the single vertical scroller and body stays
+   overflow:hidden. Root overflow propagates to the viewport, clipping the
+   off-canvas panels' right-edge overflow. */
+html{overflow-x:clip;}
 body{
   font-family:var(--ui);
   background:var(--bg);
