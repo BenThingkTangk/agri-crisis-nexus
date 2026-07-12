@@ -51,7 +51,7 @@ async function ensureReady(res) {
 
 async function roster(ctx) {
   const { rows } = await query(
-    `SELECT u.id, u.display_name, tm.role FROM team_members tm JOIN users u ON u.id = tm.user_id
+    `SELECT u.id, u.display_name, u.email, tm.role FROM team_members tm JOIN users u ON u.id = tm.user_id
       WHERE tm.team_id = $1 ORDER BY u.display_name`,
     [ctx.teamId]
   );
@@ -117,7 +117,7 @@ async function postMessage(req, res, ctx, kind) {
   const text = str(body.body, 'body', { min: 1, max: 4000 });
   const refType = body.refType ? oneOf(body.refType, ['alert', 'mission', 'scenario'], 'refType') : null;
   const refId = optionalUuid(body.refId, 'refId');
-  const mentions = parseMentions(text, (await roster(ctx)).map((m) => ({ id: m.id, display_name: m.display_name })));
+  const mentions = parseMentions(text, (await roster(ctx)).map((m) => ({ id: m.id, display_name: m.display_name, email: m.email })));
   const { rows } = await query(
     `INSERT INTO room_messages (team_id, user_id, body, mentions, kind, ref_type, ref_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, created_at`,

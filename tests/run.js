@@ -20,7 +20,7 @@ import {
   optionalDate, jsonObject, ValidationError,
   PILLARS, MISSION_STATUS, MISSION_PRIORITY, ROLES, SEVERITIES,
 } from '../api/_validate.js';
-import { roleAtLeast } from '../api/_auth.js';
+import { roleAtLeast, resolveAnyAuth, accountTeamRole } from '../api/_auth.js';
 import { isSameOrigin, rateLimit, parseCookies, getSessionToken } from '../api/_http.js';
 import {
   SEVERITY_LEVELS, severityFromLevel, severityFromScale, severityScore,
@@ -2679,6 +2679,230 @@ function testPhase4CorrectionContract() {
   ok('openDrawer clears inert so the visible drawer is focusable', /function openDrawer\([\s\S]*?removeAttribute\('inert'\)/.test(app));
 }
 
+/* ======== canonical shared-workspace provisioning (functional) ======== */
+
+// Replicates api/_auth.js accountTeamSlug so the test can predict the legacy
+// per-account slug used for migration.
+function testSlug(emailNorm) {
+  const base = String(emailNorm).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return 'acct-' + (base || 'operator');
+}
+
+// Stateful in-memory Postgres stand-in that models exactly the queries the
+// canonical-workspace provisioning path issues (users/teams/team_members
+// upserts, membership lookup, role sync, and the team_id repointing migration).
+// Both pool.query and the transaction client share ONE store, so upsert
+// idempotency and ON CONFLICT semantics are honoured.
+function makeCanonicalPool(seed = {}) {
+  const store = {
+    users: new Map(),   // email_norm -> { id, email, display_name }
+    teams: new Map(),   // slug -> { id, name, created_by }
+    members: new Map(), // `${team_id}|${user_id}` -> { team_id, user_id, role }
+    migrations: [],     // recorded team_id repointing UPDATEs (non-destructive)
+    nextUser: 1, nextTeam: 1,
+  };
+  for (const t of seed.legacyTeams || []) store.teams.set(t.slug, { id: t.id, name: t.name || 'Legacy', created_by: null });
+
+  const calls = [];
+  function run(text, params) {
+    const t = String(text);
+    const low = t.toLowerCase();
+    calls.push({ text: t, params });
+    if (/^\s*(begin|commit|rollback)/i.test(low)) return Promise.resolve({ rows: [], rowCount: 0 });
+    if (/pg_advisory/i.test(low)) return Promise.resolve({ rows: [], rowCount: 0 });
+
+    if (/insert into users/i.test(low) && /on conflict \(email_norm\)/i.test(low)) {
+      const [email, emailNorm, name] = params;
+      let u = store.users.get(emailNorm);
+      if (!u) { u = { id: 'user-' + (store.nextUser++), email, display_name: name }; store.users.set(emailNorm, u); }
+      else { u.display_name = name; }
+      return Promise.resolve({ rows: [{ id: u.id, email: u.email, display_name: u.display_name }], rowCount: 1 });
+    }
+    if (/insert into teams/i.test(low)) {
+      const [name, slug, createdBy] = params;
+      let tm = store.teams.get(slug);
+      // ON CONFLICT (slug) DO UPDATE SET name = teams.name -> keep existing name.
+      if (!tm) { tm = { id: 'team-' + (store.nextTeam++), name, created_by: createdBy }; store.teams.set(slug, tm); }
+      return Promise.resolve({ rows: [{ id: tm.id }], rowCount: 1 });
+    }
+    if (/insert into team_members/i.test(low)) {
+      const [teamId, userId, role] = params;
+      store.members.set(teamId + '|' + userId, { team_id: teamId, user_id: userId, role });
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    }
+    if (/select id from teams where slug/i.test(low)) {
+      const tm = store.teams.get(params[0]);
+      return Promise.resolve({ rows: tm ? [{ id: tm.id }] : [], rowCount: tm ? 1 : 0 });
+    }
+    if (/from users u join team_members tm/i.test(low) && /email_norm/i.test(low)) {
+      const [emailNorm, teamId] = params;
+      const u = store.users.get(emailNorm);
+      const mem = u && store.members.get(teamId + '|' + u.id);
+      if (!u || !mem) return Promise.resolve({ rows: [], rowCount: 0 });
+      return Promise.resolve({ rows: [{ user_id: u.id, email: u.email, display_name: u.display_name, role: mem.role }], rowCount: 1 });
+    }
+    if (/update team_members set role/i.test(low)) {
+      const [role, teamId, userId] = params;
+      const mem = store.members.get(teamId + '|' + userId);
+      if (mem) mem.role = role;
+      return Promise.resolve({ rows: [], rowCount: mem ? 1 : 0 });
+    }
+    if (/set team_id/i.test(low)) { // migrateTeamData: repoint only, never delete
+      store.migrations.push({ text: t, params });
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    }
+    return Promise.resolve({ rows: [], rowCount: 0 });
+  }
+  const client = { query: run, release() {} };
+  const pool = { connect() { return Promise.resolve(client); }, query: run };
+  return { pool, store, calls };
+}
+
+async function testCanonicalWorkspaceProvisioning() {
+  section('phase4b: account bearers provision ONE canonical shared workspace team');
+
+  const prevPool = globalThis.__AGRI_PG_POOL__;
+  const prevUsers = process.env.AGRIOS_AUTH_USERS_JSON;
+  const prevSecret = process.env.AGRIOS_SESSION_SECRET;
+  const resetCanon = () => { delete globalThis.__AGRI_CANONICAL_TEAM__; };
+
+  process.env.AGRIOS_SESSION_SECRET = 'test-session-secret-0123456789';
+  process.env.AGRIOS_AUTH_USERS_JSON = JSON.stringify([
+    { email: 'ben@nirmata.example', name: 'Ben Kessler', role: 'owner', salt: 'a'.repeat(16), hash: 'b'.repeat(128) },
+    { email: 'joel@nirmata.example', name: 'Joel Ramirez', role: 'operator', salt: 'c'.repeat(16), hash: 'd'.repeat(128) },
+  ]);
+  const tokBen = signSession({ email: 'ben@nirmata.example', name: 'Ben Kessler', role: 'owner' }).token;
+  const tokJoel = signSession({ email: 'joel@nirmata.example', name: 'Joel Ramirez', role: 'operator' }).token;
+  const reqBen = { headers: { authorization: 'Bearer ' + tokBen } };  // no cookie -> DB session skipped
+  const reqJoel = { headers: { authorization: 'Bearer ' + tokJoel } };
+
+  try {
+    // --- Case 1: both configured accounts resolve the SAME team; roles mapped -
+    {
+      const fake = makeCanonicalPool();
+      globalThis.__AGRI_PG_POOL__ = fake.pool;
+      resetCanon();
+
+      const ctxBen = await resolveAnyAuth(reqBen);
+      const ctxJoel = await resolveAnyAuth(reqJoel);
+
+      ok('account owner resolves an auth context', !!ctxBen && ctxBen.account === true);
+      ok('account operator resolves an auth context', !!ctxJoel && ctxJoel.account === true);
+      ok('both accounts land in the SAME canonical team', !!ctxBen.teamId && ctxBen.teamId === ctxJoel.teamId);
+      ok('owner keeps the owner role', ctxBen.role === 'owner');
+      ok('operator maps to analyst (clears the write boundary)', ctxJoel.role === 'analyst');
+      // Real, assignable DB user ids — NOT synthetic display-only "account:" ids.
+      ok('members carry real DB user ids (assignable)',
+        /^user-/.test(ctxBen.user.id) && /^user-/.test(ctxJoel.user.id) && ctxBen.user.id !== ctxJoel.user.id);
+      ok('exactly one canonical team was created', fake.store.teams.size === 1);
+      ok('canonical team is named AgriOS Command', [...fake.store.teams.values()][0].name === 'AgriOS Command');
+      ok('canonical slug is derived from the owner email', fake.store.teams.has(testSlug('ben@nirmata.example')));
+      // Roster (= team_members) holds BOTH members regardless of presence/heartbeat.
+      const canonId = ctxBen.teamId;
+      ok('roster/membership includes both members (offline members still listed)',
+        fake.store.members.has(canonId + '|' + ctxBen.user.id) && fake.store.members.has(canonId + '|' + ctxJoel.user.id));
+      // No secrets leak into the resolved context.
+      const blob = JSON.stringify(ctxBen) + JSON.stringify(ctxJoel);
+      ok('resolved context never leaks provisioning placeholder / secrets',
+        !/account-provisioned/.test(blob) && !blob.includes('b'.repeat(128)) && !/password/i.test(blob));
+    }
+
+    // --- Case 2: idempotent + concurrent provisioning (no dupes) --------------
+    {
+      const fake = makeCanonicalPool();
+      globalThis.__AGRI_PG_POOL__ = fake.pool;
+      resetCanon();
+      const [a, b, c] = await Promise.all([resolveAnyAuth(reqBen), resolveAnyAuth(reqJoel), resolveAnyAuth(reqBen)]);
+      ok('concurrent sign-ins all resolve the one canonical team',
+        a.teamId === b.teamId && b.teamId === c.teamId);
+      ok('concurrent provisioning creates no duplicate team', fake.store.teams.size === 1);
+      ok('concurrent provisioning creates no duplicate memberships', fake.store.members.size === 2);
+      // Re-resolving after the warm cache is populated is a stable no-op on identity.
+      const again = await resolveAnyAuth(reqBen);
+      ok('re-resolve is stable (idempotent)', again.teamId === a.teamId && again.role === 'owner');
+    }
+
+    // --- Case 3: legacy per-account team data migrates in non-destructively ---
+    {
+      const legacySlug = testSlug('joel@nirmata.example');
+      const fake = makeCanonicalPool({ legacyTeams: [{ slug: legacySlug, id: 'legacy-joel' }] });
+      globalThis.__AGRI_PG_POOL__ = fake.pool;
+      resetCanon();
+      const ctxBen = await resolveAnyAuth(reqBen); // first sign-in reconciles all accounts
+      const canonId = ctxBen.teamId;
+
+      ok('legacy per-account team data is migrated (team_id repointed)', fake.store.migrations.length > 0);
+      ok('migration repoints FROM the legacy team INTO canonical',
+        fake.store.migrations.every((m) => m.params[0] === 'legacy-joel' && m.params[1] === canonId));
+      ok('migration covers Phase III collaboration tables (missions + messages)',
+        fake.store.migrations.some((m) => /update missions/i.test(m.text)) &&
+        fake.store.migrations.some((m) => /update room_messages/i.test(m.text)));
+      ok('migration is non-destructive (only UPDATE ... SET team_id, never DELETE/DROP/TRUNCATE)',
+        fake.store.migrations.every((m) => /^update/i.test(m.text.trim())) &&
+        !fake.store.migrations.some((m) => /\b(delete|drop|truncate)\b/i.test(m.text)));
+      ok('alerts/presence migration guards unique/PK collisions with NOT EXISTS',
+        fake.store.migrations.some((m) => /update alerts/i.test(m.text) && /not exists/i.test(m.text)) &&
+        fake.store.migrations.some((m) => /update room_presence/i.test(m.text) && /not exists/i.test(m.text)));
+    }
+
+    // --- Case 4: @mentions resolve to the real shared-team member ids ---------
+    {
+      const roster = [
+        { id: 'user-1', display_name: 'Ben Kessler', email: 'ben@nirmata.example' },
+        { id: 'user-2', display_name: 'Joel Ramirez', email: 'joel.smith@nirmata.example' },
+      ];
+      ok('@Joel resolves by display-name first token (case-insensitive)',
+        parseMentions('[QA] channel verified @Joel', roster).join() === 'user-2');
+      ok('@BEN resolves case-insensitively to the owner id',
+        parseMentions('ack @BEN', roster).join() === 'user-1');
+      ok('@joel.smith resolves by email local-part',
+        parseMentions('ping @joel.smith please', roster).join() === 'user-2');
+      const both = parseMentions('@ben and @joel together', roster).sort();
+      ok('both members resolve, deduped, to real ids', both.length === 2 && both[0] === 'user-1' && both[1] === 'user-2');
+      ok('an unknown @handle resolves to nobody', parseMentions('@nobody here', roster).length === 0);
+    }
+  } finally {
+    if (prevPool === undefined) delete globalThis.__AGRI_PG_POOL__; else globalThis.__AGRI_PG_POOL__ = prevPool;
+    if (prevUsers === undefined) delete process.env.AGRIOS_AUTH_USERS_JSON; else process.env.AGRIOS_AUTH_USERS_JSON = prevUsers;
+    if (prevSecret === undefined) delete process.env.AGRIOS_SESSION_SECRET; else process.env.AGRIOS_SESSION_SECRET = prevSecret;
+    resetCanon();
+  }
+}
+
+// Source-contract guards on the canonical-workspace implementation in _auth.js.
+function testCanonicalWorkspaceContract() {
+  section('phase4b: canonical-workspace source contract (_auth.js)');
+  const src = readFileSync(join(ROOT, 'api', '_auth.js'), 'utf8');
+  ok('provisions ONE canonical workspace (not per-account)', /ensureCanonicalWorkspace/.test(src));
+  ok('serializes provisioning with a transaction-scoped advisory lock',
+    /pg_advisory_xact_lock/.test(src) && /withTransaction/.test(src));
+  ok('team/user/membership upserts are idempotent (ON CONFLICT)',
+    /on conflict \(email_norm\)/i.test(src) && /on conflict \(slug\)/i.test(src) && /on conflict \(team_id, user_id\)/i.test(src));
+  ok('canonical team preserves an existing name on conflict', /do update set name = teams\.name/i.test(src));
+  ok('migration repoints team_id and never deletes history',
+    /migrateTeamData/.test(src) && /set team_id = \$2 where team_id = \$1/i.test(src));
+  const migrate = (src.match(/async function migrateTeamData[\s\S]*?\n\}/) || [''])[0];
+  ok('migration is non-destructive (no DELETE/DROP/TRUNCATE)', !/\b(delete|drop|truncate)\b/i.test(migrate));
+  ok('alerts migration guards UNIQUE(team_id,event_key) via NOT EXISTS',
+    /update alerts a set team_id[\s\S]*?not exists/i.test(migrate));
+  ok('presence migration guards PK(team_id,user_id) via NOT EXISTS',
+    /update room_presence p set team_id[\s\S]*?not exists/i.test(migrate));
+  ok('account roles map owner->owner, operator->analyst',
+    /owner:\s*'owner'/.test(src) && /operator:\s*'analyst'/.test(src));
+  // Account-provisioned user rows can never authenticate through the DB login path.
+  ok('account-provisioned rows are non-authenticating placeholders', /account-provisioned-no-db-login/.test(src));
+  // No secret env names hardcoded/leaked in the auth bridge.
+  ['DATABASE_URL', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN', 'PPLX_KEY']
+    .forEach((k) => ok('_auth.js does not reference secret ' + k, !src.includes(k)));
+
+  // Collab roster + mention wiring feed real emails into mention resolution.
+  const collab = readFileSync(join(ROOT, 'api', 'collab.js'), 'utf8');
+  ok('collab roster query selects u.email (for mention resolution)', /u\.email/.test(collab));
+  ok('collab passes email into parseMentions roster', /parseMentions\([\s\S]*?email: m\.email/.test(collab));
+  const intel = readFileSync(join(ROOT, 'api', '_intel.js'), 'utf8');
+  ok('parseMentions matches the email local-part', /email[\s\S]*?split\('@'\)\[0\]/.test(intel));
+}
+
 /* ============================ run ============================ */
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
@@ -2699,6 +2923,8 @@ function testPhase4CorrectionContract() {
     await testPhase3AccountAuth();
     testPhase3AuthWiringSource();
     testPhase4CorrectionContract();
+    await testCanonicalWorkspaceProvisioning();
+    testCanonicalWorkspaceContract();
     testTheaterData();
     testTheaterFilters();
     testSimEngine();

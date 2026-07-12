@@ -557,8 +557,9 @@ export function presenceFreshness(lastSeenAt, now = Date.now()) {
 }
 
 // Parse @mentions from a message body against a member roster
-// ([{ id, display_name }]). Returns matched user ids (deduped). Matching is
-// case-insensitive on the first token of the display name or the full name.
+// ([{ id, display_name, email? }]). Returns matched user ids (deduped). Matching
+// is case-insensitive on the first token of the display name, the full name, a
+// dotted handle, or the email local-part (the part before '@').
 export function parseMentions(body, roster = []) {
   const text = String(body || '');
   const matches = text.match(/@([a-z0-9._-]+)/gi) || [];
@@ -570,7 +571,10 @@ export function parseMentions(body, roster = []) {
     const name = String(m.display_name || '').toLowerCase();
     const first = name.split(/\s+/)[0] || '';
     const handle = name.replace(/\s+/g, '.');
-    if (wanted.has(first) || wanted.has(handle) || wanted.has(name)) ids.add(m.id);
+    const localPart = String(m.email || '').toLowerCase().split('@')[0] || '';
+    if (wanted.has(first) || wanted.has(handle) || wanted.has(name) || (localPart && wanted.has(localPart))) {
+      ids.add(m.id);
+    }
   }
   return [...ids];
 }

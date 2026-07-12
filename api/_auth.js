@@ -7,7 +7,7 @@
 import { query, withTransaction } from './_db.js';
 import { hashToken, generateToken } from './_crypto.js';
 import { getSessionToken, sendError, isSameOrigin } from './_http.js';
-import { resolveAccount } from './_accounts.js';
+import { resolveAccount, publicRoster } from './_accounts.js';
 
 const SESSION_TTL_DAYS = 30;
 
@@ -112,7 +112,10 @@ export async function requireAuth(req, res) {
 // — the production operator sign-in). Collaboration endpoints must honor BOTH,
 // so an operator signed in via the account layer still gets a real, team-scoped
 // context. resolveAnyAuth() prefers a live DB session and otherwise maps the
-// account identity onto a durable per-account workspace team.
+// account identity onto the SHARED canonical workspace team — every configured
+// AGRIOS_AUTH operator (owner + operators) belongs to that one team so they
+// share alerts, missions, messages, presence, scenarios, and assignments. It is
+// NOT a per-account team (that split the operators into isolated silos).
 
 // Account roles (operator/owner) -> DB team roles. Owner keeps high-impact
 // reach; operator maps to analyst so it clears the analyst write boundary.
@@ -131,36 +134,177 @@ export function accountTeamRole(role) {
 // marker can never authenticate through the DB login path.
 const ACCOUNT_PROVISIONED = 'account-provisioned-no-db-login';
 
+function normEmail(v) {
+  return String(v == null ? '' : v).trim().toLowerCase();
+}
+
+// The shared workspace slug is derived from the configured OWNER's email, so the
+// owner's already-existing team (which holds the production data) is reused as
+// canonical rather than orphaned. Name is only set on first creation.
 function accountTeamSlug(emailNorm) {
   const base = String(emailNorm).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
   return 'acct-' + (base || 'operator');
 }
+const CANONICAL_TEAM_NAME = 'AgriOS Command';
 
-// Idempotently ensure a DB user + personal team + membership exist for an
-// account identity, returning an auth context shaped like resolveAuth's output.
-async function ensureAccountContext(acct) {
-  const emailNorm = String(acct.email || '').trim().toLowerCase();
-  const teamRole = accountTeamRole(acct.role);
+// Deterministic 32-bit key for pg advisory locks (djb2). Serializes concurrent
+// provisioning so two simultaneous sign-ins can't race the canonical team into
+// existence twice.
+function advisoryKey(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h;
+}
 
-  // Fast path: the workspace already exists — one SELECT in steady state.
-  const existing = await query(
-    `SELECT u.id AS user_id, u.email, u.display_name, tm.team_id, tm.role
-       FROM users u JOIN team_members tm ON tm.user_id = u.id
-      WHERE u.email_norm = $1 ORDER BY tm.created_at ASC LIMIT 1`,
-    [emailNorm]
+// The full set of configured operator accounts (owner + operators), plus the
+// currently signing-in account if it somehow isn't in the roster snapshot.
+function rosterAccounts(current) {
+  const list = [];
+  const seen = new Set();
+  for (const a of publicRoster()) {
+    const en = normEmail(a.email);
+    if (!en || seen.has(en)) continue;
+    seen.add(en);
+    list.push({ email: a.email, emailNorm: en, name: a.name || a.email, role: a.role });
+  }
+  if (current) {
+    const en = normEmail(current.email);
+    if (en && !seen.has(en)) list.push({ email: current.email, emailNorm: en, name: current.name || current.email, role: current.role });
+  }
+  return list;
+}
+
+function pickOwner(list) {
+  return list.find((a) => a.role === 'owner') || list[0] || null;
+}
+
+// Non-destructively migrate one per-account team's Phase III rows into the
+// canonical team. Only re-points team_id — never deletes history. UNIQUE and
+// composite-PK collisions (alerts event_key, room_presence) are guarded so a
+// migration can never violate a constraint; any genuinely conflicting rows are
+// left in place rather than dropped.
+async function migrateTeamData(client, oldId, teamId) {
+  await client.query('UPDATE alert_rules       SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE missions          SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE scenarios         SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE mission_tasks     SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE mission_decisions SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE mission_events    SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE room_messages     SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE audit_log         SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  await client.query('UPDATE invitations       SET team_id = $2 WHERE team_id = $1', [oldId, teamId]);
+  // Alerts carry UNIQUE (team_id, event_key): only move rows whose key is not
+  // already present in the canonical team.
+  await client.query(
+    `UPDATE alerts a SET team_id = $2
+      WHERE a.team_id = $1
+        AND NOT EXISTS (SELECT 1 FROM alerts b WHERE b.team_id = $2 AND b.event_key = a.event_key)`,
+    [oldId, teamId]
   );
-  if (existing.rows.length) {
-    const r = existing.rows[0];
-    if (r.role !== teamRole) {
-      await query('UPDATE team_members SET role = $1 WHERE team_id = $2 AND user_id = $3', [
-        teamRole, r.team_id, r.user_id,
-      ]);
+  // Presence is keyed by (team_id, user_id) and is ephemeral heartbeat state;
+  // move only non-colliding rows.
+  await client.query(
+    `UPDATE room_presence p SET team_id = $2
+      WHERE p.team_id = $1
+        AND NOT EXISTS (SELECT 1 FROM room_presence q WHERE q.team_id = $2 AND q.user_id = p.user_id)`,
+    [oldId, teamId]
+  );
+}
+
+// Idempotently ensure the ONE canonical workspace team exists, that every
+// configured account has a real user row + membership in it, and that any legacy
+// per-account team's data has been migrated in. Concurrency-safe via a
+// transaction-scoped advisory lock. Cached per warm container (the reconcile is
+// one-time; re-running is a harmless no-op on a cold container).
+async function ensureCanonicalWorkspace(current) {
+  const accounts = rosterAccounts(current);
+  if (!accounts.length) return { teamId: null, slug: null };
+  const owner = pickOwner(accounts);
+  const slug = accountTeamSlug(owner.emailNorm);
+
+  const cached = globalThis.__AGRI_CANONICAL_TEAM__;
+  if (cached && cached.slug === slug && cached.teamId) return cached;
+
+  const result = await withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [advisoryKey(slug)]);
+
+    // 1. A DB user row for every configured account.
+    const byEmail = new Map();
+    for (const a of accounts) {
+      const u = await client.query(
+        `INSERT INTO users (email, email_norm, display_name, password_hash, password_salt, is_active)
+         VALUES ($1,$2,$3,$4,$5,TRUE)
+         ON CONFLICT (email_norm) DO UPDATE SET display_name = EXCLUDED.display_name
+         RETURNING id, email, display_name`,
+        [a.email, a.emailNorm, a.name, ACCOUNT_PROVISIONED, ACCOUNT_PROVISIONED]
+      );
+      byEmail.set(a.emailNorm, u.rows[0].id);
     }
-    return accountCtx(r.user_id, r.email, r.display_name, r.team_id, teamRole);
+
+    // 2. The canonical team (owner's existing team, matched by slug). Preserve
+    //    an existing name; only name a freshly-created team.
+    const t = await client.query(
+      `INSERT INTO teams (name, slug, created_by) VALUES ($1,$2,$3)
+       ON CONFLICT (slug) DO UPDATE SET name = teams.name
+       RETURNING id`,
+      [CANONICAL_TEAM_NAME, slug, byEmail.get(owner.emailNorm)]
+    );
+    const teamId = t.rows[0].id;
+
+    // 3. A membership for every configured account, with its mapped role.
+    for (const a of accounts) {
+      await client.query(
+        `INSERT INTO team_members (team_id, user_id, role) VALUES ($1,$2,$3)
+         ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+        [teamId, byEmail.get(a.emailNorm), accountTeamRole(a.role)]
+      );
+    }
+
+    // 4. Migrate any legacy per-account team data into canonical (non-owner
+    //    accounts that previously got their own team). Owner's slug == canonical
+    //    slug, so the owner's data already lives in the canonical team.
+    for (const a of accounts) {
+      const oldSlug = accountTeamSlug(a.emailNorm);
+      if (oldSlug === slug) continue;
+      const old = await client.query('SELECT id FROM teams WHERE slug = $1', [oldSlug]);
+      if (!old.rows.length || old.rows[0].id === teamId) continue;
+      await migrateTeamData(client, old.rows[0].id, teamId);
+    }
+
+    return { teamId, slug };
+  });
+
+  globalThis.__AGRI_CANONICAL_TEAM__ = result;
+  return result;
+}
+
+// Map an account identity onto the shared canonical workspace team, returning an
+// auth context shaped like resolveAuth's output.
+async function ensureAccountContext(acct) {
+  const emailNorm = normEmail(acct.email);
+  const teamRole = accountTeamRole(acct.role);
+  const { teamId } = await ensureCanonicalWorkspace(acct);
+  if (!teamId) return null; // no configured roster -> cannot provision
+
+  // Steady state: the account is already a canonical-team member.
+  const found = await query(
+    `SELECT u.id AS user_id, u.email, u.display_name, tm.role
+       FROM users u JOIN team_members tm ON tm.user_id = u.id
+      WHERE u.email_norm = $1 AND tm.team_id = $2 LIMIT 1`,
+    [emailNorm, teamId]
+  );
+  if (found.rows.length) {
+    const r = found.rows[0];
+    if (r.role !== teamRole) {
+      await query('UPDATE team_members SET role = $1 WHERE team_id = $2 AND user_id = $3', [teamRole, teamId, r.user_id]);
+    }
+    return accountCtx(r.user_id, r.email, r.display_name, teamId, teamRole);
   }
 
-  // Provision the workspace once, atomically.
-  const provisioned = await withTransaction(async (client) => {
+  // Fallback: attach this account to canonical (e.g. its token is valid but the
+  // cached roster snapshot predates it). Idempotent + advisory-locked.
+  const attached = await withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [advisoryKey('attach:' + emailNorm)]);
     const u = await client.query(
       `INSERT INTO users (email, email_norm, display_name, password_hash, password_salt, is_active)
        VALUES ($1,$2,$3,$4,$5,TRUE)
@@ -168,24 +312,14 @@ async function ensureAccountContext(acct) {
        RETURNING id, email, display_name`,
       [acct.email, emailNorm, acct.name || acct.email, ACCOUNT_PROVISIONED, ACCOUNT_PROVISIONED]
     );
-    const userId = u.rows[0].id;
-    const slug = accountTeamSlug(emailNorm);
-    const teamName = (acct.name ? acct.name + '’s Workspace' : 'Command Team');
-    const t = await client.query(
-      `INSERT INTO teams (name, slug, created_by) VALUES ($1,$2,$3)
-       ON CONFLICT (slug) DO UPDATE SET name = teams.name
-       RETURNING id`,
-      [teamName, slug, userId]
-    );
-    const teamId = t.rows[0].id;
     await client.query(
       `INSERT INTO team_members (team_id, user_id, role) VALUES ($1,$2,$3)
        ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-      [teamId, userId, teamRole]
+      [teamId, u.rows[0].id, teamRole]
     );
-    return { userId, email: u.rows[0].email, displayName: u.rows[0].display_name, teamId };
+    return { userId: u.rows[0].id, email: u.rows[0].email, displayName: u.rows[0].display_name };
   });
-  return accountCtx(provisioned.userId, provisioned.email, provisioned.displayName, provisioned.teamId, teamRole);
+  return accountCtx(attached.userId, attached.email, attached.displayName, teamId, teamRole);
 }
 
 function accountCtx(userId, email, displayName, teamId, role) {
