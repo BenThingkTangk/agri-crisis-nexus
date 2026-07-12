@@ -419,8 +419,21 @@ function formatBig(n) {
 }
 
 export async function nass({ fetchImpl, timeoutMs = 7000, env = process.env, now = new Date() } = {}) {
-  const key = String((env && env.USDA_NASS_API_KEY) || '').trim();
-  if (!key) { const e = new Error('disabled: USDA_NASS_API_KEY not set'); e.disabled = true; throw e; }
+  // Resolve the key from the injected env, falling back to process.env so a
+  // present process.env.USDA_NASS_API_KEY always enables the source regardless
+  // of how env is threaded. Distinguish "absent" from "present but blank" in the
+  // disabled reason (a common misconfig: a trailing newline or quoted empty
+  // value) — the reason never contains the value itself, only its state.
+  const src = (env && env.USDA_NASS_API_KEY != null)
+    ? env.USDA_NASS_API_KEY
+    : (typeof process !== 'undefined' && process.env ? process.env.USDA_NASS_API_KEY : undefined);
+  const present = src != null;
+  const key = String(src == null ? '' : src).trim();
+  if (!key) {
+    const e = new Error('disabled: USDA_NASS_API_KEY ' + (present ? 'is set but blank' : 'not set'));
+    e.disabled = true;
+    throw e;
+  }
 
   const yr = new Date(now).getUTCFullYear();
   const qs = new URLSearchParams();

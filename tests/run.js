@@ -860,6 +860,15 @@ async function testNass() {
   const withKey = { USDA_NASS_API_KEY: KEY };
   const now = new Date('2026-02-01T00:00:00Z');
 
+  // Isolate the ambient process.env: the adapter falls back to process.env when
+  // the injected env lacks the key, so a developer with a real key exported must
+  // not pollute the "missing env -> disabled" assertions. Restored in finally.
+  const savedEnv = Object.prototype.hasOwnProperty.call(process.env, 'USDA_NASS_API_KEY')
+    ? process.env.USDA_NASS_API_KEY : undefined;
+  const hadEnv = savedEnv !== undefined;
+  delete process.env.USDA_NASS_API_KEY;
+  try {
+
   section('nass: value parsing (commas + suppression/formatting codes)');
   eq('plain integer', parseNassValue('1234'), 1234);
   eq('thousands separators stripped', parseNassValue('15,148,038,000'), 15148038000);
@@ -940,7 +949,42 @@ async function testNass() {
   resetBreakers(); cacheClear();
   const aggOff = await aggregate({ adapters: [nassEntry], fetchImpl: fakeFetch({}), env: {}, sleep: noSleep, now: Date.parse('2026-02-01T00:00:00Z') });
   ok('nass reports disabled (not down) when key unset', aggOff.sources[0].status === 'disabled');
+
+  // ---- production regression: the real Vercel path -------------------------
+  // In production, intel.js does not hand an explicit env down the chain — the
+  // key is resolved from process.env. This guards THAT path (the one that broke
+  // in prod), distinct from the explicit-env assertions above which always
+  // passed. A present process.env.USDA_NASS_API_KEY must enable NASS through the
+  // aggregate even when no `env` is passed; a missing one must disable it.
+  section('nass: production-style process.env presence enables NASS through the aggregate');
   resetBreakers(); cacheClear();
+  process.env.USDA_NASS_API_KEY = KEY;
+  const aggProd = await aggregate({ adapters: [nassEntry], fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': { data } }), sleep: noSleep, now: Date.parse('2026-02-01T00:00:00Z') });
+  const prodHealth = aggProd.sources.find((s) => s.id === 'nass');
+  ok('present process.env.USDA_NASS_API_KEY enables NASS (no explicit env)', !!prodHealth && prodHealth.status === 'ok' && prodHealth.count === 4);
+  ok('process.env key never leaks through the aggregate', JSON.stringify(aggProd).indexOf(KEY) === -1);
+
+  resetBreakers(); cacheClear();
+  delete process.env.USDA_NASS_API_KEY;
+  const aggProdOff = await aggregate({ adapters: [nassEntry], fetchImpl: fakeFetch({}), sleep: noSleep, now: Date.parse('2026-02-01T00:00:00Z') });
+  const prodOff = aggProdOff.sources.find((s) => s.id === 'nass');
+  ok('absent process.env.USDA_NASS_API_KEY disables NASS (no explicit env)', !!prodOff && prodOff.status === 'disabled');
+  ok('disabled reason distinguishes "not set" from blank', /not set/.test(prodOff.reason) && !/blank/.test(prodOff.reason));
+
+  // blank/whitespace value is a distinct, diagnosable misconfig (not "not set")
+  resetBreakers(); cacheClear();
+  process.env.USDA_NASS_API_KEY = '   ';
+  const aggBlank = await aggregate({ adapters: [nassEntry], fetchImpl: fakeFetch({}), sleep: noSleep, now: Date.parse('2026-02-01T00:00:00Z') });
+  const blankRow = aggBlank.sources.find((s) => s.id === 'nass');
+  ok('blank process.env value disables with a distinct reason', !!blankRow && blankRow.status === 'disabled' && /blank/.test(blankRow.reason));
+  delete process.env.USDA_NASS_API_KEY;
+
+  resetBreakers(); cacheClear();
+
+  } finally {
+    if (hadEnv) process.env.USDA_NASS_API_KEY = savedEnv;
+    else delete process.env.USDA_NASS_API_KEY;
+  }
 }
 
 /* ============================ branding + security guards ============================ */

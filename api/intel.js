@@ -69,7 +69,12 @@ export default async function handler(req, res) {
 // Aggregate but never let an internal error escape to the client.
 async function safeAggregate(opts) {
   try {
-    return await aggregate(Object.assign({ fetchImpl: globalThis.fetch }, opts));
+    // Pass process.env explicitly rather than relying on runSource's defaulted
+    // `env` parameter three layers down: the request-time environment (where
+    // keyed adapters like NASS read USDA_NASS_API_KEY) is resolved here, at the
+    // entry point, so the production env source is explicit and can't be lost by
+    // a future refactor that forwards a partial deps object.
+    return await aggregate(Object.assign({ fetchImpl: globalThis.fetch, env: process.env }, opts));
   } catch (err) {
     const sources = Object.values(SOURCES).map((s) => ({
       id: s.id, name: s.name, domain: s.domain, keyless: !!s.keyless,
