@@ -145,7 +145,10 @@
     var label = $('#identityLabel');
     var btn = $('#identityBtn');
     var bell = $('#openAlerts');
-    if (label) {
+    // The env-backed account layer (assets/auth.js) owns the topbar identity
+    // button/label. Don't fight it for control when it is present.
+    var acctOwnsIdentity = !!window.AGRIOS_AUTH;
+    if (label && !acctOwnsIdentity) {
       if (session) {
         label.innerHTML = esc(session.user.displayName) +
           '<span class="role-tag">' + esc(session.role || '') + '</span>';
@@ -153,7 +156,7 @@
         label.textContent = 'Sign in';
       }
     }
-    if (btn) btn.setAttribute('aria-label', session ? 'Account and team' : 'Sign in');
+    if (btn && !acctOwnsIdentity) btn.setAttribute('aria-label', session ? 'Account and team' : 'Sign in');
     if (bell) { bell.hidden = !session; }
     if (!session) setAlertBadge(0);
     // Reveal collaboration affordances that depend on write access.

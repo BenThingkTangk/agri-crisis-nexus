@@ -707,6 +707,45 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .auth-ok{color:var(--sev-stable);font-size:12.5px;min-height:16px;margin:0;}
 .form-hint{color:var(--muted);font-size:11.5px;margin:0;line-height:1.5;}
 
+/* Account sign-in modal (env-backed operator auth) */
+.acct-overlay{position:fixed;inset:0;z-index:1000;background:rgba(4,6,9,.72);display:flex;align-items:center;justify-content:center;padding:18px;backdrop-filter:blur(3px);}
+.acct-overlay[hidden]{display:none;}
+.acct-dialog{width:100%;max-width:400px;background:var(--bg-2);border:1px solid var(--border);border-radius:14px;
+  padding:20px 20px 18px;box-shadow:0 24px 60px rgba(0,0,0,.55);animation:acctIn .18s ease both;}
+.acct-dialog.no-anim{animation:none;}
+@keyframes acctIn{from{opacity:0;transform:translateY(8px) scale(.99);}to{opacity:1;transform:none;}}
+@media (prefers-reduced-motion:reduce){ .acct-dialog{animation:none;} }
+.acct-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.acct-title{font-size:16px;font-weight:600;margin:0;margin-right:auto;}
+.acct-x{background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:2px 6px;border-radius:6px;min-height:32px;}
+.acct-x:hover{color:var(--text);}
+.acct-x:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
+.acct-form{display:flex;flex-direction:column;gap:13px;}
+.acct-form .field{display:flex;flex-direction:column;gap:5px;}
+.acct-form label{font:600 11px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted);}
+.acct-form input{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:11px 12px;font-size:14px;min-height:44px;width:100%;}
+.acct-form input:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;border-color:var(--cyan);}
+.acct-pw{position:relative;display:flex;}
+.acct-pw input{padding-right:64px;}
+.acct-pw-toggle{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--cyan);
+  font:600 11.5px/1 var(--mono);cursor:pointer;padding:6px 8px;border-radius:6px;min-height:32px;text-transform:uppercase;letter-spacing:.04em;}
+.acct-pw-toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
+.acct-status{min-height:16px;margin:0;font-size:12.5px;}
+.acct-status.is-err{color:var(--sev-critical);}
+.acct-status.is-ok{color:var(--sev-stable);}
+.acct-submit{width:100%;justify-content:center;min-height:46px;}
+.acct-submit.is-loading{opacity:.75;cursor:progress;}
+.acct-hint{color:var(--muted);font-size:11px;margin:2px 0 0;line-height:1.5;}
+.acct-identity{display:flex;gap:12px;align-items:center;margin-bottom:14px;}
+.acct-avatar{width:44px;height:44px;flex:0 0 auto;border-radius:50%;background:rgba(95,179,196,.14);border:1px solid var(--cyan);
+  color:var(--cyan);display:flex;align-items:center;justify-content:center;font:600 18px/1 var(--mono);}
+.acct-who{min-width:0;}
+.acct-name{font-weight:600;font-size:15px;}
+.acct-email{color:var(--muted);font:500 12px/1.3 var(--mono);word-break:break-all;}
+.acct-role{color:var(--text-dim);font-size:11.5px;margin-top:3px;}
+.acct-signout{width:100%;justify-content:center;min-height:44px;margin-top:4px;}
+@media (max-width:520px){ .acct-dialog{max-width:none;border-radius:12px;} }
+
 /* Team missions */
 .tm-list{display:flex;flex-direction:column;gap:10px;}
 .tm-card{border:1px solid var(--border);border-left:3px solid var(--cyan);border-radius:10px;padding:13px 14px;background:var(--surface);}
@@ -1017,6 +1056,7 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="assets/auth.js"></script>
 <script src="assets/app.js"></script>
 <script src="assets/theater.js"></script>
 <script src="assets/collab.js"></script>

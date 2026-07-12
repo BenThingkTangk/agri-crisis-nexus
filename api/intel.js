@@ -11,18 +11,7 @@
 
 import { aggregate, recordSnapshot, getSnapshots } from './_aggregate.js';
 import { SOURCES } from './_sources.js';
-
-async function tryResolveAuth(req) {
-  // Auth is DB-backed; if the DB is unavailable we treat the caller as
-  // unauthenticated rather than 500. Import lazily so a keyless deploy that
-  // never calls refresh does not require the DB module at all.
-  try {
-    const { resolveAuth } = await import('./_auth.js');
-    return await resolveAuth(req);
-  } catch (_) {
-    return null;
-  }
-}
+import { resolveAccount } from './_accounts.js';
 
 function sameOrigin(req) {
   const host = req.headers['x-forwarded-host'] || req.headers.host;
@@ -55,11 +44,13 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, snapshots: getSnapshots(), note: 'In-memory ring; resets on cold start. No database migration.' });
   }
 
-  // ---- manual refresh (authenticated + same-origin) ------------------------
+  // ---- manual refresh (owner account, bearer token + same-origin) ----------
+  // High-impact action: gated by the server-verified account session (see
+  // _accounts.js) and restricted to the `owner` role.
   if (req.method === 'POST' && action === 'refresh') {
     if (!sameOrigin(req)) return res.status(403).json({ ok: false, error: 'bad_origin' });
-    const ctx = await tryResolveAuth(req);
-    if (!ctx) return res.status(401).json({ ok: false, error: 'unauthenticated', message: 'Sign in to refresh live intelligence.' });
+    const acct = resolveAccount(req, { minRole: 'owner' });
+    if (!acct) return res.status(401).json({ ok: false, error: 'unauthenticated', message: 'Owner sign-in required to refresh live intelligence.' });
     res.setHeader('Cache-Control', 'no-store');
     const agg = await safeAggregate({ force: true });
     recordSnapshot(agg);

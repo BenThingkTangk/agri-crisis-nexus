@@ -129,7 +129,12 @@ function bindShell(){
   $('#openCmdk').addEventListener('click',()=>openCmdk());
   $('#cmdkScrim').addEventListener('click',closeCmdk);
   const oa=$('#openAlerts'); if(oa) oa.addEventListener('click',()=>{ if(window.AGRI_COLLAB) window.AGRI_COLLAB.openAlerts(); });
-  const ib=$('#identityBtn'); if(ib) ib.addEventListener('click',()=>{ if(window.AGRI_COLLAB) window.AGRI_COLLAB.openIdentity(); });
+  const ib=$('#identityBtn'); if(ib) ib.addEventListener('click',()=>{
+    if(window.AGRIOS_AUTH) window.AGRIOS_AUTH.open();
+    else if(window.AGRI_COLLAB) window.AGRI_COLLAB.openIdentity();
+  });
+  // Owner-only manual refresh appears/disappears with account role.
+  if(window.AGRIOS_AUTH) window.AGRIOS_AUTH.onChange(()=>{ if(rendered.resources && currentResTab==='feeds') drawSourceHealth(); });
   document.addEventListener('keydown',e=>{
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); toggleCmdk(); return; }
     if($('#cmdk').classList.contains('open')){ handleCmdkKeys(e); return; }
@@ -280,11 +285,13 @@ function drawSourceHealth(){
       <div class="ri-end">${evidenceBadge(kind)}</div>
     </div>`;
   }).join('');
+  const canRefresh=!!(window.AGRIOS_AUTH&&window.AGRIOS_AUTH.isOwner());
+  const refreshCtl=canRefresh?`<button class="btn sm" id="intelRefreshBtn" data-testid="intel-refresh">${icon('refresh-cw')} Refresh sources</button>`:'';
   host.innerHTML=`
     <div class="section-title"><h3>${icon('activity')} Live source health</h3><span class="meta">unified public-feed aggregate · /api/intel</span></div>
     <div class="panel">
       <div class="panel-h"><h4>${icon('radio')} Aggregate status</h4>
-        ${signalBubble(pillTl,intelLabel(),intelData.asOf?relTime(intelData.asOf):'')}</div>
+        ${signalBubble(pillTl,intelLabel(),intelData.asOf?relTime(intelData.asOf):'')}${refreshCtl}</div>
       <div class="cf" style="margin:10px 0 4px">${stats}</div>
       ${trafficLegend()}
     </div>
@@ -297,6 +304,16 @@ function drawSourceHealth(){
   $$('#res-feeds .row-item[data-url]').forEach(node=>{
     const url=node.dataset.url; const go=()=>{ if(url) window.open(url,'_blank','noopener'); };
     node.addEventListener('click',go); node.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+  });
+  const rb=$('#intelRefreshBtn');
+  if(rb) rb.addEventListener('click',()=>{
+    if(!(window.AGRIOS_AUTH&&window.AGRIOS_AUTH.isOwner())) return;
+    rb.disabled=true; rb.classList.add('is-loading');
+    window.AGRIOS_AUTH.authFetch('/api/intel?action=refresh',{method:'POST'})
+      .then(r=>r.json().catch(()=>({})))
+      .then(j=>{ if(j&&j.events){ intelData=Object.assign(intelData,{status:j.status,asOf:j.asOf,summary:j.summary,sources:j.sources||intelData.sources,events:j.events||intelData.events,bundled:false}); drawSourceHealth(); } })
+      .catch(()=>{})
+      .then(()=>{ if(rb){ rb.disabled=false; rb.classList.remove('is-loading'); } });
   });
   refreshIcons();
 }

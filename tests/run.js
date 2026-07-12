@@ -30,6 +30,13 @@ import {
 } from '../api/_sources.js';
 import { aggregate, clearSnapshots, recordSnapshot, getSnapshots } from '../api/_aggregate.js';
 import { gdacs, usgs, worldbank, power } from '../api/_adapters.js';
+import {
+  loadUsers, authenticate, signSession, verifySession, resolveAccount,
+  accountRoleAtLeast, bearerToken, revokeToken, clearRevocations,
+  ACCOUNT_ROLES, DEFAULT_TTL_MS, MAX_TTL_MS, SCRYPT_PARAMS,
+} from '../api/_accounts.js';
+import accountHandler from '../api/account.js';
+import { scryptSync, randomBytes, createHmac } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -873,6 +880,245 @@ function testBrandingSecurity() {
   ok('accessible traffic legend present', app.indexOf("data-testid=\"traffic-legend\"") !== -1);
 }
 
+/* ===================== account auth (env-backed) ===================== */
+async function testAccounts() {
+  // ---- fake, test-only credentials generated at runtime (never real) ----
+  const OWNER_PW = 'owner-pw-abcdef-123456';
+  const OP_PW = 'operator-pw-xyz-987654';
+  const S = SCRYPT_PARAMS;
+  function mkRec(email, name, role, pw) {
+    const salt = randomBytes(16).toString('hex');
+    const hash = scryptSync(pw, salt, S.keylen, { N: S.N, r: S.r, p: S.p }).toString('hex');
+    return { email, name, role, salt, hash };
+  }
+  const ownerRec = mkRec('ben@nirmata.example', 'Ben', 'owner', OWNER_PW);
+  const opRec = mkRec('joel@nirmata.example', 'Joel', 'operator', OP_PW);
+
+  const SECRET = 'test-only-session-secret-0123456789abcdef';
+  const goodEnv = {
+    AGRIOS_SESSION_SECRET: SECRET,
+    AGRIOS_AUTH_USERS_JSON: JSON.stringify([ownerRec, opRec]),
+  };
+
+  // Handler mocks + limiter reset. The handler reads config from process.env,
+  // so set it for the duration and restore afterward.
+  const savedUsers = process.env.AGRIOS_AUTH_USERS_JSON;
+  const savedSecret = process.env.AGRIOS_SESSION_SECRET;
+  function setEnv(users, secret) {
+    if (users === null) delete process.env.AGRIOS_AUTH_USERS_JSON;
+    else process.env.AGRIOS_AUTH_USERS_JSON = users;
+    if (secret === null) delete process.env.AGRIOS_SESSION_SECRET;
+    else process.env.AGRIOS_SESSION_SECRET = secret;
+  }
+  function resetLimiters() {
+    if (globalThis.__AGRI_RL__) globalThis.__AGRI_RL__.clear();
+    if (globalThis.__AGRIOS_ACCT_RL__) globalThis.__AGRIOS_ACCT_RL__.clear();
+    clearRevocations();
+  }
+  function mockRes() {
+    return {
+      statusCode: 0, headers: {}, body: undefined, ended: false,
+      setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+      getHeader(k) { return this.headers[String(k).toLowerCase()]; },
+      end(payload) {
+        this.ended = true;
+        if (payload !== undefined) { try { this.body = JSON.parse(payload); } catch (_) { this.body = payload; } }
+      },
+    };
+  }
+  let ipSeq = 0;
+  function acctReq({ method = 'POST', action, body, headers = {}, ip } = {}) {
+    const h = { host: 'app.example.com', origin: 'https://app.example.com', ...headers };
+    return {
+      method, url: `/api/account?action=${action}`, query: { action },
+      headers: h, body, socket: { remoteAddress: ip || ('10.9.0.' + (++ipSeq)) },
+    };
+  }
+  async function call(opts) {
+    const res = mockRes();
+    await accountHandler(acctReq(opts), res);
+    return res;
+  }
+  // HMAC re-signer so we can forge tokens with tampered claims for negative tests.
+  function forge(payloadObj, secret = SECRET) {
+    const pb = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+    const sig = createHmac('sha256', secret).update(pb).digest().toString('base64url');
+    return pb + '.' + sig;
+  }
+
+  section('accounts: loadUsers parsing + validation');
+  const users = loadUsers(goodEnv);
+  ok('loads two records', Array.isArray(users) && users.length === 2);
+  ok('emails normalized lowercase', users[0].email === 'ben@nirmata.example');
+  ok('null when config absent', loadUsers({}) === null);
+  ok('null on malformed JSON', loadUsers({ AGRIOS_AUTH_USERS_JSON: '{not json' }) === null);
+  ok('accepts {users:[...]} wrapper', Array.isArray(loadUsers({ AGRIOS_AUTH_USERS_JSON: JSON.stringify({ users: [ownerRec] }) })));
+  ok('null on bad role', loadUsers({ AGRIOS_AUTH_USERS_JSON: JSON.stringify([{ ...ownerRec, role: 'admin' }]) }) === null);
+  ok('null on short hash', loadUsers({ AGRIOS_AUTH_USERS_JSON: JSON.stringify([{ ...ownerRec, hash: 'abcd' }]) }) === null);
+  ok('null on bad salt', loadUsers({ AGRIOS_AUTH_USERS_JSON: JSON.stringify([{ ...ownerRec, salt: 'xyz' }]) }) === null);
+  ok('null on duplicate email', loadUsers({ AGRIOS_AUTH_USERS_JSON: JSON.stringify([ownerRec, ownerRec]) }) === null);
+  ok('no raw password anywhere in loaded record', JSON.stringify(users).indexOf(OWNER_PW) === -1);
+
+  section('accounts: authenticate (constant-time verifier)');
+  const aOwner = await authenticate('ben@nirmata.example', OWNER_PW, goodEnv);
+  ok('correct owner password authenticates', !!aOwner.user && aOwner.user.role === 'owner');
+  ok('authenticate returns no secret material', !('hash' in (aOwner.user || {})) && !('salt' in (aOwner.user || {})));
+  const aCase = await authenticate('BEN@Nirmata.Example', OWNER_PW, goodEnv);
+  ok('email is case-insensitive', !!aCase.user && aCase.user.email === 'ben@nirmata.example');
+  const aWrong = await authenticate('ben@nirmata.example', 'wrong-password-000', goodEnv);
+  ok('wrong password -> generic invalid', aWrong.error === 'invalid' && !aWrong.user);
+  const aUnknown = await authenticate('nobody@nirmata.example', OWNER_PW, goodEnv);
+  ok('unknown email -> same generic invalid', aUnknown.error === 'invalid' && !aUnknown.user);
+  const aNoCfg = await authenticate('ben@nirmata.example', OWNER_PW, {});
+  ok('missing config -> unavailable', aNoCfg.error === 'unavailable');
+  ok('verifyPassword true for correct', await verifyPassword(OWNER_PW, ownerRec.hash, ownerRec.salt));
+  ok('verifyPassword false for wrong', !(await verifyPassword('nope-nope-nope', ownerRec.hash, ownerRec.salt)));
+  ok('verifyPassword false for malformed hash', !(await verifyPassword(OWNER_PW, 'zz', ownerRec.salt)));
+
+  section('accounts: session token sign + verify');
+  const signed = signSession(aOwner.user, { env: goodEnv });
+  ok('sign yields a token', typeof signed.token === 'string' && signed.token.indexOf('.') > 0);
+  ok('sign yields ISO expiresAt', typeof signed.expiresAt === 'string' && !Number.isNaN(Date.parse(signed.expiresAt)));
+  ok('payload carries iss/aud/version', signed.payload.iss === 'agrios' && signed.payload.aud === 'agrios-web' && signed.payload.v === 1);
+  ok('payload role preserved', signed.payload.role === 'owner');
+  const v1 = verifySession(signed.token, { env: goodEnv });
+  ok('valid token verifies', v1.valid && v1.payload.sub === 'ben@nirmata.example');
+  // tamper the payload (keep original signature) -> bad signature
+  const parts = signed.token.split('.');
+  const tampPayload = Buffer.from(JSON.stringify({ ...signed.payload, role: 'owner', sub: 'evil@x.example' })).toString('base64url');
+  ok('tampered payload rejected', verifySession(tampPayload + '.' + parts[1], { env: goodEnv }).reason === 'bad_signature');
+  ok('tampered signature rejected', verifySession(parts[0] + '.' + Buffer.from('garbage').toString('base64url'), { env: goodEnv }).reason === 'bad_signature');
+  ok('malformed token rejected', verifySession('nodot', { env: goodEnv }).reason === 'malformed');
+  // forged tokens with correct secret but wrong claims
+  const base = { sub: 'ben@nirmata.example', name: 'Ben', role: 'owner', iss: 'agrios', aud: 'agrios-web', v: 1, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 };
+  ok('wrong audience rejected', verifySession(forge({ ...base, aud: 'someone-else' }), { env: goodEnv }).reason === 'bad_audience');
+  ok('wrong issuer rejected', verifySession(forge({ ...base, iss: 'evil' }), { env: goodEnv }).reason === 'bad_issuer');
+  ok('wrong version rejected', verifySession(forge({ ...base, v: 99 }), { env: goodEnv }).reason === 'bad_version');
+  ok('expired token rejected', verifySession(forge({ ...base, exp: Math.floor(Date.now() / 1000) - 10 }), { env: goodEnv }).reason === 'expired');
+  ok('bad role in token rejected', verifySession(forge({ ...base, role: 'admin' }), { env: goodEnv }).reason === 'bad_role');
+  ok('no signing secret -> sign unavailable', signSession(aOwner.user, { env: {} }).error === 'unavailable');
+  ok('no signing secret -> verify invalid', verifySession(signed.token, { env: {} }).valid === false);
+  // TTL is hard-capped at MAX_TTL_MS regardless of requested lifetime
+  const longNow = 1_000_000_000_000;
+  const capped = signSession(aOwner.user, { env: goodEnv, now: longNow, ttlMs: 999 * 60 * 60 * 1000 });
+  ok('ttl hard-capped at max', (capped.payload.exp - capped.payload.iat) <= MAX_TTL_MS / 1000);
+
+  section('accounts: roles + resolveAccount');
+  ok('owner >= operator', accountRoleAtLeast('owner', 'operator'));
+  ok('operator >= operator', accountRoleAtLeast('operator', 'operator'));
+  ok('operator NOT >= owner', !accountRoleAtLeast('operator', 'owner'));
+  ok('unknown role NOT >= operator', !accountRoleAtLeast('nope', 'operator'));
+  const ownerTok = signSession(aOwner.user, { env: goodEnv }).token;
+  const opAuth = await authenticate('joel@nirmata.example', OP_PW, goodEnv);
+  const opTok = signSession(opAuth.user, { env: goodEnv }).token;
+  ok('bearerToken parses header', bearerToken({ headers: { authorization: 'Bearer ' + ownerTok } }) === ownerTok);
+  const rOwner = resolveAccount({ headers: { authorization: 'Bearer ' + ownerTok } }, { env: goodEnv, minRole: 'owner' });
+  ok('owner resolves at owner minRole', !!rOwner && rOwner.role === 'owner');
+  ok('operator denied at owner minRole', resolveAccount({ headers: { authorization: 'Bearer ' + opTok } }, { env: goodEnv, minRole: 'owner' }) === null);
+  ok('operator allowed at operator minRole', !!resolveAccount({ headers: { authorization: 'Bearer ' + opTok } }, { env: goodEnv, minRole: 'operator' }));
+  ok('no bearer -> null', resolveAccount({ headers: {} }, { env: goodEnv, minRole: 'operator' }) === null);
+  revokeToken(ownerTok);
+  ok('revoked token -> null', resolveAccount({ headers: { authorization: 'Bearer ' + ownerTok } }, { env: goodEnv, minRole: 'owner' }) === null);
+  clearRevocations();
+
+  section('accounts: login endpoint');
+  setEnv(goodEnv.AGRIOS_AUTH_USERS_JSON, SECRET);
+  resetLimiters();
+  const okRes = await call({ action: 'login', body: { email: 'ben@nirmata.example', password: OWNER_PW } });
+  eq('successful login -> 200', okRes.statusCode, 200);
+  ok('login returns a token', okRes.body && okRes.body.authenticated === true && typeof okRes.body.token === 'string');
+  ok('login returns identity {email,name,role}', okRes.body.user && okRes.body.user.email === 'ben@nirmata.example' && okRes.body.user.role === 'owner');
+  ok('login never echoes password', JSON.stringify(okRes.body).indexOf(OWNER_PW) === -1);
+  ok('login response is no-store', String(okRes.getHeader('cache-control')).indexOf('no-store') !== -1);
+  const upRes = await call({ action: 'login', body: { email: 'BEN@Nirmata.Example', password: OWNER_PW } });
+  ok('login normalizes email', upRes.statusCode === 200 && upRes.body.user.email === 'ben@nirmata.example');
+
+  resetLimiters();
+  const wrongRes = await call({ action: 'login', body: { email: 'ben@nirmata.example', password: 'bad-password-x' } });
+  eq('wrong password -> 401', wrongRes.statusCode, 401);
+  ok('wrong password generic error', wrongRes.body.error === 'invalid_credentials' && !wrongRes.body.token);
+  const unkRes = await call({ action: 'login', body: { email: 'ghost@nirmata.example', password: OWNER_PW } });
+  eq('unknown email -> 401 (same generic)', unkRes.statusCode, 401);
+  ok('unknown email indistinguishable', unkRes.body.error === 'invalid_credentials');
+
+  const getLogin = await call({ method: 'GET', action: 'login', body: {} });
+  eq('login rejects non-POST', getLogin.statusCode, 405);
+  const badOrigin = await call({ action: 'login', headers: { origin: 'https://evil.com' }, body: { email: 'ben@nirmata.example', password: OWNER_PW } });
+  eq('login rejects cross-origin', badOrigin.statusCode, 403);
+  const big = await call({ action: 'login', headers: { 'content-length': '5000' }, body: { email: 'ben@nirmata.example', password: OWNER_PW } });
+  eq('login rejects oversized body', big.statusCode, 413);
+
+  section('accounts: login with missing config (no leak)');
+  setEnv(null, null);
+  resetLimiters();
+  const noCfg = await call({ action: 'login', body: { email: 'ben@nirmata.example', password: OWNER_PW } });
+  eq('missing config -> 503', noCfg.statusCode, 503);
+  ok('missing config generic unavailable', noCfg.body.error === 'unavailable');
+  ok('missing config never names which var', JSON.stringify(noCfg.body).match(/AGRIOS_|SECRET|USERS_JSON|env/i) === null);
+  setEnv(goodEnv.AGRIOS_AUTH_USERS_JSON, SECRET);
+
+  section('accounts: rate limiting + backoff');
+  resetLimiters();
+  let acctLimited = null;
+  for (let i = 0; i < 8; i++) {
+    const r = await call({ action: 'login', ip: '10.5.5.5', body: { email: 'ben@nirmata.example', password: 'bad-pass-' + i } });
+    if (r.statusCode === 429) { acctLimited = r; break; }
+  }
+  ok('per-account throttle trips to 429', !!acctLimited);
+  ok('per-account 429 sets Retry-After', acctLimited && acctLimited.getHeader('retry-after') != null);
+  resetLimiters();
+  let ipLimited = null;
+  for (let i = 0; i < 13; i++) {
+    const r = await call({ action: 'login', ip: '10.6.6.6', body: { email: 'user' + i + '@nirmata.example', password: 'bad-pass' } });
+    if (r.statusCode === 429) { ipLimited = r; break; }
+  }
+  ok('per-IP limiter trips to 429', !!ipLimited);
+
+  section('accounts: session + logout endpoints');
+  setEnv(goodEnv.AGRIOS_AUTH_USERS_JSON, SECRET);
+  resetLimiters();
+  const freshLogin = await call({ action: 'login', body: { email: 'joel@nirmata.example', password: OP_PW } });
+  const sessTok = freshLogin.body.token;
+  const sess = await call({ method: 'GET', action: 'session', headers: { authorization: 'Bearer ' + sessTok } });
+  ok('session endpoint confirms auth', sess.statusCode === 200 && sess.body.authenticated === true && sess.body.user.role === 'operator');
+  const sessNone = await call({ method: 'GET', action: 'session' });
+  ok('session without bearer -> not authenticated', sessNone.body.authenticated === false);
+  const out = await call({ method: 'POST', action: 'logout', headers: { authorization: 'Bearer ' + sessTok } });
+  ok('logout returns authenticated:false', out.statusCode === 200 && out.body.authenticated === false);
+  const sessAfter = await call({ method: 'GET', action: 'session', headers: { authorization: 'Bearer ' + sessTok } });
+  ok('token revoked after logout', sessAfter.body.authenticated === false);
+  clearRevocations();
+
+  section('accounts: client asset has no secret leakage / persistence');
+  const authJs = readFileSync(join(ROOT, 'assets', 'auth.js'), 'utf8');
+  ok('assets/auth.js exists', authJs.length > 0);
+  ok('no localStorage usage', !/localStorage\s*\./.test(authJs) && !/localStorage\s*\[/.test(authJs));
+  ok('no sessionStorage usage', !/sessionStorage\s*\./.test(authJs));
+  ok('no cookie usage', authJs.indexOf('document.cookie') === -1);
+  ok('no IndexedDB usage', !/indexedDB\s*\./.test(authJs));
+  ok('token replayed via Authorization/Bearer', authJs.indexOf('Authorization') !== -1 && authJs.indexOf('Bearer') !== -1);
+  ok('no console logging in auth client', !/console\.(log|warn|error|info)/.test(authJs));
+  ok('no fake test creds embedded in client', authJs.indexOf(OWNER_PW) === -1 && authJs.indexOf(OP_PW) === -1);
+  ok('token not placed in a URL/query', !/token=/.test(authJs));
+
+  section('accounts: sign-in UI accessibility + test ids');
+  const idsNeeded = [
+    'account-overlay', 'account-dialog', 'account-close', 'account-login-form',
+    'account-email', 'account-password', 'account-pw-toggle', 'account-error',
+    'account-submit', 'account-identity', 'account-role', 'account-signout',
+  ];
+  // Test ids appear either as literal attributes or via setAttribute(...).
+  const hasTestId = (id) => authJs.indexOf('data-testid="' + id + '"') !== -1 || authJs.indexOf("'" + id + "'") !== -1;
+  ok('all account test ids present', idsNeeded.every(hasTestId));
+  ok('dialog has role=dialog + aria-modal', /role["'\s,]+dialog/.test(authJs) && authJs.indexOf('aria-modal') !== -1);
+  ok('password input hidden by default (type=password)', /type="password"/.test(authJs));
+  ok('generic error copy, no field disclosure', authJs.indexOf('Incorrect email or password') !== -1);
+
+  // Restore any pre-existing env so later tests / process are unaffected.
+  setEnv(savedUsers === undefined ? null : savedUsers, savedSecret === undefined ? null : savedSecret);
+  resetLimiters();
+}
+
 /* ============================ run ============================ */
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
@@ -897,6 +1143,7 @@ function testBrandingSecurity() {
     await testRealAdapters();
     await testSentinels();
     testBrandingSecurity();
+    await testAccounts();
   } catch (e) {
     console.error('\nFATAL: test harness threw:', e && e.message);
     process.exit(1);
