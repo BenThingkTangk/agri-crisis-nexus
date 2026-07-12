@@ -31,22 +31,25 @@
    pre-existing stylesheet onto these tokens so the whole app re-themes.
    ------------------------------------------------------------------ */
 :root{
-  /* light fallback — field parchment / warm cream / deep crop green — AA */
-  --background:40 34% 92%;
-  --background-elevated:44 40% 96%;
-  --foreground:28 30% 14%;
-  --foreground-muted:30 15% 34%;
-  --foreground-faint:32 12% 48%;
-  --border-c:38 22% 78%;
-  --border-strong-c:36 20% 66%;
-  --surface-c:42 38% 95%;
-  --surface-alt:40 30% 90%;
-  --surface-raised:38 26% 86%;
-  --overlay:28 30% 14%;
-  --accent-primary:142 55% 26%;
-  --accent-primary-foreground:40 40% 97%;
-  --accent-secondary:202 70% 38%;
-  --accent-tertiary:38 80% 38%;
+  /* light fallback — field parchment / warm cream / deep crop green — AA.
+     Rebuilt: deeper parchment ground + brighter card surfaces + decisive loam
+     borders give real card separation; text darkened well past AA so nothing
+     washes into the cream. No global veil (see light atmosphere override). */
+  --background:40 30% 88%;
+  --background-elevated:44 34% 93%;
+  --foreground:26 34% 11%;
+  --foreground-muted:28 24% 25%;
+  --foreground-faint:30 18% 37%;
+  --border-c:34 22% 64%;
+  --border-strong-c:32 26% 50%;
+  --surface-c:44 44% 96%;
+  --surface-alt:42 30% 90%;
+  --surface-raised:38 28% 85%;
+  --overlay:26 34% 11%;
+  --accent-primary:142 58% 24%;
+  --accent-primary-foreground:44 46% 97%;
+  --accent-secondary:202 74% 34%;
+  --accent-tertiary:36 84% 32%;
   --chart-1:140 50% 28%;
   --chart-2:95 45% 34%;
   --chart-3:38 80% 40%;
@@ -214,6 +217,15 @@ button{font-family:inherit;cursor:pointer;}
 .gate-brand .logo{width:42px;height:42px;}
 .gate-brand h1{font-size:19px;letter-spacing:.02em;}
 .gate-brand .sub{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-top:3px;}
+/* Operational focal cue — an agricultural-intelligence status line that gives the
+   gate a stronger, premium sense of a live watch floor without fabricating data. */
+.gate-status{display:flex;align-items:center;gap:9px;margin-bottom:22px;padding:9px 13px;
+  border:1px solid hsl(var(--accent-primary) / 0.34);border-radius:10px;
+  background:linear-gradient(90deg, hsl(var(--accent-primary) / 0.12), transparent 82%);
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--text-dim);}
+.gate-status .gs-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:var(--sev-stable);box-shadow:0 0 10px 1px var(--sev-stable);animation:blink 1.9s ease-in-out infinite;}
+.gate-status .gs-sep{color:var(--faint);}
+.gate-status .gs-live{color:var(--accent);font-weight:600;}
 .gate-title{font-size:13px;color:var(--text-dim);margin-bottom:8px;}
 .gate-title .lock{color:var(--red);}
 .gate-row{display:flex;gap:10px;}
@@ -235,8 +247,11 @@ button{font-family:inherit;cursor:pointer;}
 header#topbar{
   height:var(--header-h);flex:0 0 auto;
   display:flex;align-items:center;gap:18px;padding:0 18px;
-  background:linear-gradient(180deg, #1a1610, #12100a);
-  border-bottom:1px solid var(--border);position:relative;z-index:960;
+  /* theme-driven so the top status rail re-themes with the palette (was a
+     hardcoded dark gradient that stayed dark under the light parchment theme,
+     rendering the dark-soil text tokens invisible dark-on-dark). */
+  background:linear-gradient(180deg, hsl(var(--surface-alt)), hsl(var(--background)));
+  border-bottom:1px solid var(--border-strong);position:relative;z-index:960;
 }
 .brand{display:flex;align-items:center;gap:11px;flex:0 0 auto;}
 .brand .logo{width:30px;height:30px;flex:0 0 auto;}
@@ -282,9 +297,27 @@ main#workspace{
 main#workspace::before{
   content:"";position:fixed;inset:var(--header-h) 0 0 0;z-index:0;pointer-events:none;
   background:
-    radial-gradient(1200px 720px at 84% -8%, hsl(var(--accent-primary) / 0.07), transparent 60%),
-    radial-gradient(940px 620px at 4% 110%, hsl(var(--accent-tertiary) / 0.05), transparent 62%),
-    repeating-linear-gradient(116deg, hsl(var(--foreground) / 0.015) 0 1px, transparent 1px 30px);
+    radial-gradient(1220px 740px at 84% -8%, hsl(var(--accent-primary) / 0.10), transparent 60%),
+    radial-gradient(980px 640px at 4% 110%, hsl(var(--accent-tertiary) / 0.06), transparent 62%),
+    /* topographic contour bands — a second, shallower furrow set crossing the
+       first gives the ground faint depth without motion or clutter */
+    repeating-linear-gradient(64deg, hsl(var(--accent-primary) / 0.018) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(116deg, hsl(var(--foreground) / 0.022) 0 1px, transparent 1px 30px);
+}
+/* Light parchment: dial the atmosphere right down so no colored radial veil
+   washes over content, and lift cards off the ground with a soft soil shadow
+   (dark theme keeps flat, border-only separation). */
+[data-theme="light"] main#workspace::before{
+  background:
+    radial-gradient(1200px 720px at 84% -8%, hsl(var(--accent-primary) / 0.04), transparent 58%),
+    radial-gradient(940px 620px at 4% 110%, hsl(var(--accent-tertiary) / 0.03), transparent 60%),
+    repeating-linear-gradient(116deg, hsl(var(--foreground) / 0.02) 0 1px, transparent 1px 30px);
+}
+[data-theme="light"] .panel,
+[data-theme="light"] .kpi,
+[data-theme="light"] .card,
+[data-theme="light"] .intel-card{
+  box-shadow:0 1px 2px hsl(var(--overlay) / 0.07), 0 8px 20px -12px hsl(var(--overlay) / 0.18);
 }
 .mode-panel{display:none;padding:22px 26px 90px;max-width:1500px;margin:0 auto;position:relative;z-index:1;}
 .mode-panel.active{display:block;animation:fade .28s ease;}
@@ -317,13 +350,13 @@ main#workspace::before{
 
 /* KPI strip */
 .kpi-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
-.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;position:relative;overflow:hidden;}
-.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--sev-neutral);}
-.kpi.c-critical::before{background:var(--sev-critical);}
-.kpi.c-high::before{background:var(--sev-high);}
-.kpi.c-moderate::before{background:var(--sev-moderate);}
-.kpi.c-stable::before{background:var(--sev-stable);}
-.kpi.c-cyan::before{background:var(--cyan);}
+.kpi{background:linear-gradient(180deg, var(--surface-3), var(--surface));border:1px solid var(--border-strong);border-radius:var(--radius);padding:15px 16px;position:relative;overflow:hidden;box-shadow:inset 0 1px 0 hsl(var(--foreground) / 0.045);}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;color:var(--sev-neutral);background:currentColor;box-shadow:1px 0 11px -1px currentColor;}
+.kpi.c-critical::before{color:var(--sev-critical);}
+.kpi.c-high::before{color:var(--sev-high);}
+.kpi.c-moderate::before{color:var(--sev-moderate);}
+.kpi.c-stable::before{color:var(--sev-stable);}
+.kpi.c-cyan::before{color:var(--cyan);}
 .kpi .val{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1;}
 .kpi .lbl{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.35;}
 .kpi .delta{font-family:var(--mono);font-size:10.5px;margin-top:7px;display:inline-flex;align-items:center;gap:4px;}
@@ -628,10 +661,12 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 
 /* ============ MISSION PRIORITY QUEUE ============ */
 .missions{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:13px;}
-.mission{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:15px;display:flex;flex-direction:column;gap:10px;border-left:3px solid var(--sev-neutral);transition:border-color .18s,transform .18s;}
-.mission.sev-critical{border-left-color:var(--sev-critical);}
-.mission.sev-high{border-left-color:var(--sev-high);}
-.mission.sev-moderate{border-left-color:var(--sev-moderate);}
+.mission{background:linear-gradient(90deg, hsl(var(--accent-primary) / 0.05), var(--surface) 150px);border:1px solid var(--border);border-radius:var(--radius);padding:15px;display:flex;flex-direction:column;gap:10px;border-left:4px solid var(--sev-stable);transition:border-color .18s,transform .18s,box-shadow .18s;}
+.mission:hover{box-shadow:-3px 0 16px -8px var(--sev-stable);}
+.mission.sev-critical{border-left-color:var(--sev-critical);background:linear-gradient(90deg, hsl(var(--danger) / 0.07), var(--surface) 150px);}
+.mission.sev-critical:hover{box-shadow:-3px 0 16px -8px var(--sev-critical);}
+.mission.sev-high{border-left-color:var(--sev-high);background:linear-gradient(90deg, hsl(var(--sev-high-c) / 0.07), var(--surface) 150px);}
+.mission.sev-moderate{border-left-color:var(--sev-moderate);background:linear-gradient(90deg, hsl(var(--sev-moderate-c) / 0.06), var(--surface) 150px);}
 .mission:hover{border-color:var(--border-strong);transform:translateY(-2px);}
 .mission .m-top{display:flex;align-items:center;gap:9px;}
 .mission .m-code{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.08em;color:var(--cyan);}
@@ -769,8 +804,9 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 
 /* Matrix filters + industry web */
 .mx-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
-.mx-filters .fbtn{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);border-radius:16px;padding:5px 12px;font-size:11.5px;min-height:30px;}
-.mx-filters .fbtn.active{background:var(--surface-3);color:var(--text);border-color:var(--border-strong);}
+.mx-filters .fbtn{background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text);border-radius:16px;padding:5px 12px;font-size:11.5px;min-height:30px;}
+.mx-filters .fbtn:hover{border-color:hsl(var(--accent-primary) / 0.5);}
+.mx-filters .fbtn.active{background:linear-gradient(180deg, hsl(var(--accent-primary) / 0.16), hsl(var(--accent-primary) / 0.06));color:var(--text);border-color:hsl(var(--accent-primary) / 0.6);box-shadow:0 0 14px -6px hsl(var(--accent-primary) / 0.6);}
 .mx-filters .fbtn.active.pill-crit{border-color:var(--sev-critical);color:#ffb4ad;}
 .industry-web .card.linked{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(60,168,90,.3);}
 .industry-web .card.faded{opacity:.32;}
@@ -1003,20 +1039,24 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .th-understood .ok{color:var(--sev-stable);}
 .th-understood .warn{color:var(--sev-moderate);}
 .th-stage{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start;}
-.th-canvas-wrap{position:relative;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:#12100c;}
+.th-canvas-wrap{position:relative;border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden;background:#12100c;}
+/* Cinematic frame vignette — pure inset shadow, no motion; deepens the stage and
+   pushes the globe/nodes forward for ~10-15% more contrast without any clutter. */
+.th-canvas-wrap::after{content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;z-index:3;
+  box-shadow:inset 0 0 130px 12px rgba(0,0,0,.58), inset 0 0 44px rgba(0,0,0,.34);}
 #theaterCanvas{display:block;width:100%;cursor:grab;touch-action:none;}
 #theaterCanvas:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px;}
 .th-toolbar{position:absolute;top:10px;right:10px;display:flex;flex-direction:column;gap:6px;}
-.mtool{width:36px;height:36px;min-height:36px;border-radius:8px;border:1px solid var(--border);background:rgba(12,14,17,.82);color:var(--text);font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+.mtool{width:36px;height:36px;min-height:36px;border-radius:8px;border:1px solid var(--border-strong);background:rgba(12,14,17,.9);color:var(--text);font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:4;}
 .mtool:hover{border-color:var(--cyan);color:var(--cyan);}
 .mtool:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
 .mtool.on{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 0 1px var(--cyan) inset;}
 .mtool:disabled{opacity:.4;cursor:not-allowed;}
-.th-telemetry{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:2px;background:rgba(16,12,7,.74);border:1px solid rgba(60,168,90,.28);border-radius:8px;padding:8px 10px;font:600 10.5px/1.3 var(--mono);pointer-events:none;z-index:4;backdrop-filter:blur(3px);}
+.th-telemetry{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:2px;background:rgba(16,12,7,.88);border:1px solid rgba(60,168,90,.28);border-radius:8px;padding:8px 10px;font:600 10.5px/1.3 var(--mono);pointer-events:none;z-index:4;backdrop-filter:blur(3px);}
 .th-telemetry .tm-row{display:flex;justify-content:space-between;gap:14px;}
 .th-telemetry .tm-k{color:var(--muted);letter-spacing:.04em;text-transform:uppercase;}
 .th-telemetry .tm-v{color:var(--cyan);}
-.th-render-status{position:absolute;bottom:10px;left:10px;background:rgba(16,12,7,.74);border:1px solid rgba(60,168,90,.22);border-radius:6px;padding:4px 8px;font:600 10px/1 var(--mono);color:var(--muted);letter-spacing:.03em;z-index:4;pointer-events:none;}
+.th-render-status{position:absolute;bottom:10px;left:10px;background:rgba(16,12,7,.88);border:1px solid rgba(60,168,90,.22);border-radius:6px;padding:4px 8px;font:600 10px/1 var(--mono);color:var(--muted);letter-spacing:.03em;z-index:4;pointer-events:none;}
 .th-tip{position:absolute;pointer-events:none;background:rgba(12,14,17,.94);border:1px solid var(--border);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--text);max-width:200px;z-index:5;}
 .th-tip .tip-s{color:var(--muted);font:500 10.5px/1.4 var(--mono);}
 .th-side{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);max-height:520px;overflow:auto;}
@@ -1139,6 +1179,12 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
         <h1>Agri<span style="color:var(--accent)">OS</span></h1>
         <div class="sub">A Nirmata Holdings Company · Crisis Intelligence Platform</div>
       </div>
+    </div>
+    <div class="gate-status" aria-hidden="true">
+      <span class="gs-dot"></span>
+      <span>Global Agricultural Watch</span>
+      <span class="gs-sep">/</span>
+      <span class="gs-live">11 open-source feeds</span>
     </div>
     <div class="gate-title"><span class="lock">◆</span> Restricted access — credential required</div>
     <form class="gate-row" id="gateForm" autocomplete="off">

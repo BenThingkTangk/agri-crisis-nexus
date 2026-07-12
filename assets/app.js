@@ -199,10 +199,11 @@ function applyTheme(t){
   if(typeof rethemeCharts==='function') rethemeCharts();
 }
 function initTheme(){
-  // Dark is the product default; honor an explicit OS light preference at load.
-  let initial='dark';
-  try{ if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) initial='light'; }catch(e){}
-  applyTheme(initial);
+  // Dark/soil is the deterministic product default on every fresh session,
+  // regardless of the OS prefers-color-scheme setting (we intentionally do NOT
+  // adopt an OS light preference at load). Preference is memory-only — no
+  // storage — and the user can switch to light for the session via the toggle.
+  applyTheme('dark');
   const btn=$('#themeToggle');
   if(btn) btn.addEventListener('click',()=>applyTheme(themeState==='dark'?'light':'dark'));
 }

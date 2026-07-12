@@ -1050,7 +1050,7 @@ function testDesignSystem() {
 
   section('design-system: CSS variable map + themes');
   ok('html defaults to dark theme', /<html[^>]*data-theme="dark"/.test(html));
-  ok(':root light fallback defines semantic tokens', html.indexOf('--background:40 34% 92%') !== -1 && html.indexOf('--foreground:28 30% 14%') !== -1);
+  ok(':root light fallback defines semantic tokens', html.indexOf('--background:40 30% 88%') !== -1 && html.indexOf('--foreground:26 34% 11%') !== -1);
   ok('dark canonical block present', /\[data-theme="dark"\]\{[\s\S]*--background:30 20% 6%/.test(html));
   ok('accent-primary crop-green in dark block', html.indexOf('--accent-primary:130 48% 46%') !== -1);
   ok('chart tokens chart-1..5 present', ['--chart-1','--chart-2','--chart-3','--chart-4','--chart-5'].every(c => html.indexOf(c) !== -1));
@@ -1085,12 +1085,50 @@ function testDesignSystem() {
   ok('field-furrow atmosphere layer present', /main#workspace::before\{[\s\S]*repeating-linear-gradient/.test(html));
   ok('nav active state carries accent glow', /\.mode-tab\.active\{[\s\S]*inset 3px 0 0 0 var\(--accent\)/.test(html));
 
+  section('design-system: light parchment readability (WCAG AA regression)');
+  // Parse the light :root block and compute real sRGB contrast ratios so the
+  // parchment theme can never silently regress back to washed-out / near-white
+  // foregrounds on cream again (the bd38adb visual-QA blocker).
+  const lightBlock = (html.match(/:root\{\s*\/\* light fallback[\s\S]*?\n\}/) || [''])[0];
+  const tok = (name) => { const m = lightBlock.match(new RegExp('--' + name + ':\\s*([0-9]+) ([0-9.]+)% ([0-9.]+)%')); return m ? { h:+m[1], s:+m[2], l:+m[3] } : null; };
+  const lin = (c) => { c/=255; return c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); };
+  const relLum = ({h,s,l}) => { s/=100; l/=100; const k=(n)=>{const a=s*Math.min(l,1-l);return l-a*Math.max(-1,Math.min(n-3,Math.min(9-n,1)));}; const f=(n)=>Math.round(255*k((n+h/30)%12)); return 0.2126*lin(f(0))+0.7152*lin(f(8))+0.0722*lin(f(4)); };
+  const contrast = (a,b) => { const L1=relLum(a),L2=relLum(b); const hi=Math.max(L1,L2),lo=Math.min(L1,L2); return (hi+0.05)/(lo+0.05); };
+  const Lbg = tok('background'), Lfg = tok('foreground'), Lmuted = tok('foreground-muted'), Lfaint = tok('foreground-faint'), Lsurf = tok('surface-c'), Lborder = tok('border-c'), Laccent = tok('accent-primary');
+  ok('light tokens parsed from :root block', !!(Lbg && Lfg && Lmuted && Lsurf && Lborder && Laccent));
+  ok('light body text vs background ≥ 7:1 (AA+)', contrast(Lfg, Lbg) >= 7);
+  ok('light body text vs card surface ≥ 7:1 (AA+)', contrast(Lfg, Lsurf) >= 7);
+  ok('light muted label vs surface ≥ 4.5:1 (AA)', contrast(Lmuted, Lsurf) >= 4.5);
+  ok('light faint text vs surface ≥ 3:1 (AA large/non-text)', contrast(Lfaint, Lsurf) >= 3);
+  ok('light green link/accent vs background ≥ 4.5:1 (AA)', contrast(Laccent, Lbg) >= 4.5);
+  ok('light foreground is dark soil, not near-white (L ≤ 20)', Lfg.l <= 20);
+  ok('light border visibly separates cards (surface↔border ΔL ≥ 18)', (Lsurf.l - Lborder.l) >= 18);
+  ok('light card sits above ground (background darker than surface)', Lbg.l < Lsurf.l);
+  // Structural washout guards.
+  ok('topbar background is theme-driven, not hardcoded dark', /header#topbar\{[\s\S]*background:linear-gradient\(180deg, hsl\(var\(--surface-alt\)\), hsl\(var\(--background\)\)\)/.test(html) && html.indexOf('#1a1610') === -1 && html.indexOf('#12100a') === -1);
+  ok('light atmosphere veil dialed down (no ≥0.07 radial wash)', /\[data-theme="light"\] main#workspace::before\{[\s\S]*accent-primary\) \/ 0\.04[\s\S]*accent-tertiary\) \/ 0\.03/.test(html));
+  ok('light mode lifts cards with a soft shadow for separation', /\[data-theme="light"\] \.card,[\s\S]*box-shadow:0 1px 2px hsl\(var\(--overlay\)/.test(html));
+  ok('no near-white body text token in light (foreground not 0% 9x%)', !/--foreground:\s*[0-9]+ [0-9.]+% (8[5-9]|9[0-9]|100)%/.test(lightBlock));
+
+  section('design-system: agricultural amplification (depth + focal cues)');
+  ok('workspace atmosphere layers a topographic cross-furrow set', (html.match(/main#workspace::before\{[\s\S]*?\}/) || [''])[0].match(/repeating-linear-gradient/g)?.length >= 2);
+  ok('KPI cards carry lifted gradient surface + severity edge glow', /\.kpi\{background:linear-gradient\(180deg, var\(--surface-3\)/.test(html) && /\.kpi::before\{[\s\S]*box-shadow:1px 0 11px/.test(html));
+  ok('mission cards carry green/gold state edge + severity wash', /\.mission\.sev-critical\{[\s\S]*linear-gradient\(90deg, hsl\(var\(--danger\) \/ 0\.07\)/.test(html));
+  ok('map filters use decisive green active state', /\.mx-filters \.fbtn\.active\{background:linear-gradient\(180deg, hsl\(var\(--accent-primary\)/.test(html));
+  ok('theater frame has a cinematic vignette (contrast/depth only)', /\.th-canvas-wrap::after\{[\s\S]*box-shadow:inset 0 0 130px/.test(html));
+  ok('gate carries an agricultural-intelligence operational status cue', html.indexOf('class="gate-status"') !== -1 && html.indexOf('Global Agricultural Watch') !== -1 && html.indexOf('11 open-source feeds') !== -1);
+  ok('gate status cue makes no fabricated live/real-time data claim', !/gate-status[\s\S]*?(live data|real-?time|updated \d|last updated)/i.test(html.slice(html.indexOf('class="gate-status"'), html.indexOf('class="gate-status"') + 400)));
+
   section('design-system: app shell + a11y');
   ok('skip-to-content link present and first', /<a href="#workspace" class="skip-link"/.test(html));
   ok('header scroll-progress element present', html.indexOf('id="scrollProgress"') !== -1);
   ok('scroll progress bound to #workspace in JS', app.indexOf('bindScrollProgress') !== -1 && /ws\.addEventListener\('scroll'/.test(app));
   ok('theme toggle control present', html.indexOf('data-testid="theme-toggle"') !== -1);
-  ok('theme uses JS memory + matchMedia (no storage)', app.indexOf('prefers-color-scheme') !== -1 && !/localStorage|sessionStorage|indexedDB/i.test(app));
+  ok('theme defaults to dark deterministically (no OS light override), memory-only, no storage',
+     /function initTheme\(\)\{[\s\S]*applyTheme\('dark'\)/.test(app)
+     && !/prefers-color-scheme:\s*light[\s\S]*initial\s*=\s*'light'/.test(app)
+     && /applyTheme\(themeState==='dark'\?'light':'dark'\)/.test(app)
+     && !/localStorage|sessionStorage|indexedDB/i.test(app));
   ok('nav is a tablist', /id="modes"[^>]*role="tablist"/.test(html));
   ok('tabs get role=tab + aria-selected + aria-controls', app.indexOf("setAttribute('role','tab')") !== -1 && app.indexOf("aria-selected") !== -1 && app.indexOf("aria-controls") !== -1);
   ok('panels get role=tabpanel', app.indexOf("setAttribute('role','tabpanel')") !== -1);

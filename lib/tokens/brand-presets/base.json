@@ -64,23 +64,23 @@
       "info": "200 75% 52%"
     },
     "light": {
-      "background": "40 34% 92%",
-      "backgroundElevated": "44 40% 96%",
-      "foreground": "28 30% 14%",
-      "foregroundMuted": "30 15% 34%",
-      "foregroundFaint": "32 12% 48%",
-      "border": "38 22% 78%",
-      "borderStrong": "36 20% 66%",
-      "surface": "42 38% 95%",
-      "surfaceAlt": "40 30% 90%",
-      "accentPrimary": "142 55% 26%",
-      "accentPrimaryForeground": "40 40% 97%",
-      "accentSecondary": "202 70% 38%",
-      "accentTertiary": "38 80% 38%",
+      "background": "40 30% 88%",
+      "backgroundElevated": "44 34% 93%",
+      "foreground": "26 34% 11%",
+      "foregroundMuted": "28 24% 25%",
+      "foregroundFaint": "30 18% 37%",
+      "border": "34 22% 64%",
+      "borderStrong": "32 26% 50%",
+      "surface": "44 44% 96%",
+      "surfaceAlt": "42 30% 90%",
+      "accentPrimary": "142 58% 24%",
+      "accentPrimaryForeground": "44 46% 97%",
+      "accentSecondary": "202 74% 34%",
+      "accentTertiary": "36 84% 32%",
       "success": "142 50% 30%",
-      "warning": "38 85% 36%",
+      "warning": "38 85% 34%",
       "danger": "10 68% 42%",
-      "info": "202 70% 38%"
+      "info": "202 74% 34%"
     }
   },
   "defaultTypography": {
