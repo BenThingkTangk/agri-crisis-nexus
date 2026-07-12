@@ -69,9 +69,9 @@
     t.style.cssText =
       'pointer-events:auto;max-width:min(520px,90vw);padding:10px 16px;border-radius:9px;' +
       'font:500 13px/1.4 var(--sans,system-ui);box-shadow:0 8px 30px rgba(0,0,0,.35);' +
-      'border:1px solid var(--border);background:var(--surface,#161a1f);color:var(--text,#e8edf1);' +
-      (kind === 'error' ? 'border-left:3px solid var(--sev-critical,#e2483d);' :
-       kind === 'ok' ? 'border-left:3px solid var(--cyan,#5fb3c4);' : '');
+      'border:1px solid var(--border);background:var(--surface,#1a160f);color:var(--text,#f0e9db);' +
+      (kind === 'error' ? 'border-left:3px solid var(--sev-critical,#d43e28);' :
+       kind === 'ok' ? 'border-left:3px solid var(--cyan,#3ca85a);' : '');
     if (!REDUCED) t.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'ease' });
     toastHost.appendChild(t);
     setTimeout(function () {

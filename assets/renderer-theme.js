@@ -11,26 +11,26 @@
 
   // Canonical dark fallbacks (bare HSL triplets, matching design-tokens.json).
   var FALLBACK = {
-    background: '210 15% 4%',
-    surface: '210 14% 8%',
-    surfaceAlt: '210 14% 11%',
-    border: '210 12% 18%',
-    foreground: '0 0% 95%',
-    foregroundMuted: '210 8% 65%',
-    accentPrimary: '174 100% 45%',
-    accentSecondary: '266 70% 62%',
-    accentTertiary: '38 92% 58%',
-    success: '152 60% 45%',
-    warning: '38 92% 55%',
-    danger: '0 72% 55%',
-    info: '217 91% 60%',
-    sevHigh: '28 90% 55%',
-    sevModerate: '45 90% 52%',
-    chart1: '174 100% 45%',
-    chart2: '266 70% 62%',
-    chart3: '38 92% 58%',
-    chart4: '217 91% 60%',
-    chart5: '340 75% 60%'
+    background: '30 20% 6%',
+    surface: '30 15% 10%',
+    surfaceAlt: '30 14% 13%',
+    border: '34 14% 20%',
+    foreground: '40 30% 92%',
+    foregroundMuted: '38 12% 68%',
+    accentPrimary: '130 48% 46%',
+    accentSecondary: '200 70% 52%',
+    accentTertiary: '42 92% 56%',
+    success: '142 50% 42%',
+    warning: '40 92% 52%',
+    danger: '10 74% 50%',
+    info: '200 75% 52%',
+    sevHigh: '24 85% 52%',
+    sevModerate: '44 88% 50%',
+    chart1: '140 45% 42%',
+    chart2: '95 55% 50%',
+    chart3: '42 92% 56%',
+    chart4: '200 70% 52%',
+    chart5: '16 70% 52%'
   };
 
   // CSS variable name per logical token.

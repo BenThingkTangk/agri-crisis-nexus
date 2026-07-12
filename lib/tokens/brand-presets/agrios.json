@@ -2,7 +2,7 @@
   "$schema": "../design-tokens.json",
   "presetId": "agrios",
   "extends": "base.json",
-  "description": "AgriOS brand override + content preset. Keeps the standard teal/cyan accent-primary and semantic traffic-light statuses; substitutes AgriOS/ATOM/Nirmata Holdings identity and General Sans + JetBrains Mono type. No fabricated investor metrics — figures surface only from live ingestion/model metadata at runtime.",
+  "description": "AgriOS brand override + content preset. Uses an agricultural crop-green accent-primary with soil/harvest/clay/irrigation semantics; substitutes AgriOS/ATOM/Nirmata Holdings identity and General Sans + JetBrains Mono type. No fabricated investor metrics — figures surface only from live ingestion/model metadata at runtime.",
   "overrides": {
     "brandName": "AgriOS · A Nirmata Holdings Company",
     "typography": {
@@ -11,8 +11,8 @@
       "fontMono": "\"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, monospace"
     },
     "colorTokens": {
-      "accentPrimary": "174 100% 45%",
-      "accentPrimaryForeground": "210 15% 4%"
+      "accentPrimary": "130 48% 46%",
+      "accentPrimaryForeground": "30 25% 8%"
     }
   },
   "content": {

@@ -66,7 +66,7 @@
   // Framed near-black starfield behind the globe. Deterministic (seeded) so it
   // never shimmers between resizes; a gentle twinkle plays only when motion is OK.
   function drawStarfield() {
-    ctx.fillStyle = '#05070a';
+    ctx.fillStyle = '#0a0805';
     ctx.fillRect(0, 0, W, H);
     if (GB && (!stars || starW !== W || starH !== H)) {
       var count = Math.max(40, Math.min(220, Math.round(W * H / 5200)));
@@ -78,7 +78,7 @@
       var s = stars[i];
       var a = REDUCED ? s.a : s.a * (0.6 + 0.4 * (0.5 + 0.5 * Math.sin(tw + s.tw)));
       ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(200,224,232,' + a.toFixed(3) + ')'; ctx.fill();
+      ctx.fillStyle = 'rgba(232,222,200,' + a.toFixed(3) + ')'; ctx.fill();
     }
   }
 
@@ -95,11 +95,11 @@
     var R = radius(), cx = W / 2, cy = H / 2;
     drawStarfield();
     if (st.view === '3d') {
-      // Atmospheric navy/cyan rim glow just outside the disc.
+      // Atmospheric chlorophyll/forest rim glow just outside the disc.
       var halo = ctx.createRadialGradient(cx, cy, R * 0.92, cx, cy, R * 1.28);
-      halo.addColorStop(0, 'rgba(95,179,196,0.28)');
-      halo.addColorStop(0.5, 'rgba(46,86,120,0.16)');
-      halo.addColorStop(1, 'rgba(46,86,120,0)');
+      halo.addColorStop(0, 'rgba(92,182,110,0.26)');
+      halo.addColorStop(0.5, 'rgba(46,90,58,0.15)');
+      halo.addColorStop(1, 'rgba(46,90,58,0)');
       ctx.beginPath(); ctx.arc(cx, cy, R * 1.28, 0, Math.PI * 2); ctx.fillStyle = halo; ctx.fill();
       // Dark ocean sphere with day-side lift toward upper-left.
       var g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.08, cx, cy, R);
@@ -109,7 +109,7 @@
       ctx.save();
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
       drawLand(R);
-      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(95,179,196,0.12)';
+      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(120,190,135,0.12)';
       for (var la = -60; la <= 60; la += 30) drawParallel(la);
       for (var lo = -180; lo < 180; lo += 30) drawMeridian(lo);
       ctx.restore();
@@ -117,13 +117,13 @@
       var term = ctx.createRadialGradient(cx - R * 0.3, cy - R * 0.3, R * 0.2, cx + R * 0.25, cy + R * 0.3, R * 1.15);
       term.addColorStop(0, 'rgba(0,0,0,0)'); term.addColorStop(1, 'rgba(0,0,0,0.45)');
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fillStyle = term; ctx.fill();
-      // Crisp cyan rim.
-      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(95,179,196,0.45)'; ctx.lineWidth = 1.3; ctx.stroke();
+      // Crisp chlorophyll rim.
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(95,185,115,0.45)'; ctx.lineWidth = 1.3; ctx.stroke();
     } else {
-      ctx.fillStyle = '#0b0f13'; ctx.fillRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
-      ctx.strokeStyle = 'rgba(95,179,196,0.10)'; ctx.lineWidth = 1;
+      ctx.fillStyle = '#12100c'; ctx.fillRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
+      ctx.strokeStyle = 'rgba(120,190,135,0.10)'; ctx.lineWidth = 1;
       for (var la2 = -60; la2 <= 60; la2 += 30) { var p = project(la2, st.rotLng); ctx.beginPath(); ctx.moveTo(cx - R, p.y); ctx.lineTo(cx + R, p.y); ctx.stroke(); }
-      ctx.strokeStyle = 'rgba(95,179,196,0.25)'; ctx.strokeRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
+      ctx.strokeStyle = 'rgba(120,190,135,0.25)'; ctx.strokeRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
     }
   }
 
@@ -131,7 +131,7 @@
   // projected onto the front hemisphere. Deterministic; bounded fan-out.
   function drawLand(R) {
     var step = R > 200 ? 5 : 7, rad = step * 0.9;
-    ctx.fillStyle = 'rgba(58,110,84,0.34)';
+    ctx.fillStyle = 'rgba(74,128,80,0.36)';
     for (var lat = -84; lat <= 84; lat += step) {
       for (var lng = -180; lng < 180; lng += step) {
         if (landNoise(lat, lng) < 0.62) continue;
@@ -164,10 +164,10 @@
       if (!a.front && !b.front) return;
       var dist = Math.hypot(b.x - a.x, b.y - a.y);
       var midx = (a.x + b.x) / 2, midy = (a.y + b.y) / 2 - dist * 0.18;
-      var com = (D.COMMODITIES.filter(function (c) { return c.id === rt.commodity; })[0]) || { color: '#5fb3c4' };
+      var com = (D.COMMODITIES.filter(function (c) { return c.id === rt.commodity; })[0]) || { color: '#8a7f6e' };
       var depthT = SEV_T[rt.severity] != null ? SEV_T[rt.severity] : 0.4;
-      var glow = GB ? GB.arcColor(depthT) : '#5fb3c4';
-      // Luminous cyan->emerald depth glow underneath the commodity-coloured arc.
+      var glow = GB ? GB.arcColor(depthT) : '#4696be';
+      // Luminous irrigation->harvest depth glow underneath the commodity-coloured arc.
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(midx, midy, b.x, b.y);
       ctx.strokeStyle = glow; ctx.globalAlpha = 0.16 + depthT * 0.22; ctx.lineWidth = 3.4 + rt.weight / 8; ctx.stroke();
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(midx, midy, b.x, b.y);
@@ -184,7 +184,7 @@
     // Pulsing endpoint rings — hubs breathe when motion is allowed.
     var pulse = REDUCED ? 0 : (Math.sin(Date.now() / 500) + 1) / 2;
     endpoints.forEach(function (e) {
-      var col = GB ? GB.arcColor(e.t) : '#5fb3c4';
+      var col = GB ? GB.arcColor(e.t) : '#4696be';
       ctx.beginPath(); ctx.arc(e.x, e.y, 3 + pulse * (2 + e.t * 4), 0, Math.PI * 2);
       ctx.strokeStyle = col; ctx.globalAlpha = 0.18 + e.t * 0.22; ctx.lineWidth = 1.1; ctx.stroke(); ctx.globalAlpha = 1;
     });
@@ -209,7 +209,7 @@
     clusters = clusterNodes(nodes);
     clusters.forEach(function (c) {
       var n = c.items.length, r = n > 1 ? Math.min(22, 8 + n * 2) : nodeRadius(c.items[0]);
-      var col = SEVC[c.sev] || '#7d8794';
+      var col = SEVC[c.sev] || '#8a7f6e';
       // Soft signal glow beneath every marker — a city/agri light on the surface.
       var gr = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r + 9);
       gr.addColorStop(0, col); gr.addColorStop(1, 'rgba(0,0,0,0)');
@@ -220,14 +220,14 @@
       }
       ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.globalAlpha = hoverNode && c.items.indexOf(hoverNode) !== -1 ? 1 : 0.85; ctx.fill(); ctx.globalAlpha = 1;
-      ctx.lineWidth = 1.4; ctx.strokeStyle = '#0a0c0f'; ctx.stroke();
-      if (n > 1) { ctx.fillStyle = '#0a0c0f'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(n), c.x, c.y); }
+      ctx.lineWidth = 1.4; ctx.strokeStyle = '#0d0a06'; ctx.stroke();
+      if (n > 1) { ctx.fillStyle = '#0d0a06'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(n), c.x, c.y); }
       else { drawKindGlyph(c.items[0], c.x, c.y); }
     });
   }
   function nodeRadius(n) { return 5 + D.SEVERITY_ORDER[n.severity]; }
   function drawKindGlyph(n, x, y) {
-    ctx.fillStyle = '#0a0c0f'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#0d0a06'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     var g = { chokepoint: '◆', breadbasket: '▲', fertilizer: '✦', exposed: '●' }[n.kind] || '';
     ctx.fillText(g, x, y);
   }

@@ -612,8 +612,8 @@ function testTheaterGlobe() {
   ok('starfield is deterministic for a seed', JSON.stringify(s1) === JSON.stringify(s2));
   ok('starfield differs across seeds', JSON.stringify(GB.starfield(42, 50, 800, 500)) !== JSON.stringify(s1));
   ok('all stars within canvas bounds', s1.every((p) => p.x >= 0 && p.x <= 800 && p.y >= 0 && p.y <= 500 && p.a > 0));
-  ok('arcColor near end is cyan-ish', /^rgb\(95,179,196\)$/.test(GB.arcColor(0)));
-  ok('arcColor far end is emerald-ish', /^rgb\(74,222,150\)$/.test(GB.arcColor(1)));
+  ok('arcColor near end is irrigation-blue', /^rgb\(70,150,190\)$/.test(GB.arcColor(0)));
+  ok('arcColor far end is harvest-gold', /^rgb\(226,170,50\)$/.test(GB.arcColor(1)));
   ok('arcColor clamps out-of-range input', GB.arcColor(9) === GB.arcColor(1) && GB.arcColor(-9) === GB.arcColor(0));
 
   section('theater: globe DOM wiring (assets/theater.js source)');
@@ -1029,7 +1029,7 @@ function testDesignSystem() {
   const base = JSON.parse(readFileSync(join(ROOT, 'lib', 'tokens', 'brand-presets', 'base.json'), 'utf8'));
   const brand = JSON.parse(readFileSync(join(ROOT, 'lib', 'tokens', 'brand-presets', 'agrios.json'), 'utf8'));
   ok('design-tokens.json parses', !!tokens && typeof tokens === 'object');
-  ok('accent-primary is the standard teal', tokens.colorTokens.accentPrimary === '174 100% 45%');
+  ok('accent-primary is agricultural crop-green', tokens.colorTokens.accentPrimary === '130 48% 46%');
   ok('nav height 81px desktop', tokens.layoutTokens.navHeight === '81px');
   ok('nav height 64px mobile', tokens.layoutTokens.navHeightMobile === '64px');
   ok('glass blur 20px', tokens.surfaceTokens.glassBlur === '20px');
@@ -1043,16 +1043,16 @@ function testDesignSystem() {
   ok('base.json keeps structural constants', base.structural.layout.navHeightDesktop === '81px' && base.structural.surface.glassBlur === '20px');
   ok('base.json lists 16 content placeholders', Array.isArray(base.contentPlaceholders) && base.contentPlaceholders.length === 16);
   ok('agrios preset extends base', brand.extends === 'base.json');
-  ok('agrios keeps teal accent override', brand.overrides.colorTokens.accentPrimary === '174 100% 45%');
+  ok('agrios keeps crop-green accent override', brand.overrides.colorTokens.accentPrimary === '130 48% 46%');
   ok('agrios content: AgriOS / Nirmata / ATOM', brand.content.companyName === 'AgriOS' && brand.content.parentCompany === 'Nirmata Holdings' && brand.content.productName === 'ATOM');
   ok('agrios preset has no fabricated valuation/founder claims', brand.content.valuationOrOutcomeLanguage === '' && brand.content.founderStory === '');
   ok('agrios preset carries no forbidden sibling brands', ['clinixAI','antimatterai','rrg.bio','thingktangk','HumanOS'].every(b => JSON.stringify(brand).indexOf(b) === -1));
 
   section('design-system: CSS variable map + themes');
   ok('html defaults to dark theme', /<html[^>]*data-theme="dark"/.test(html));
-  ok(':root light fallback defines semantic tokens', html.indexOf('--background:210 20% 98%') !== -1 && html.indexOf('--foreground:210 24% 12%') !== -1);
-  ok('dark canonical block present', /\[data-theme="dark"\]\{[\s\S]*--background:210 15% 4%/.test(html));
-  ok('accent-primary teal in dark block', html.indexOf('--accent-primary:174 100% 45%') !== -1);
+  ok(':root light fallback defines semantic tokens', html.indexOf('--background:40 34% 92%') !== -1 && html.indexOf('--foreground:28 30% 14%') !== -1);
+  ok('dark canonical block present', /\[data-theme="dark"\]\{[\s\S]*--background:30 20% 6%/.test(html));
+  ok('accent-primary crop-green in dark block', html.indexOf('--accent-primary:130 48% 46%') !== -1);
   ok('chart tokens chart-1..5 present', ['--chart-1','--chart-2','--chart-3','--chart-4','--chart-5'].every(c => html.indexOf(c) !== -1));
   ok('legacy cyan alias maps to accent', /--cyan:hsl\(var\(--accent-primary\)\)/.test(html));
   ok('legacy red alias maps to danger (status only)', /--red:hsl\(var\(--danger\)\)/.test(html));
@@ -1064,6 +1064,26 @@ function testDesignSystem() {
   ok('ATOM button uses accent', /\.btn-atom\{[\s\S]*background:var\(--accent\)/.test(html) && html.indexOf('.btn-atom{\n  background:var(--red)') === -1);
   ok('active tab marker uses accent', /\.mode-tab\.active \.ic\{color:var\(--accent\);?\}/.test(html));
   ok('two-tone headline accent clause uses accent', html.indexOf('.mode-head h2 em{font-style:normal;color:var(--accent);}') !== -1);
+
+  section('design-system: agricultural redesign palette');
+  const hueOf = (t) => parseInt(String(t).trim().split(/\s+/)[0], 10);
+  // Crop-green primary, warm-clay danger, harvest-gold tertiary across the token cascade.
+  ok('canonical accent hue in crop-green band (120-140)', hueOf(tokens.colorTokens.accentPrimary) >= 120 && hueOf(tokens.colorTokens.accentPrimary) <= 140);
+  ok('canonical danger hue is warm clay-rust (<30)', hueOf(tokens.colorTokens.danger) < 30);
+  ok('canonical tertiary hue is harvest gold (36-48)', hueOf(tokens.colorTokens.accentTertiary) >= 36 && hueOf(tokens.colorTokens.accentTertiary) <= 48);
+  ok('dark surfaces are warm soil (hue 20-45)', hueOf(base.defaultColorTokens.dark.background) >= 20 && hueOf(base.defaultColorTokens.dark.background) <= 45);
+  ok('light surfaces are warm parchment (hue 30-50)', hueOf(base.defaultColorTokens.light.background) >= 30 && hueOf(base.defaultColorTokens.light.background) <= 50);
+  ok('no residual teal token (174 100% 45%) in design-tokens', JSON.stringify(tokens.colorTokens).indexOf('174 100% 45%') === -1);
+  ok('agrios description drops teal/cyan wording', !/teal|cyan/i.test(brand.description));
+  ok('no legacy cyan rgb (95,179,196) remains in stylesheet', html.indexOf('95,179,196') === -1);
+  ok('no legacy red hex (#e2483d) remains in markup', html.toLowerCase().indexOf('#e2483d') === -1);
+  ok('logo mark recolored to crop-green + harvest-gold', html.indexOf('stroke="#3ca85a"') !== -1 && html.indexOf('fill="#e6a92e"') !== -1);
+  ok('renderer fallback accent is crop-green', rt.indexOf("accentPrimary: '130 48% 46%'") !== -1);
+  const tdsrc = readFileSync(join(ROOT, 'assets', 'theater-data.js'), 'utf8');
+  ok('theater severity neutral is warm soil (not cool grey)', /neutral:\s*'#8a7f6e'/.test(tdsrc) && tdsrc.indexOf('#7d8794') === -1);
+  ok('commodities recolored off legacy palette', tdsrc.indexOf("'#e8b23a'") === -1 && tdsrc.indexOf("'#5fb3c4'") === -1);
+  ok('field-furrow atmosphere layer present', /main#workspace::before\{[\s\S]*repeating-linear-gradient/.test(html));
+  ok('nav active state carries accent glow', /\.mode-tab\.active\{[\s\S]*inset 3px 0 0 0 var\(--accent\)/.test(html));
 
   section('design-system: app shell + a11y');
   ok('skip-to-content link present and first', /<a href="#workspace" class="skip-link"/.test(html));

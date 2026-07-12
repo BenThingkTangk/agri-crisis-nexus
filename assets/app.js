@@ -833,7 +833,7 @@ function drawMarkers(){
   if(!mapObj) return;
   mapLayerGroup.clearLayers();
   const layer=LAYERS.find(l=>l.id===activeLayer);
-  const cc=(window.RendererTheme?RendererTheme.severityMap():{critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'});
+  const cc=(window.RendererTheme?RendererTheme.severityMap():{critical:'#d43e28',high:'#e07a2c',moderate:'#e0a52e',stable:'#5fae5a'});
   D.COUNTRIES.forEach(c=>{
     const val=layer.metric(c), tl=layer.color(c);
     const r=6+Math.round(val/8);
@@ -843,7 +843,7 @@ function drawMarkers(){
       ring.on('add',()=>{ const elp=ring.getElement(); if(elp){ elp.style.transformOrigin='center'; elp.animate([{opacity:.5,transform:'scale(1)'},{opacity:0,transform:'scale(2.4)'}],{duration:2400,iterations:Infinity,easing:'ease-out'}); } });
       mapLayerGroup.addLayer(ring);
     }
-    const m=L.circleMarker([c.lat,c.lng],{radius:r,color:'#0a0c0f',weight:1.5,fillColor:cc[tl]||'#7d8794',fillOpacity:.82});
+    const m=L.circleMarker([c.lat,c.lng],{radius:r,color:'#0d0a06',weight:1.5,fillColor:cc[tl]||'#8a7f6e',fillOpacity:.82});
     m.bindPopup(`<b>${c.flag} ${esc(c.name)}</b><br><span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${layer.label}: ${val} · IPC ${c.ipc}</span><br><a href="#" data-code="${c.code}" class="popupLink">Open profile →</a>`);
     m.on('popupopen',(ev)=>{const lk=ev.popup.getElement().querySelector('.popupLink'); if(lk) lk.addEventListener('click',e=>{e.preventDefault();showCountry(c.code);});});
     // accessible name via title on path
@@ -871,9 +871,9 @@ function updateLiveOverlay(){
   if(!mapObj||!liveLayerGroup) return;
   liveLayerGroup.clearLayers();
   if(!liveOverlayOn) return;
-  const cc=(window.RendererTheme?RendererTheme.severityMap():{critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a',stable:'#5ba86f'});
+  const cc=(window.RendererTheme?RendererTheme.severityMap():{critical:'#d43e28',high:'#e07a2c',moderate:'#e0a52e',stable:'#5fae5a'});
   liveState.events.filter(e=>typeof e.lat==='number'&&typeof e.lng==='number').forEach(e=>{
-    const m=L.circleMarker([e.lat,e.lng],{radius:5,color:'#fff',weight:1,fillColor:cc[e.severity]||'#7d8794',fillOpacity:.9});
+    const m=L.circleMarker([e.lat,e.lng],{radius:5,color:'#fff',weight:1,fillColor:cc[e.severity]||'#8a7f6e',fillOpacity:.9});
     m.bindPopup(`<b>${esc(e.title)}</b><br><span class="popup-src">${esc(e.source||'')} · ${esc(e.category||'')} · ${esc(relTime(e.published))}</span><br><a href="${esc(e.url||'#')}" target="_blank" rel="noopener">Open source →</a>`);
     liveLayerGroup.addLayer(m);
   });
@@ -1142,11 +1142,11 @@ function drawFrame(){
 }
 function drawStrategyChart(){
   if(!window.Chart||strategyChart||!$('#matrixChart'))return;
-  const cc={critical:'#e2483d',high:'#e8913c',strategic:'#5fb3c4',medium:'#5fb3c4'};
+  const cc={critical:'#d43e28',high:'#e07a2c',strategic:'#3ca85a',medium:'#3ca85a'};
   const priN={critical:4,high:3,strategic:2,medium:1};
   strategyChart=new Chart($('#matrixChart'),{
     type:'scatter',
-    data:{datasets:D.OPP_MATRIX.map(o=>({label:o.opp,data:[{x:o.conf,y:priN[o.pri]||1}],backgroundColor:cc[o.pri]||'#7d8794',pointRadius:8,pointHoverRadius:11}))},
+    data:{datasets:D.OPP_MATRIX.map(o=>({label:o.opp,data:[{x:o.conf,y:priN[o.pri]||1}],backgroundColor:cc[o.pri]||'#8a7f6e',pointRadius:8,pointHoverRadius:11}))},
     options:{responsive:true,maintainAspectRatio:false,
       plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.dataset.label+' — conf '+ctx.parsed.x+'%'}}},
       scales:{x:{title:{display:true,text:'Confidence %',color:'#8b877d'},min:60,max:100,grid:{color:'rgba(255,255,255,.06)'},ticks:{color:'#8b877d'}},
@@ -1430,7 +1430,7 @@ function drawResourceCharts(tab){
   const axis={grid:{color:gridCol},ticks:{color:axisCol,font:{size:11}}};
   const legendOpt={labels:{color:axisCol,font:{size:11},boxWidth:12}};
   if(tab==='markets'&&!resCharts.prices&&$('#chartPrices')){
-    const cols=RT?RT.commodity():{wheat:'#e2483d',rice:'#5fb3c4',maize:'#e8913c',soy:'#5ba86f',coffee:'#bf8f5f',cocoa:'#d9b23a'};
+    const cols=RT?RT.commodity():{wheat:'#d9a72e',rice:'#4f97bd',maize:'#c67f2e',soy:'#7fae43',coffee:'#a9713e',cocoa:'#c8842e'};
     resCharts.prices=new Chart($('#chartPrices'),{type:'line',
       data:{labels:D.MONTHS_24,datasets:Object.keys(D.COMMODITY_PRICES).map(k=>{const s=D.COMMODITY_PRICES[k],b=s[0];return {label:k,data:s.map(v=>Math.round(v/b*1000)/10),borderColor:cols[k],backgroundColor:'transparent',borderWidth:2,pointRadius:0,tension:.3};})},
       options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:legendOpt,tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.parsed.y} (base 100 = ${D.MONTHS_24[0]})`}}},scales:{x:axis,y:{...axis,title:{display:true,text:'Index (base 100)',color:'#8b877d',font:{size:11}}}}}});
@@ -1438,19 +1438,19 @@ function drawResourceCharts(tab){
   if(tab==='water'&&!resCharts.aquifer&&$('#chartAquifer')){
     const aq=[...D.AQUIFERS].sort((a,b)=>b.depletion-a.depletion);
     resCharts.aquifer=new Chart($('#chartAquifer'),{type:'bar',
-      data:{labels:aq.map(a=>a.name),datasets:[{label:'Depletion %',data:aq.map(a=>a.depletion),backgroundColor:aq.map(a=>RT?RT.severity(a.tl):({critical:'#e2483d',high:'#e8913c',moderate:'#d9b23a'}[a.tl]||'#5ba86f'))}]},
+      data:{labels:aq.map(a=>a.name),datasets:[{label:'Depletion %',data:aq.map(a=>a.depletion),backgroundColor:aq.map(a=>RT?RT.severity(a.tl):({critical:'#d43e28',high:'#e07a2c',moderate:'#e0a52e'}[a.tl]||'#5fae5a'))}]},
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:ctx=>'~'+aq[ctx.dataIndex].years+' yr to critical'}}},scales:{x:{...axis,max:100},y:{...axis,ticks:{color:'#b4afa4',font:{size:10}}}}}});
   }
   if(tab==='ai'&&!resCharts.ai&&$('#chartAI')){
     resCharts.ai=new Chart($('#chartAI'),{type:'radar',
       data:{labels:D.AI_GAPS.map(g=>g.name),datasets:[
-        {label:'Urgency',data:D.AI_GAPS.map(g=>g.urgency),borderColor:RT?RT.danger():'#e2483d',backgroundColor:RT?RT.danger(0.15):'rgba(226,72,61,.15)',borderWidth:2,pointRadius:2},
-        {label:'Solution maturity',data:D.AI_GAPS.map(g=>g.maturity),borderColor:RT?RT.accent():'#5fb3c4',backgroundColor:RT?RT.accent(0.12):'rgba(95,179,196,.12)',borderWidth:2,pointRadius:2}]},
+        {label:'Urgency',data:D.AI_GAPS.map(g=>g.urgency),borderColor:RT?RT.danger():'#d43e28',backgroundColor:RT?RT.danger(0.15):'rgba(212,62,40,.15)',borderWidth:2,pointRadius:2},
+        {label:'Solution maturity',data:D.AI_GAPS.map(g=>g.maturity),borderColor:RT?RT.accent():'#3ca85a',backgroundColor:RT?RT.accent(0.12):'rgba(60,168,90,.12)',borderWidth:2,pointRadius:2}]},
       options:{responsive:true,maintainAspectRatio:false,plugins:{legend:legendOpt},scales:{r:{angleLines:{color:'rgba(255,255,255,.08)'},grid:{color:'rgba(255,255,255,.08)'},pointLabels:{color:'#b4afa4',font:{size:10}},ticks:{color:'#5f5c55',backdropColor:'transparent'},min:0,max:100}}}});
   }
   if(tab==='chain'&&!resCharts.token&&$('#chartToken')){
     resCharts.token=new Chart($('#chartToken'),{type:'line',
-      data:{labels:D.TOKEN_TRAJ.years,datasets:[{label:'Tokenized agri market ($B)',data:D.TOKEN_TRAJ.vals,borderColor:RT?RT.accent():'#5fb3c4',backgroundColor:RT?RT.accent(0.14):'rgba(95,179,196,.14)',borderWidth:2,fill:true,tension:.35,pointRadius:3}]},
+      data:{labels:D.TOKEN_TRAJ.years,datasets:[{label:'Tokenized agri market ($B)',data:D.TOKEN_TRAJ.vals,borderColor:RT?RT.accent():'#3ca85a',backgroundColor:RT?RT.accent(0.14):'rgba(60,168,90,.14)',borderWidth:2,fill:true,tension:.35,pointRadius:3}]},
       options:{responsive:true,maintainAspectRatio:false,plugins:{legend:legendOpt},scales:{x:axis,y:{...axis,type:'logarithmic',title:{display:true,text:'$B (log)',color:'#8b877d'}}}}});
   }
 }
@@ -1646,7 +1646,7 @@ function printBrief(){
   const w=window.open('','_blank'); if(!w){alert('Enable pop-ups to print the briefing.');return;}
   w.document.write(`<html><head><title>AgriOS Daily Brief ${D.AS_OF}</title>
     <style>body{font-family:Georgia,serif;max-width:720px;margin:32px auto;color:#111;line-height:1.55;padding:0 20px}
-    h1{font-size:22px;border-bottom:3px solid #e2483d;padding-bottom:8px}h2{font-size:14px;color:#e2483d;margin-top:22px;text-transform:uppercase;letter-spacing:.05em}
+    h1{font-size:22px;border-bottom:3px solid #2f6b3a;padding-bottom:8px}h2{font-size:14px;color:#2f6b3a;margin-top:22px;text-transform:uppercase;letter-spacing:.05em}
     .kpis{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}.kpi{border:1px solid #ccc;border-radius:6px;padding:8px 12px;font-size:13px}.kpi b{font-size:18px;display:block}
     li{margin:5px 0;font-size:13px}small{color:#666}</style></head><body>
     <h1>AgriOS · A Nirmata Holdings Company — Daily Intelligence Brief</h1>

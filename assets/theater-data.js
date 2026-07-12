@@ -45,11 +45,11 @@
 
   /* ---------------- commodities ---------------- */
   var COMMODITIES = [
-    { id: 'wheat', label: 'Wheat', color: '#e8b23a' },
-    { id: 'maize', label: 'Maize', color: '#e8913c' },
-    { id: 'rice', label: 'Rice', color: '#8fb3c4' },
-    { id: 'soy', label: 'Soy', color: '#9bb36a' },
-    { id: 'fertilizer', label: 'Fertilizer', color: '#b07dc4' },
+    { id: 'wheat', label: 'Wheat', color: '#d9a72e' },      // harvest gold
+    { id: 'maize', label: 'Maize', color: '#c67f2e' },      // warm ochre
+    { id: 'rice', label: 'Rice', color: '#4f97bd' },        // paddy / irrigation blue
+    { id: 'soy', label: 'Soy', color: '#7fae43' },          // leaf green
+    { id: 'fertilizer', label: 'Fertilizer', color: '#b5622f' }, // clay / industrial
   ];
 
   /* ---------------- 14 Chatham House chokepoints ----------------
@@ -196,16 +196,16 @@
 
   /* ---------------- layer registry (domains/layers) ---------------- */
   var LAYERS = [
-    { id: 'chokepoint', label: 'Chokepoints', kind: 'node', color: '#e2483d' },
-    { id: 'breadbasket', label: 'Breadbaskets', kind: 'node', color: '#9bb36a' },
-    { id: 'fertilizer', label: 'Fertilizer hubs', kind: 'node', color: '#b07dc4' },
-    { id: 'exposed', label: 'Import-exposed regions', kind: 'node', color: '#e8913c' },
-    { id: 'routes', label: 'Trade routes', kind: 'edge', color: '#5fb3c4' },
-    { id: 'humanitarian', label: 'Humanitarian pressure', kind: 'overlay', color: '#e2483d' },
+    { id: 'chokepoint', label: 'Chokepoints', kind: 'node', color: '#c2452b' },
+    { id: 'breadbasket', label: 'Breadbaskets', kind: 'node', color: '#6fae3f' },
+    { id: 'fertilizer', label: 'Fertilizer hubs', kind: 'node', color: '#b5622f' },
+    { id: 'exposed', label: 'Import-exposed regions', kind: 'node', color: '#e0a52e' },
+    { id: 'routes', label: 'Trade routes', kind: 'edge', color: '#4f97bd' },
+    { id: 'humanitarian', label: 'Humanitarian pressure', kind: 'overlay', color: '#9a6dc4' },
   ];
 
   var SEVERITY_ORDER = { critical: 4, high: 3, moderate: 2, stable: 1, neutral: 0 };
-  var SEVERITY_COLOR = { critical: '#e2483d', high: '#e8913c', moderate: '#d9b23a', stable: '#5ba86f', neutral: '#7d8794' };
+  var SEVERITY_COLOR = { critical: '#d43e28', high: '#e07a2c', moderate: '#e0a52e', stable: '#5fae5a', neutral: '#8a7f6e' };
 
   var API = {
     SOURCES: SOURCES,

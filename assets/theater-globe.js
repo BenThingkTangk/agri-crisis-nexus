@@ -101,12 +101,12 @@
     return out;
   };
 
-  // Route-arc colour ramp: cyan (near/low) -> emerald (far/high), t in 0..1.
+  // Route-arc colour ramp: irrigation blue (near/low) -> harvest gold (far/high), t in 0..1.
   G.arcColor = function (t) {
     t = Math.max(0, Math.min(1, isFinite(t) ? t : 0));
-    var r = Math.round(95 + (74 - 95) * t);
-    var g = Math.round(179 + (222 - 179) * t);
-    var b = Math.round(196 + (150 - 196) * t);
+    var r = Math.round(70 + (226 - 70) * t);
+    var g = Math.round(150 + (170 - 150) * t);
+    var b = Math.round(190 + (50 - 190) * t);
     return 'rgb(' + r + ',' + g + ',' + b + ')';
   };
 
