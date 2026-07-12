@@ -13,6 +13,7 @@
 // team_id+event_key). Read state is per user via alert_reads.
 
 import { query, withTransaction } from './_db.js';
+import { ensureSchema } from './_bootstrap.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
 import { requireAnyAuth, requireWrite, audit } from './_auth.js';
 import { str, uuid, optionalUuid, oneOf, strArray, SEVERITIES, ValidationError } from './_validate.js';
@@ -23,6 +24,7 @@ import {
 const SEV_RANK = { moderate: 1, high: 2, critical: 3 };
 
 export default async function handler(req, res) {
+  if (!(await ensureReady(res))) return;
   const action = (req.query && req.query.action) || 'list';
   const ctx = await requireAnyAuth(req, res);
   if (!ctx) return;
@@ -43,7 +45,22 @@ export default async function handler(req, res) {
     return sendError(res, 404, 'unknown_action');
   } catch (err) {
     if (err instanceof ValidationError) return sendError(res, 400, 'invalid', err.message);
+    console.error('[alerts] server_error', err && (err.code || err.message));
     return sendError(res, 500, 'server_error', 'Something went wrong.');
+  }
+}
+
+// Apply any pending Phase III schema before serving. On failure, log a safe
+// diagnostic (code/message only — never secrets or the DSN) and return a
+// generic retryable error rather than a raw SQL fault.
+async function ensureReady(res) {
+  try {
+    await ensureSchema();
+    return true;
+  } catch (err) {
+    console.error('[alerts] schema_bootstrap_failed', err && (err.code || err.message));
+    sendError(res, 500, 'server_error', 'Service is starting up. Please retry.');
+    return false;
   }
 }
 

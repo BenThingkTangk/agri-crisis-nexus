@@ -9,6 +9,7 @@
 // return not-found.
 
 import { query, withTransaction } from './_db.js';
+import { ensureSchema } from './_bootstrap.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
 import { requireAnyAuth, requireWrite, roleAtLeast, audit } from './_auth.js';
 import {
@@ -31,6 +32,7 @@ const SELECT = `
     LEFT JOIN users c ON c.id = m.created_by`;
 
 export default async function handler(req, res) {
+  if (!(await ensureReady(res))) return;
   const ctx = await requireAnyAuth(req, res);
   if (!ctx) return;
   if (!ctx.teamId) return sendError(res, 403, 'no_team', 'No active team.');
@@ -44,7 +46,22 @@ export default async function handler(req, res) {
     return sendError(res, 405, 'method_not_allowed');
   } catch (err) {
     if (err instanceof ValidationError) return sendError(res, 400, 'invalid', err.message);
+    console.error('[missions] server_error', err && (err.code || err.message));
     return sendError(res, 500, 'server_error', 'Something went wrong.');
+  }
+}
+
+// Apply any pending Phase III schema before serving. On failure, log a safe
+// diagnostic (code/message only — never secrets or the DSN) and return a
+// generic retryable error rather than a raw SQL fault.
+async function ensureReady(res) {
+  try {
+    await ensureSchema();
+    return true;
+  } catch (err) {
+    console.error('[missions] schema_bootstrap_failed', err && (err.code || err.message));
+    sendError(res, 500, 'server_error', 'Service is starting up. Please retry.');
+    return false;
   }
 }
 

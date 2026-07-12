@@ -16,15 +16,21 @@ import { query } from './_db.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
 
-export async function runMigrations() {
-  const files = readdirSync(MIGRATIONS_DIR)
+// Read all migration files in filename order. Returns [{ name, sql }].
+// Shared by the CLI/token runner and the cold-start bootstrap so both apply the
+// exact same SQL in the exact same order.
+export function loadMigrations() {
+  return readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith('.sql'))
-    .sort();
+    .sort()
+    .map((name) => ({ name, sql: readFileSync(join(MIGRATIONS_DIR, name), 'utf8') }));
+}
+
+export async function runMigrations() {
   const applied = [];
-  for (const file of files) {
-    const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8');
+  for (const { name, sql } of loadMigrations()) {
     await query(sql);
-    applied.push(file);
+    applied.push(name);
   }
   return applied;
 }

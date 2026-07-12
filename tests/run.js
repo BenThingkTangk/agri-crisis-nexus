@@ -2241,6 +2241,248 @@ function testPhase3Hygiene() {
   ok('collab client no indexedDB', !/indexedDB\s*\./.test(collab));
 }
 
+/* ============================ Phase III: cold-start schema bootstrap ============================ */
+// The production 500s (GET/POST /api/missions, /api/alerts) were caused by
+// migration 002_phase3.sql never being applied on Vercel cold starts —
+// migrations only run via the CLI or the token-gated endpoint, so production
+// had 001 (auth works) but not 002, and every Phase III query hit a missing
+// column/relation. api/_bootstrap.js closes that gap: each endpoint awaits
+// ensureSchema(), which idempotently applies pending migrations under a Postgres
+// advisory lock, recording each in a schema_migrations ledger.
+//
+// These tests drive the REAL bootstrap SQL through a fake pg pool installed on
+// globalThis.__AGRI_PG_POOL__ (no DATABASE_URL, no network), asserting the exact
+// statement sequence, the ledger contract, caching, concurrency de-duplication,
+// failure-reset, and the endpoints' generic (non-leaky) 500 on bootstrap failure.
+
+function makeFakePool(opts = {}) {
+  const calls = [];
+  const applied = new Set(opts.applied || []);
+  let connects = 0;
+  const client = {
+    query(text, params) {
+      const t = String(text);
+      calls.push({ text: t, params });
+      if (opts.failOn && opts.failOn.test(t)) {
+        return Promise.reject(Object.assign(new Error('boom-from-db'), { code: '42P01' }));
+      }
+      if (/select\s+filename\s+from\s+schema_migrations/i.test(t)) {
+        return Promise.resolve({ rows: [...applied].map((f) => ({ filename: f })) });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    },
+    release() {},
+  };
+  const pool = {
+    connect() { connects++; return Promise.resolve(client); },
+    query(text, params) { return client.query(text, params); },
+  };
+  return { pool, calls, connects: () => connects };
+}
+
+function makeRes() {
+  return {
+    statusCode: 0,
+    _payload: null,
+    headers: {},
+    setHeader(k, v) { this.headers[k.toLowerCase()] = v; },
+    end(s) { this._payload = s; return this; },
+  };
+}
+
+async function testBootstrapSchema() {
+  section('phase3 bootstrap: cold-start schema application (integration)');
+
+  const prevPool = globalThis.__AGRI_PG_POOL__;
+  const resetReady = () => { globalThis.__AGRI_SCHEMA_READY__ = null; };
+
+  const { ensureSchema } = await import('../api/_bootstrap.js');
+  const migNames = readdirSync(join(ROOT, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
+
+  // --- Case 1: fresh DB, both migrations apply in order under a lock ---------
+  {
+    const fake = makeFakePool();
+    globalThis.__AGRI_PG_POOL__ = fake.pool;
+    resetReady();
+    await ensureSchema();
+
+    const texts = fake.calls.map((c) => c.text);
+    const low = texts.join('\n').toLowerCase();
+    const idxLock = texts.findIndex((t) => /pg_advisory_lock/.test(t));
+    const idxUnlock = texts.findIndex((t) => /pg_advisory_unlock/.test(t));
+    const idxLedger = texts.findIndex((t) => /create table if not exists schema_migrations/i.test(t));
+    const idxRead = texts.findIndex((t) => /select\s+filename\s+from\s+schema_migrations/i.test(t));
+
+    ok('acquires advisory lock first', idxLock === 0);
+    ok('creates schema_migrations ledger after lock', idxLedger > idxLock);
+    ok('reads applied ledger before running migrations', idxRead > idxLedger);
+    ok('releases advisory lock at the end', idxUnlock === texts.length - 1);
+    ok('lock is released after it is acquired', idxUnlock > idxLock);
+    ok('runs migrations only once per bootstrap (single connect)', fake.connects() === 1);
+
+    // Real migration SQL flowed through the client (001 + 002 content).
+    ok('applies 001 schema (users table)', low.includes('create table if not exists users'));
+    ok('applies 002 schema (mission_tasks table)', low.includes('create table if not exists mission_tasks'));
+    ok('applies 002 alert lifecycle column', low.includes('add column if not exists status'));
+
+    // Each migration file recorded in the ledger with its filename.
+    const inserts = fake.calls.filter((c) => /insert into schema_migrations/i.test(c.text));
+    ok('records every migration file in the ledger', inserts.length === migNames.length);
+    ok('ledger insert is ON CONFLICT DO NOTHING (idempotent)',
+      inserts.every((c) => /on conflict do nothing/i.test(c.text)));
+    ok('ledger insert carries the filename param',
+      migNames.every((n) => inserts.some((c) => c.params && c.params[0] === n)));
+    // Migration SQL runs strictly between lock and unlock.
+    const idx002 = texts.findIndex((t) => /mission_tasks/.test(t));
+    ok('migration DDL runs inside the lock', idx002 > idxLock && idx002 < idxUnlock);
+  }
+
+  // --- Case 2: warm container — cached, no re-run --------------------------
+  {
+    const fake = makeFakePool();
+    globalThis.__AGRI_PG_POOL__ = fake.pool;
+    // Do NOT reset ready: the promise from Case 1 is still cached.
+    await ensureSchema();
+    ok('warm container does not re-run bootstrap (0 new connects)', fake.connects() === 0);
+  }
+
+  // --- Case 3: already-applied ledger — lock taken, no DDL re-applied -------
+  {
+    const fake = makeFakePool({ applied: migNames });
+    globalThis.__AGRI_PG_POOL__ = fake.pool;
+    resetReady();
+    await ensureSchema();
+    const low = fake.calls.map((c) => c.text).join('\n').toLowerCase();
+    ok('skips already-applied migrations', !low.includes('create table if not exists mission_tasks'));
+    ok('still acquires + releases the lock', /pg_advisory_lock/.test(low) && /pg_advisory_unlock/.test(low));
+    ok('does not re-insert ledger rows', !/insert into schema_migrations/i.test(low));
+  }
+
+  // --- Case 4: concurrent cold starts share one bootstrap run --------------
+  {
+    const fake = makeFakePool();
+    globalThis.__AGRI_PG_POOL__ = fake.pool;
+    resetReady();
+    await Promise.all([ensureSchema(), ensureSchema(), ensureSchema()]);
+    ok('concurrent callers de-duplicate to a single run', fake.connects() === 1);
+  }
+
+  // --- Case 5: failure resets the cache so a later request retries ----------
+  {
+    const bad = makeFakePool({ failOn: /pg_advisory_lock/ });
+    globalThis.__AGRI_PG_POOL__ = bad.pool;
+    resetReady();
+    let threw = false;
+    try { await ensureSchema(); } catch (_) { threw = true; }
+    ok('bootstrap failure propagates', threw);
+    ok('failed bootstrap clears the cached promise (retryable)', globalThis.__AGRI_SCHEMA_READY__ == null);
+    // A subsequent healthy call re-runs and succeeds.
+    const good = makeFakePool();
+    globalThis.__AGRI_PG_POOL__ = good.pool;
+    await ensureSchema();
+    ok('retry after failure runs the bootstrap again', good.connects() === 1);
+
+    // If a migration statement itself fails, the advisory lock is still released
+    // (finally), so a later container is never blocked by an orphaned lock.
+    const midFail = makeFakePool({ failOn: /create table if not exists mission_tasks/i });
+    globalThis.__AGRI_PG_POOL__ = midFail.pool;
+    resetReady();
+    let midThrew = false;
+    try { await ensureSchema(); } catch (_) { midThrew = true; }
+    ok('mid-migration failure propagates', midThrew);
+    ok('advisory lock released even when a migration fails (finally)',
+      midFail.calls.some((c) => /pg_advisory_unlock/.test(c.text)));
+  }
+
+  // --- Case 6: bootstrap failure surfaces as a generic, non-leaky 500 -------
+  {
+    const bad = makeFakePool({ failOn: /pg_advisory_lock/ });
+    globalThis.__AGRI_PG_POOL__ = bad.pool;
+    resetReady();
+    const { default: missionsHandler } = await import('../api/missions.js');
+    const res = makeRes();
+    await missionsHandler({ method: 'GET', query: {}, headers: {} }, res);
+    ok('missions returns 500 when schema bootstrap fails', res.statusCode === 500);
+    const payload = String(res._payload || '');
+    ok('500 body is generic server_error', /"error":"server_error"/.test(payload));
+    ok('500 body never leaks raw SQL / DB error', !/advisory|schema_migrations|boom-from-db|42P01/i.test(payload));
+    let parsed = {};
+    try { parsed = JSON.parse(payload); } catch (_) {}
+    ok('500 body invites a retry (starting up)', /starting up/i.test(parsed.message || ''));
+  }
+
+  // Restore global state so later tests are unaffected.
+  resetReady();
+  if (prevPool === undefined) delete globalThis.__AGRI_PG_POOL__;
+  else globalThis.__AGRI_PG_POOL__ = prevPool;
+}
+
+/* ============================ Phase III: schema/endpoint contract ============================ */
+// Cross-check that every Phase III relation/column the endpoints actually query
+// exists in the migration SQL, that endpoints await the bootstrap before any DB
+// work, and that migrations contain no destructive statements (so bootstrap can
+// never drop or truncate production data).
+function testBootstrapContract() {
+  section('phase3 bootstrap: schema/endpoint contract + wiring + safety');
+
+  const migSql = readdirSync(join(ROOT, 'migrations'))
+    .filter((f) => f.endsWith('.sql')).sort()
+    .map((f) => readFileSync(join(ROOT, 'migrations', f), 'utf8')).join('\n').toLowerCase();
+
+  // Tables the Phase III endpoints read/write must exist in the migrations.
+  ['missions', 'mission_tasks', 'mission_decisions', 'mission_events', 'alerts',
+    'alert_reads', 'room_presence', 'room_messages']
+    .forEach((t) => ok('migration provides table ' + t, migSql.includes('create table if not exists ' + t)));
+
+  // Columns selected by missions.js / alerts.js must be provisioned by 002.
+  ['sla_minutes', 'activated_at', 'template_key', 'outcome']
+    .forEach((c) => ok('missions provisions column ' + c, migSql.includes(c)));
+  ['basis', 'confidence', 'horizon', 'regions', 'commodities', 'causal_chain', 'assumptions', 'owner_id', 'mission_id']
+    .forEach((c) => ok('alerts provisions column ' + c, migSql.includes(c)));
+
+  // No destructive DDL/DML in the migrations — bootstrap must be non-destructive.
+  ok('migrations contain no DROP TABLE', !/drop\s+table/i.test(migSql));
+  ok('migrations contain no DROP COLUMN', !/drop\s+column/i.test(migSql));
+  ok('migrations contain no TRUNCATE', !/truncate/i.test(migSql));
+  ok('migrations contain no DELETE FROM', !/delete\s+from/i.test(migSql));
+
+  // _bootstrap.js contract: advisory lock, ledger, idempotent record, unlock in finally.
+  const boot = readFileSync(join(ROOT, 'api', '_bootstrap.js'), 'utf8');
+  ok('_bootstrap uses pg_advisory_lock', boot.includes('pg_advisory_lock'));
+  ok('_bootstrap releases pg_advisory_unlock', boot.includes('pg_advisory_unlock'));
+  ok('_bootstrap unlocks in a finally block', /finally\s*\{[\s\S]*pg_advisory_unlock/.test(boot));
+  ok('_bootstrap uses a schema_migrations ledger', boot.includes('schema_migrations'));
+  ok('_bootstrap records via ON CONFLICT DO NOTHING', /on conflict do nothing/i.test(boot));
+  ok('_bootstrap caches readiness on globalThis', boot.includes('__AGRI_SCHEMA_READY__'));
+  ok('_bootstrap clears the cache on failure', /__AGRI_SCHEMA_READY__\s*=\s*null/.test(boot));
+  ok('_bootstrap consumes loadMigrations()', boot.includes('loadMigrations'));
+
+  // _migrate.js exposes the shared loader that bootstrap reuses.
+  const mig = readFileSync(join(ROOT, 'api', '_migrate.js'), 'utf8');
+  ok('_migrate exports loadMigrations', /export function loadMigrations/.test(mig));
+  ok('runMigrations reuses loadMigrations', /runMigrations[\s\S]*loadMigrations\(\)/.test(mig));
+
+  // _db.js exposes withClient for session-scoped (advisory-lock) work.
+  const db = readFileSync(join(ROOT, 'api', '_db.js'), 'utf8');
+  ok('_db exports withClient', /export async function withClient/.test(db));
+  ok('withClient releases the client in finally', /withClient[\s\S]*finally\s*\{[\s\S]*release\(\)/.test(db));
+
+  // Every Phase III endpoint awaits ensureSchema() before serving, and logs a
+  // safe (secret-free) diagnostic rather than leaking SQL on failure.
+  for (const f of ['api/alerts.js', 'api/missions.js', 'api/collab.js']) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    ok(`${f} imports ensureSchema`, /from '\.\/_bootstrap\.js'/.test(src) && src.includes('ensureSchema'));
+    ok(`${f} awaits schema before auth`, /await ensureReady\(res\)/.test(src));
+    ok(`${f} ensureReady runs before requireAnyAuth`,
+      src.indexOf('ensureReady(res)') < src.indexOf('requireAnyAuth(req'));
+    ok(`${f} logs a safe diagnostic on bootstrap failure`, src.includes('schema_bootstrap_failed'));
+    ok(`${f} returns a retryable startup message`, /starting up/i.test(src));
+    // Diagnostics must not log secret values.
+    ['DATABASE_URL', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN']
+      .forEach((k) => ok(`${f} bootstrap diag does not reference ${k}`, !src.includes(k)));
+  }
+}
+
 /* ============================ run ============================ */
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
@@ -2253,6 +2495,8 @@ function testPhase3Hygiene() {
     testIntelEngine();
     testMigrationPhase3();
     testPhase3Hygiene();
+    await testBootstrapSchema();
+    testBootstrapContract();
     await testCollabRace();
     await testWarRoomCollab();
     await testPhase3AccountAuth();

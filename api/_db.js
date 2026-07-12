@@ -46,6 +46,18 @@ export async function query(text, params) {
   return pool().query(text, params);
 }
 
+// Acquire a single dedicated client from the pool, run `fn(client)`, and always
+// release it. Needed for session-scoped operations such as advisory locks, where
+// the lock and unlock must run on the same physical connection.
+export async function withClient(fn) {
+  const client = await pool().connect();
+  try {
+    return await fn(client);
+  } finally {
+    client.release();
+  }
+}
+
 // Run a set of statements inside a single transaction. `fn` receives a client
 // with a scoped `query` method; throwing rolls back.
 export async function withTransaction(fn) {
