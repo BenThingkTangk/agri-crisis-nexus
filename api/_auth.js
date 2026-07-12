@@ -118,6 +118,13 @@ export async function requireAuth(req, res) {
 // reach; operator maps to analyst so it clears the analyst write boundary.
 const ACCOUNT_TO_TEAM_ROLE = { owner: 'owner', operator: 'analyst' };
 
+// Map an account-layer role onto its DB team role (defaults to analyst).
+// Exported so display surfaces (e.g. the team roster) can label roster-only
+// account entries consistently with how ensureAccountContext provisions them.
+export function accountTeamRole(role) {
+  return ACCOUNT_TO_TEAM_ROLE[role] || 'analyst';
+}
+
 // Placeholder credential columns for account-provisioned user rows. These rows
 // exist ONLY for foreign-key/team scoping; the account layer never verifies a
 // password against them (the signed bearer token is authoritative), so this
@@ -133,7 +140,7 @@ function accountTeamSlug(emailNorm) {
 // account identity, returning an auth context shaped like resolveAuth's output.
 async function ensureAccountContext(acct) {
   const emailNorm = String(acct.email || '').trim().toLowerCase();
-  const teamRole = ACCOUNT_TO_TEAM_ROLE[acct.role] || 'analyst';
+  const teamRole = accountTeamRole(acct.role);
 
   // Fast path: the workspace already exists — one SELECT in steady state.
   const existing = await query(

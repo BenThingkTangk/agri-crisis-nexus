@@ -513,11 +513,15 @@ function scrollCmdkActive(){ highlightCmdk(); const n=$(`#cmdkList .cmdk-item[da
 function openDrawer(title,bodyHTML){
   $('#drawerTitle').innerHTML=title;
   $('#drawerBody').innerHTML=bodyHTML;
+  // Clear inert so the now-visible drawer is interactive/focusable again.
+  $('#drawer').removeAttribute('inert');
   $('#drawer').classList.add('open'); $('#drawer').setAttribute('aria-hidden','false');
   $('#drawerScrim').classList.add('open');
   refreshIcons();
 }
-function closeDrawer(){ $('#drawer').classList.remove('open'); $('#drawer').setAttribute('aria-hidden','true'); $('#drawerScrim').classList.remove('open'); }
+// A closed off-canvas drawer stays in the DOM; mark it aria-hidden AND inert so
+// screen readers and keyboard focus skip its lingering contents entirely.
+function closeDrawer(){ $('#drawer').classList.remove('open'); $('#drawer').setAttribute('aria-hidden','true'); $('#drawer').setAttribute('inert',''); $('#drawerScrim').classList.remove('open'); }
 
 /* ================= COMMAND ================= */
 function renderCommand(p){

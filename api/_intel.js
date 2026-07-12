@@ -238,6 +238,158 @@ export function deriveAlerts({ events = [], cropRisk = [], now = Date.now(), thr
   return all;
 }
 
+// ---------------------------------------------------------------------------
+// Agricultural relevance / exposure scoring
+// ---------------------------------------------------------------------------
+// The raw live feed mirrors generic hazards (earthquakes, prescribed fires,
+// wildfires) that are not agricultural crises. Promoting all of them into the
+// Alert Center is noise, not intelligence. We score each hazard for genuine
+// agricultural exposure and only promote high-relevance signals as OBSERVED
+// alerts. Severe hazards with plausible-but-unproven ag impact become clearly
+// MODELED projections; everything else stays in the Intel/live feed.
+export const AG_PROMOTE_THRESHOLD = 45; // >= this -> actionable OBSERVED alert
+export const AG_MODEL_THRESHOLD = 25;   // >= this (and severe) -> MODELED projection
+
+// Categories that plausibly drive agricultural crises. Deliberately EXCLUDES
+// generic hazards (earthquake, prescribed/wildfire, volcano) so mirroring the
+// raw hazard feed no longer floods the Alert Center.
+const AG_CATEGORY_RE = /(drought|flood|inundat|harvest|planting|crop|grain|cereal|famine|food security|fertil|urea|potash|locust|pest|blight|rust|frost|heat ?wave|export ban|import ban|tariff|sanction|cyclone|hurricane|typhoon|monsoon|el ni|la ni)/;
+// Maritime/inland grain chokepoints — disruptions here are high-exposure.
+const CHOKEPOINT_RE = /(suez|hormuz|bosphorus|dardanelles|malacca|panama canal|kerch|bab-el-mandeb|strait)/;
+
+// Score 0..100. Blends commodity hits, breadbasket/chokepoint region hits, an
+// agricultural-category signal, severity, and — most importantly — whether the
+// event matches one of the team's own enabled alert rules (explicit analyst
+// intent). Pure and deterministic.
+export function agRelevanceScore({ text = '', severity = 'moderate', commodities = [], regions = [], category = '', rules = [] } = {}) {
+  const hay = String(text + ' ' + (category || '')).toLowerCase();
+  const comm = (commodities && commodities.length) ? commodities : scanKeywords(hay, COMMODITY_KEYWORDS);
+  const reg = scanKeywords(hay, REGION_KEYWORDS); // curated breadbaskets + chokepoints only
+  let score = 0;
+  score += Math.min(40, comm.length * 18);
+  score += Math.min(24, reg.length * 12);
+  if (AG_CATEGORY_RE.test(hay)) score += 16;
+  if (CHOKEPOINT_RE.test(hay)) score += 10;
+  score += { moderate: 4, high: 8, critical: 14 }[severity] || 4;
+  if (Array.isArray(rules) && rules.some((r) => ruleMatchesText(r, hay, severity))) score += 22;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+// Does an enabled team alert rule match this hazard's text + severity? Mirrors
+// the server's eventMatchesRule but operates on already-flattened text so it can
+// live in the pure engine.
+function ruleMatchesText(rule, hay, severity) {
+  if (!rule) return false;
+  if ((SEVERITY_RANK[severity] || 1) < (SEVERITY_RANK[rule.min_severity] || 1)) return false;
+  const cats = Array.isArray(rule.categories) ? rule.categories : [];
+  if (cats.length && !cats.some((c) => hay.includes(String(c).toLowerCase()))) return false;
+  const geos = Array.isArray(rule.geographies) ? rule.geographies : [];
+  if (geos.length && !geos.some((g) => hay.includes(String(g).toLowerCase()))) return false;
+  return true;
+}
+
+// Compute ag-relevance for an already-stored alert row (used by reconciliation).
+export function alertRelevance(row, rules = []) {
+  if (!row) return 0;
+  const text = `${row.title || ''} ${row.category || ''} ${row.geography || ''}`;
+  return agRelevanceScore({
+    text,
+    severity: row.severity || 'moderate',
+    commodities: row.commodities || [],
+    regions: row.regions || [],
+    category: row.category || '',
+    rules,
+  });
+}
+
+// Build a MODELED projection alert from an observed hazard whose ag-relevance is
+// below the observed-promotion bar but which is severe enough to warrant a
+// hedged projection. Linked to the observed evidence; never claims certainty.
+function modeledFromEvent(ev, observed, relevance, now) {
+  const iso = new Date(now).toISOString();
+  // Hedge the projection one notch below the observed hazard's severity.
+  const severity = observed.severity === 'critical' ? 'high' : 'moderate';
+  const confidence = computeConfidence({ basis: 'modeled', severity, sourceCount: 1, corroboration: Math.round(relevance / 25) });
+  const regionLabel = (observed.regions && observed.regions[0]) || observed.geography || 'the affected region';
+  const commodityLabel = (observed.commodities && observed.commodities.length) ? observed.commodities.join(', ') : 'regional agricultural output';
+  return {
+    key: stableId('mdl-ev', [ev.source || '', ev.id || observed.title]),
+    title: `Modeled agricultural impact projection: ${String(ev.title || 'hazard').slice(0, 200)}`,
+    severity,
+    basis: 'modeled',
+    confidence,
+    horizon: observed.horizon === '24h' ? '7d' : observed.horizon,
+    regions: observed.regions || [],
+    commodities: observed.commodities || [],
+    status: 'new',
+    source: ev.source || null,
+    url: ev.url || null,
+    category: ev.category || null,
+    geography: ev.geography || null,
+    eventAt: ev.published || null,
+    causalChain: [
+      { step: 'observed-evidence', detail: `Observed hazard: ${String(ev.title || '').slice(0, 240)}` },
+      { step: 'exposure', detail: `In/near ${regionLabel}; potential exposure to ${commodityLabel}.`.slice(0, 300) },
+      { step: 'projection', detail: `Ag-relevance ${relevance}/100 crossed the modeled threshold (${AG_MODEL_THRESHOLD}) but stayed below observed promotion (${AG_PROMOTE_THRESHOLD}).` },
+    ],
+    assumptions: [
+      'PROJECTION — modeled potential agricultural impact of an observed hazard, NOT an observed shortfall.',
+      'The underlying event is real; its downstream effect on food/agriculture is uncertain and may not materialize.',
+      `Emitted as modeled (not observed) because ag-relevance ${relevance} is below the observed-promotion threshold of ${AG_PROMOTE_THRESHOLD}.`,
+    ],
+    createdAt: iso,
+    updatedAt: iso,
+    modeled: true,
+    agRelevance: relevance,
+  };
+}
+
+// Classify a single event into an actionable OBSERVED alert, a MODELED
+// projection, or skip (stays in the Intel/live feed). Rules bias promotion
+// toward what the team has explicitly said it cares about.
+export function classifyEvent(ev, { now = Date.now(), rules = [] } = {}) {
+  const observed = alertFromEvent(ev, { now });
+  if (!observed) return { kind: 'skip', relevance: 0, reason: 'invalid' };
+  const text = `${ev.title || ''} ${ev.category || ''} ${ev.geography || ''} ${ev.summary || ''}`;
+  const relevance = agRelevanceScore({
+    text, severity: observed.severity, commodities: observed.commodities,
+    regions: observed.regions, category: ev.category, rules,
+  });
+  observed.agRelevance = relevance;
+  if (relevance >= AG_PROMOTE_THRESHOLD) return { kind: 'observed', relevance, observed };
+  if (relevance >= AG_MODEL_THRESHOLD && SEVERITY_RANK[observed.severity] >= 2) {
+    return { kind: 'modeled', relevance, modeled: modeledFromEvent(ev, observed, relevance, now) };
+  }
+  return { kind: 'skip', relevance, observed };
+}
+
+// Relevance-gated derivation pass. Unlike deriveAlerts (which mirrors every
+// event), this promotes only agriculturally-relevant observed hazards, emits
+// hedged modeled projections for severe borderline hazards, folds in modeled
+// crop-risk, dedupes by key, and reports what it did. This is what the alerts
+// API's derive path calls.
+export function deriveAlertsDetailed({ events = [], cropRisk = [], now = Date.now(), threshold = 60, rules = [] } = {}) {
+  const seen = new Set();
+  const alerts = [];
+  const stats = { considered: 0, promotedObserved: 0, modeled: 0, skippedLowRelevance: 0 };
+  for (const ev of events) {
+    stats.considered++;
+    const c = classifyEvent(ev, { now, rules });
+    if (c.kind === 'observed') {
+      if (!seen.has(c.observed.key)) { seen.add(c.observed.key); alerts.push(c.observed); stats.promotedObserved++; }
+    } else if (c.kind === 'modeled') {
+      if (!seen.has(c.modeled.key)) { seen.add(c.modeled.key); alerts.push(c.modeled); stats.modeled++; }
+    } else {
+      stats.skippedLowRelevance++;
+    }
+  }
+  for (const a of alertsFromCropRisk(cropRisk, { now, threshold })) {
+    if (!seen.has(a.key)) { seen.add(a.key); alerts.push(a); stats.modeled++; }
+  }
+  alerts.sort((x, y) => (SEVERITY_RANK[y.severity] - SEVERITY_RANK[x.severity]) || (y.confidence - x.confidence));
+  return { alerts, stats };
+}
+
 // Explainability panel content for a single alert (why it fired, evidence,
 // thresholds/assumptions, uncertainty, next effects, recommended decisions).
 export function explainAlert(alert) {

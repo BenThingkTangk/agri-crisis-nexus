@@ -9,16 +9,22 @@
 //   POST /api/teams?action=rename    { name }        -> rename active team (owner/admin)
 
 import { query, withTransaction } from './_db.js';
+import { ensureSchema } from './_bootstrap.js';
 import { generateToken, hashToken } from './_crypto.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
-import { requireAuth, requireWrite, roleAtLeast, audit } from './_auth.js';
+import { requireAnyAuth, requireWrite, roleAtLeast, audit, accountTeamRole } from './_auth.js';
+import { publicRoster } from './_accounts.js';
 import { str, uuid, email as vEmail, oneOf, ROLES, ValidationError } from './_validate.js';
 
 const INVITE_TTL_DAYS = 14;
 
 export default async function handler(req, res) {
+  if (!(await ensureReady(res))) return;
   const action = (req.query && req.query.action) || '';
-  const ctx = await requireAuth(req, res);
+  // Accept BOTH identity layers (DB session or account bearer). Using
+  // requireAnyAuth here — not the DB-only requireAuth — is what keeps a valid
+  // account owner from getting a spurious 401 on the member roster request.
+  const ctx = await requireAnyAuth(req, res);
   if (!ctx) return;
   if (!ctx.teamId) return sendError(res, 403, 'no_team', 'No active team.');
   try {
@@ -32,7 +38,22 @@ export default async function handler(req, res) {
     return sendError(res, 404, 'unknown_action');
   } catch (err) {
     if (err instanceof ValidationError) return sendError(res, 400, 'invalid', err.message);
+    console.error('[teams] server_error', err && (err.code || err.message));
     return sendError(res, 500, 'server_error', 'Something went wrong.');
+  }
+}
+
+// Apply any pending Phase III schema before serving. On failure, log a safe
+// diagnostic (code/message only — never secrets or the DSN) and return a
+// generic retryable error rather than a raw SQL fault.
+async function ensureReady(res) {
+  try {
+    await ensureSchema();
+    return true;
+  } catch (err) {
+    console.error('[teams] schema_bootstrap_failed', err && (err.code || err.message));
+    sendError(res, 500, 'server_error', 'Service is starting up. Please retry.');
+    return false;
   }
 }
 
@@ -43,7 +64,31 @@ async function listMembers(req, res, ctx) {
       WHERE tm.team_id = $1 ORDER BY tm.role, u.display_name`,
     [ctx.teamId]
   );
-  return sendJSON(res, 200, { ok: true, members: rows, me: ctx.user.id, myRole: ctx.role });
+  const members = mergeRoster(rows);
+  return sendJSON(res, 200, { ok: true, members, me: ctx.user.id, myRole: ctx.role });
+}
+
+// Append the configured operator roster (e.g. Ben, Joel) as display-only
+// entries so an account-layer context sees its known teammates even before
+// they have a real DB membership. These carry a synthetic `account:<email>`
+// id and `account:true` marker; they are NOT assignable (no real UUID / FK) and
+// NOT manageable. Real DB members always take precedence — matched by email.
+function mergeRoster(dbRows) {
+  const byEmail = new Set(dbRows.map((r) => String(r.email || '').trim().toLowerCase()));
+  const extras = [];
+  for (const acct of publicRoster()) {
+    const email = String(acct.email || '').trim().toLowerCase();
+    if (!email || byEmail.has(email)) continue;
+    extras.push({
+      user_id: 'account:' + email,
+      display_name: acct.name || email,
+      email,
+      role: accountTeamRole(acct.role),
+      created_at: null,
+      account: true,
+    });
+  }
+  return dbRows.concat(extras);
 }
 
 async function listInvites(req, res, ctx) {

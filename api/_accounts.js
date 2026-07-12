@@ -97,6 +97,16 @@ export function loadUsers(env = process.env) {
   return out;
 }
 
+// Public-safe roster of configured accounts: email, name, and role only.
+// NEVER exposes salt/hash. Used to surface the known operator roster (e.g. Ben,
+// Joel) in the team member list for account-layer contexts without a DB row.
+// Returns [] when config is absent/invalid.
+export function publicRoster(env = process.env) {
+  const users = loadUsers(env);
+  if (!users) return [];
+  return users.map((u) => ({ email: u.email, name: u.name, role: u.role }));
+}
+
 // Constant-time scrypt verification of a candidate password against a stored
 // {salt, hash}. Returns a boolean and never leaks timing about which field
 // failed.

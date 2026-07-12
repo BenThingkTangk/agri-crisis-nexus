@@ -6,8 +6,9 @@
 //   DELETE /api/scenarios?id=UUID    -> delete own (analyst+) / any (admin+)
 
 import { query } from './_db.js';
+import { ensureSchema } from './_bootstrap.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
-import { requireAuth, requireWrite, roleAtLeast, audit } from './_auth.js';
+import { requireAnyAuth, requireWrite, roleAtLeast, audit } from './_auth.js';
 import { str, uuid, oneOf, jsonObject, PILLARS, ValidationError } from './_validate.js';
 
 const SELECT = `
@@ -16,7 +17,10 @@ const SELECT = `
     FROM scenarios s LEFT JOIN users u ON u.id = s.created_by`;
 
 export default async function handler(req, res) {
-  const ctx = await requireAuth(req, res);
+  if (!(await ensureReady(res))) return;
+  // Honor both identity layers so an account-bearer operator is not falsely
+  // rejected on this auxiliary surface (see teams.js for the same bridge).
+  const ctx = await requireAnyAuth(req, res);
   if (!ctx) return;
   if (!ctx.teamId) return sendError(res, 403, 'no_team', 'No active team.');
   try {
@@ -26,7 +30,22 @@ export default async function handler(req, res) {
     return sendError(res, 405, 'method_not_allowed');
   } catch (err) {
     if (err instanceof ValidationError) return sendError(res, 400, 'invalid', err.message);
+    console.error('[scenarios] server_error', err && (err.code || err.message));
     return sendError(res, 500, 'server_error', 'Something went wrong.');
+  }
+}
+
+// Apply any pending Phase III schema before serving. On failure, log a safe
+// diagnostic (code/message only — never secrets or the DSN) and return a
+// generic retryable error rather than a raw SQL fault.
+async function ensureReady(res) {
+  try {
+    await ensureSchema();
+    return true;
+  } catch (err) {
+    console.error('[scenarios] schema_bootstrap_failed', err && (err.code || err.message));
+    sendError(res, 500, 'server_error', 'Service is starting up. Please retry.');
+    return false;
   }
 }
 

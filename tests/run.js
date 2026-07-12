@@ -33,7 +33,7 @@ import { gdacs, usgs, worldbank, power, nass, parseNassValue, ADAPTERS } from '.
 import {
   loadUsers, authenticate, signSession, verifySession, resolveAccount,
   accountRoleAtLeast, bearerToken, revokeToken, clearRevocations,
-  ACCOUNT_ROLES, DEFAULT_TTL_MS, MAX_TTL_MS, SCRYPT_PARAMS,
+  ACCOUNT_ROLES, DEFAULT_TTL_MS, MAX_TTL_MS, SCRYPT_PARAMS, publicRoster,
 } from '../api/_accounts.js';
 import accountHandler from '../api/account.js';
 import {
@@ -43,6 +43,8 @@ import {
   slaClock, MISSION_TEMPLATES, templateByKey, instantiateTemplate,
   presenceFreshness, PRESENCE_ONLINE_MS, PRESENCE_AWAY_MS, parseMentions,
   buildAlertExplanation, buildMissionBrief, buildActionCards, buildAfterAction,
+  agRelevanceScore, classifyEvent, deriveAlertsDetailed, alertRelevance,
+  AG_PROMOTE_THRESHOLD, AG_MODEL_THRESHOLD,
 } from '../api/_intel.js';
 import { scryptSync, randomBytes, createHmac } from 'node:crypto';
 
@@ -623,6 +625,41 @@ async function testPhase3AccountAuth() {
     ok('team missions render a sign-in state, not real mission data',
       registry['#teamMissions'].innerHTML.indexOf('Sign in') !== -1 &&
       registry['#teamMissions'].innerHTML.indexOf('Bridged mission') === -1);
+  }
+
+  // --- Case 3: an auxiliary 401 must NOT poison a still-valid account session ---
+  // BUG1 regression: the alert→mission composer's GET /api/teams was 401ing while
+  // the account bearer was valid/owner, and that single 401 tore down the whole
+  // session (Command + War Room fell back to "Sign in ..."). With the account
+  // layer present, handleAuthLost() must recover to the account session instead
+  // of dropping it — the bell stays visible and identity stays signed in.
+  section('frontend: auxiliary 401 does not drop a valid account session (BUG1 regression)');
+  {
+    const { sandbox, registry, windowStub } = buildAuthSandbox({
+      dbAuthenticated: false, // no DB session — account bearer is the only identity
+      account: { email: 'ben@nirmata.example', name: 'Ben', role: 'owner', token: 'ACCT-TOKEN-OWNER' },
+      // Every scoped request (teams/alerts/missions/collab) 401s, mimicking the
+      // auxiliary-endpoint rejection that used to globally poison the session.
+      status: (p) => (p.indexOf('/api/auth?action=session') === 0 ? 200 : 401),
+    });
+    vm.createContext(sandbox);
+    vm.runInContext(src, sandbox, { filename: 'assets/collab.js' });
+    const collab = windowStub.AGRI_COLLAB;
+
+    collab.onCommandRendered();
+    collab.init();
+    await flush();
+    // War Room activation must also recover from the account session, not the
+    // misleading "Sign in to join your team's War Room" placeholder.
+    collab.onSimRendered();
+    await flush();
+
+    ok('account session survives the auxiliary 401 (identity not "Sign in")',
+      registry['#identityLabel'].textContent !== 'Sign in');
+    ok('alert bell stays visible after auxiliary 401 (no global poison)',
+      registry['#openAlerts'].hidden === false);
+    ok('War Room not forced to signed-out placeholder',
+      registry['#wrBody'].innerHTML.indexOf('Sign in to join') === -1);
   }
 }
 
@@ -2191,6 +2228,75 @@ function testIntelEngine() {
   ok('after-action flags residual tasks', aa.lessons.some((l) => /residual|not all/i.test(l)));
 }
 
+/* ============================ Phase IV: agricultural relevance gating ============================ */
+// BUG2 — the derive pass must stop mirroring every raw hazard (earthquakes,
+// prescribed/wildfires) into the Alert Center. It scores each hazard for genuine
+// agricultural exposure and only promotes high-relevance OBSERVED signals; severe
+// borderline hazards become clearly MODELED projections; the rest stay in Intel.
+function testAgRelevanceGating() {
+  section('phase4: agricultural relevance scoring (pure engine)');
+
+  // Ag-category + commodity + breadbasket region + severity ⇒ high relevance.
+  const droughtScore = agRelevanceScore({ text: 'Severe drought expands across Ethiopia wheat belt', category: 'drought', severity: 'high' });
+  ok('drought/wheat/Ethiopia scores at/above promotion bar', droughtScore >= AG_PROMOTE_THRESHOLD);
+  // Generic hazard with no ag signal ⇒ near-zero, well below the modeled bar.
+  const quakeScore = agRelevanceScore({ text: 'M6.2 earthquake near Fiji', category: 'earthquake', severity: 'high' });
+  ok('bare earthquake scores below modeled threshold', quakeScore < AG_MODEL_THRESHOLD);
+  ok('drought scores strictly higher than bare earthquake', droughtScore > quakeScore);
+  // A team rule matching the hazard biases relevance upward (explicit intent).
+  const withRule = agRelevanceScore({ text: 'flooding disrupts Mekong rice paddies', category: 'flood', severity: 'moderate', rules: [{ min_severity: 'moderate', categories: ['flood'], geographies: [] }] });
+  const noRule = agRelevanceScore({ text: 'flooding disrupts Mekong rice paddies', category: 'flood', severity: 'moderate' });
+  ok('matching team rule raises relevance', withRule > noRule);
+  ok('score clamped to 0..100', agRelevanceScore({ text: 'wheat maize rice soy fertilizer drought flood cyclone', category: 'drought', severity: 'critical', rules: [{ min_severity: 'moderate', categories: ['drought'], geographies: [] }] }) <= 100);
+
+  section('phase4: classifyEvent (observed / modeled / skip)');
+  const droughtEv = { id: 'e1', source: 'GDACS', title: 'Severe drought expands across Ethiopia wheat belt', severity: 'high', geography: 'Ethiopia', category: 'drought' };
+  const cObs = classifyEvent(droughtEv);
+  eq('agriculturally-relevant hazard promoted to observed', cObs.kind, 'observed');
+  ok('promoted observed carries ag-relevance', cObs.observed.agRelevance >= AG_PROMOTE_THRESHOLD);
+
+  const quakeEv = { id: 'q1', source: 'USGS', title: 'M6.2 earthquake near Fiji', severity: 'high', geography: 'Fiji', category: 'earthquake' };
+  eq('low-relevance raw earthquake skipped (stays in Intel)', classifyEvent(quakeEv).kind, 'skip');
+  const fireEv = { id: 'f1', source: 'InciWeb', title: 'Prescribed fire in Oregon', severity: 'moderate', geography: 'Oregon', category: 'fire' };
+  eq('low-relevance prescribed fire skipped', classifyEvent(fireEv).kind, 'skip');
+
+  // Severe hazard at a grain chokepoint: borderline relevance + severe ⇒ MODELED.
+  const chokeEv = { id: 'm1', source: 'USGS', title: 'Major earthquake strikes near Suez Canal', severity: 'critical', geography: 'Egypt', category: 'earthquake' };
+  const cMod = classifyEvent(chokeEv);
+  eq('severe borderline hazard becomes modeled projection', cMod.kind, 'modeled');
+  eq('modeled projection basis is modeled', cMod.modeled.basis, 'modeled');
+  ok('modeled projection flagged modeled', cMod.modeled.modeled === true);
+  ok('modeled projection hedges severity one notch below observed', cMod.modeled.severity === 'high');
+  ok('modeled projection confidence < 1 (never certainty)', cMod.modeled.confidence < 1);
+  ok('modeled projection labels PROJECTION + links observed evidence',
+    cMod.modeled.assumptions.some((s) => /PROJECTION/.test(s)) &&
+    cMod.modeled.causalChain.some((c) => c.step === 'observed-evidence'));
+  ok('modeled projection records ag-relevance in [MODEL,PROMOTE)',
+    cMod.modeled.agRelevance >= AG_MODEL_THRESHOLD && cMod.modeled.agRelevance < AG_PROMOTE_THRESHOLD);
+
+  section('phase4: deriveAlertsDetailed (gating + stats + dedupe)');
+  const { alerts, stats } = deriveAlertsDetailed({
+    events: [droughtEv, droughtEv, quakeEv, fireEv, chokeEv],
+    cropRisk: [{ region: 'Black Sea', commodity: 'wheat', score: 90, drivers: [], sources: [] }],
+  });
+  eq('stats.considered counts every event', stats.considered, 5);
+  eq('exactly one observed promoted (deduped)', stats.promotedObserved, 1);
+  eq('two low-relevance hazards skipped', stats.skippedLowRelevance, 2);
+  ok('modeled count includes projection + crop-risk', stats.modeled >= 2);
+  ok('no duplicate keys emitted', new Set(alerts.map((a) => a.key)).size === alerts.length);
+  ok('every derived alert confidence < 1', alerts.every((a) => a.confidence < 1));
+  ok('raw earthquake/fire never reach the alert list',
+    !alerts.some((a) => a.basis === 'observed' && /earthquake|prescribed fire/i.test(a.title)));
+
+  section('phase4: alertRelevance drives suppression reconciliation');
+  // A stored raw-hazard row (QA-era mirror) scores below the promotion bar →
+  // reconciliation suppresses it; a genuine ag row stays.
+  const rawRow = { title: 'M5.9 earthquake near Fiji', category: 'earthquake', geography: 'Fiji', severity: 'high', commodities: [], regions: [] };
+  const agRow = { title: 'Drought devastates Ethiopia wheat harvest', category: 'drought', geography: 'Ethiopia', severity: 'high', commodities: ['wheat'], regions: ['Horn of Africa'] };
+  ok('raw-hazard row falls below promotion bar (suppressible)', alertRelevance(rawRow) < AG_PROMOTE_THRESHOLD);
+  ok('genuine ag row stays at/above promotion bar (preserved)', alertRelevance(agRow) >= AG_PROMOTE_THRESHOLD);
+}
+
 /* ============================ Phase III: migration 002 shape ============================ */
 function testMigrationPhase3() {
   section('phase3 migration: lifecycle columns + new tables');
@@ -2483,6 +2589,96 @@ function testBootstrapContract() {
   }
 }
 
+/* ============================ Phase IV: BUG1/BUG2/UX source contract ============================ */
+// Pin the exact wiring for the Phase IV corrections in code, complementing the
+// functional/engine tests: (1) auxiliary Phase III endpoints bridge the account
+// bearer and never leak secrets; (2) the client recovers the account session on
+// auxiliary 401 / mode activation instead of poisoning it; (3) alert derivation
+// gates on ag-relevance and reconciles low-relevance rows non-destructively while
+// preserving protected records; (4) the mission composer closes/refreshes and a
+// closed drawer is inert/aria-hidden.
+function testPhase4CorrectionContract() {
+  section('phase4: auxiliary endpoints bridge account bearer (teams/scenarios)');
+  for (const f of ['api/teams.js', 'api/scenarios.js']) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    ok(`${f} imports ensureSchema`, /from '\.\/_bootstrap\.js'/.test(src) && src.includes('ensureSchema'));
+    ok(`${f} authenticates via requireAnyAuth (account-bearer bridge)`, /requireAnyAuth/.test(src));
+    // Strip line comments before checking that no *code* still calls the DB-only
+    // requireAuth (prose may still explain the switch away from it).
+    ok(`${f} no longer routes through DB-only requireAuth`, !/\brequireAuth\b/.test(src.replace(/\/\/.*$/gm, '')));
+    ok(`${f} awaits ensureReady before auth`, /await ensureReady\(res\)/.test(src));
+    ok(`${f} ensureReady runs before requireAnyAuth`,
+      src.indexOf('ensureReady(res)') < src.indexOf('requireAnyAuth(req'));
+    ok(`${f} logs a safe (secret-free) diagnostic on bootstrap failure`, src.includes('schema_bootstrap_failed'));
+    ok(`${f} returns a retryable startup message`, /starting up/i.test(src));
+    ['DATABASE_URL', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN', 'PPLX_KEY']
+      .forEach((k) => ok(`${f} does not reference secret ${k}`, !src.includes(k)));
+  }
+
+  section('phase4: roster merge surfaces account operators without secrets');
+  const accts = readFileSync(join(ROOT, 'api', '_accounts.js'), 'utf8');
+  ok('_accounts exports publicRoster', /export function publicRoster/.test(accts));
+  // Static guard: the roster map must project only email/name/role — never
+  // salt/hash. (Runtime guard below asserts the same on real output.)
+  const rosterBody = (accts.match(/export function publicRoster[\s\S]*?\n\}/) || [''])[0];
+  ok('publicRoster never projects salt', !/\bsalt\b/.test(rosterBody.replace(/\/\/.*$/gm, '')));
+  ok('publicRoster never projects hash', !/\bhash\b/.test(rosterBody.replace(/\/\/.*$/gm, '')));
+  const teams = readFileSync(join(ROOT, 'api', 'teams.js'), 'utf8');
+  ok('teams merges publicRoster into the member list', teams.includes('publicRoster') && /mergeRoster/.test(teams));
+  ok('roster-only entries are flagged account:true (display-only, not assignable)', /account:\s*true/.test(teams));
+
+  // Runtime guard on the real projection: seed a two-user roster and assert the
+  // output carries email/name/role only.
+  const roster = publicRoster({
+    AGRIOS_AUTH_USERS_JSON: JSON.stringify([
+      { email: 'ben@x.example', name: 'Ben', role: 'owner', salt: 'deadbeefdeadbeef', hash: 'a'.repeat(128) },
+      { email: 'joel@x.example', name: 'Joel', role: 'operator', salt: 'feedfacefeedface', hash: 'b'.repeat(128) },
+    ]),
+  });
+  ok('publicRoster returns the seeded operators', roster.length === 2 && roster[0].email === 'ben@x.example');
+  ok('publicRoster output omits salt/hash entirely',
+    roster.every((r) => !('salt' in r) && !('hash' in r) && r.role && r.name));
+
+  section('phase4: client recovers account session (no global poison)');
+  const collab = readFileSync(join(ROOT, 'assets', 'collab.js'), 'utf8');
+  ok('handleAuthLost recovers to accountSession before dropping', /function handleAuthLost\(\)\s*\{[\s\S]{0,200}?accountSession\(\)/.test(collab));
+  ok('handleAuthLost is loop-safe on the equivalent account session', /session\.user\.id === recovered\.user\.id\) return/.test(collab));
+  ok('ensureAccountRecovery restores account session when session is null', /function ensureAccountRecovery\(\)\s*\{[\s\S]{0,160}?accountSession\(\)/.test(collab));
+  ok('Command activation triggers account recovery', /function onCommandRendered\(\)\s*\{\s*ensureAccountRecovery\(\)/.test(collab));
+  ok('War Room activation triggers account recovery', /function onSimRendered\(\)\s*\{\s*ensureAccountRecovery\(\)/.test(collab));
+  ok('roster-only account entries excluded from role management', /canManage && !isMe && !m\.account/.test(collab));
+  ok('roster-only account entries excluded from assignee picker', /if \(m\.account\) return;/.test(collab));
+
+  section('phase4: alert derivation gates + non-destructive reconciliation');
+  const alerts = readFileSync(join(ROOT, 'api', 'alerts.js'), 'utf8');
+  ok('derive path uses relevance-gated deriveAlertsDetailed', alerts.includes('deriveAlertsDetailed'));
+  ok('default alert query hides suppressed alerts', /metadata->>'suppressed'\)::boolean, false\) = false/.test(alerts));
+  ok('reconciliation marks suppressed via resolved status (no DELETE)', /reconcileLowRelevance/.test(alerts) && /status\s*=\s*'resolved'/.test(alerts));
+  ok('reconciliation records an audit trail (audit-preserving)', /audit\(ctx, 'alert\.suppress'/.test(alerts));
+  ok('reconciliation records a suppress reason', /low_ag_relevance/.test(alerts));
+  // Protected records must never be suppressed: the reconcile predicates guard
+  // acknowledged/escalated/mission-linked/user-owned/already-suppressed rows.
+  const reconcile = (alerts.match(/async function reconcileLowRelevance[\s\S]*?\n\}/) || [''])[0];
+  ['acknowledged_at IS NULL', 'escalated_at IS NULL', 'mission_id IS NULL', 'owner_id IS NULL']
+    .forEach((p) => ok('reconcile preserves protected rows via ' + p, reconcile.includes(p)));
+  ok('reconcile only touches auto-generated observed NEW rows', /status = 'new'/.test(reconcile) && /basis = 'observed'/.test(reconcile));
+  ok('reconcile UPDATE re-asserts predicates (no clobber of concurrent human action)',
+    /UPDATE alerts[\s\S]*?SET status = 'resolved'[\s\S]*?acknowledged_at IS NULL AND escalated_at IS NULL/.test(reconcile));
+  // Reconciliation is non-destructive: it never DELETEs/DROPs/TRUNCATEs alert
+  // data. (A user-initiated rule-delete on alert_rules is a separate, allowed
+  // action and is explicitly not alert-record data.)
+  ok('reconcile never deletes alert data', !/\bdelete\b/i.test(reconcile));
+  ok('alerts.js never DROPs/TRUNCATEs and never deletes from alerts',
+    !/\bdrop\s+table\b/i.test(alerts) && !/\btruncate\b/i.test(alerts) && !/delete\s+from\s+alerts\b/i.test(alerts));
+
+  section('phase4: mission composer close/refresh + drawer a11y (inert)');
+  ok('mission create closes the composer drawer', /Mission created[\s\S]{0,80}?A\.closeDrawer\(\)/.test(collab) || /A\.closeDrawer\(\);\s*renderTeamMissions\(\)/.test(collab));
+  ok('mission create refreshes the team mission list/count', /A\.closeDrawer\(\);\s*renderTeamMissions\(\)/.test(collab));
+  const app = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+  ok('closeDrawer marks the drawer aria-hidden AND inert', /function closeDrawer\(\)\{[\s\S]*?aria-hidden','true'[\s\S]*?setAttribute\('inert'/.test(app));
+  ok('openDrawer clears inert so the visible drawer is focusable', /function openDrawer\([\s\S]*?removeAttribute\('inert'\)/.test(app));
+}
+
 /* ============================ run ============================ */
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
@@ -2493,6 +2689,7 @@ function testBootstrapContract() {
     testHttp();
     testMigration();
     testIntelEngine();
+    testAgRelevanceGating();
     testMigrationPhase3();
     testPhase3Hygiene();
     await testBootstrapSchema();
@@ -2501,6 +2698,7 @@ function testBootstrapContract() {
     await testWarRoomCollab();
     await testPhase3AccountAuth();
     testPhase3AuthWiringSource();
+    testPhase4CorrectionContract();
     testTheaterData();
     testTheaterFilters();
     testSimEngine();

@@ -163,14 +163,45 @@
     };
   }
 
-  // Server rejected our credentials mid-session (expiry/DB unreachable). Drop the
-  // cached session so surfaces show an honest sign-in state rather than "0 alerts".
+  // A request returned 401. This does NOT necessarily mean the user is signed
+  // out: an auxiliary endpoint can reject a request for reasons unrelated to the
+  // still-valid account bearer. So before tearing down, try to recover the
+  // env-backed account session. Only when the account layer is truly not authed
+  // do we drop to an honest signed-out state — a single auxiliary 401 must never
+  // globally poison a valid AGRIOS_AUTH account session.
   function handleAuthLost() {
+    var recovered = accountSession();
+    if (recovered) {
+      // Loop-safe: if we're already on the equivalent account session, do
+      // nothing. Re-painting/refreshing would re-fire the same request and 401
+      // again, spinning forever.
+      if (session && session.account && session.user && recovered.user &&
+          session.user.id === recovered.user.id) return;
+      session = recovered;
+      paintIdentity();
+      startPolling();
+      softRefresh();
+      return;
+    }
+    // No account layer, or it is signed out: honest signed-out state.
     if (!session) return;
     session = null;
     stopPolling();
     paintIdentity();
     softRefresh();
+  }
+
+  // If a prior auxiliary 401 (or an async race on mode activation) left us with
+  // no session while the account layer is still authed, restore the account
+  // session so activating Command / War Room recovers instead of rendering a
+  // misleading signed-out placeholder.
+  function ensureAccountRecovery() {
+    if (session) return;
+    var recovered = accountSession();
+    if (!recovered) return;
+    session = recovered;
+    paintIdentity();
+    startPolling();
   }
 
   // Phase III presentation lives in the enhancement layer (same pattern as the
@@ -413,7 +444,9 @@
       host.innerHTML = j.members.map(function (m) {
         var isMe = m.user_id === j.me;
         var roleCtl;
-        if (canManage && !isMe) {
+        // Roster-only account entries (synthetic account:<email> ids) have no
+        // real DB membership, so they are never role-managed or removable.
+        if (canManage && !isMe && !m.account) {
           roleCtl = '<select class="select" data-testid="role-select" data-user="' + esc(m.user_id) + '" aria-label="Role for ' + esc(m.display_name) + '">' +
             ['viewer', 'analyst', 'admin', 'owner'].map(function (r) {
               // Only an owner may grant owner.
@@ -554,6 +587,7 @@
      TEAM MISSIONS (Command mode)
      ============================================================ */
   function onCommandRendered() {
+    ensureAccountRecovery();
     renderTeamMissions();
     var nm = $('#newMissionBtn');
     if (nm) {
@@ -696,6 +730,9 @@
       var sel = $('#mfAssignee', body);
       if (!sel) return;
       j.members.forEach(function (m) {
+        // Roster-only account entries are not real DB members (no assignable
+        // UUID) — assertMember would reject them, so keep them out of the picker.
+        if (m.account) return;
         var o = document.createElement('option');
         o.value = m.user_id; o.textContent = m.display_name + ' (' + m.role + ')';
         if (prefill.assigneeId === m.user_id) o.selected = true;
@@ -753,6 +790,7 @@
      WAR ROOM SCENARIOS
      ============================================================ */
   function onSimRendered() {
+    ensureAccountRecovery();
     loadScenarioHistory();
     updateSaveButtonState();
     renderWarRoom();

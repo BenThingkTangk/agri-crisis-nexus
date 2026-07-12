@@ -18,7 +18,8 @@ import { readJSON, sendJSON, sendError } from './_http.js';
 import { requireAnyAuth, requireWrite, audit } from './_auth.js';
 import { str, uuid, optionalUuid, oneOf, strArray, SEVERITIES, ValidationError } from './_validate.js';
 import {
-  deriveAlerts, alertActionToStatus, alertStatusCanTransition, explainAlert, buildAlertExplanation,
+  deriveAlertsDetailed, alertActionToStatus, alertStatusCanTransition, explainAlert, buildAlertExplanation,
+  alertRelevance, AG_PROMOTE_THRESHOLD,
 } from './_intel.js';
 
 const SEV_RANK = { moderate: 1, high: 2, critical: 3 };
@@ -77,6 +78,7 @@ async function alertsPayload(ctx, limit = 60) {
        LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = $2
        LEFT JOIN users o ON o.id = a.owner_id
       WHERE a.team_id = $1
+        AND COALESCE((a.metadata->>'suppressed')::boolean, false) = false
       ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
                a.created_at DESC
       LIMIT $3`,
@@ -231,8 +233,12 @@ async function sync(req, res, ctx) {
     }
   }
 
+  // Same idempotent reconciliation as derive: retire stale low-relevance
+  // auto-generated observed alerts while preserving any human-touched record.
+  const suppressed = await reconcileLowRelevance(ctx, rules);
+
   const payload = await alertsPayload(ctx);
-  return sendJSON(res, 200, { ok: true, inserted, ...payload });
+  return sendJSON(res, 200, { ok: true, inserted, suppressed, ...payload });
 }
 
 // Fetch the live feed for the derive pass (same source as sync).
@@ -258,7 +264,12 @@ async function derive(req, res, ctx) {
   // Optional analyst-supplied crop-risk state (labeled modeled downstream).
   const cropRisk = Array.isArray(body.cropRisk) ? body.cropRisk.slice(0, 100) : [];
   const events = await fetchLiveEvents(req);
-  const derived = deriveAlerts({ events, cropRisk, now: Date.now() });
+
+  // The team's enabled rules bias relevance toward what analysts care about, so
+  // derivation is grounded in this team's stated agricultural exposure — not a
+  // generic hazard mirror.
+  const rules = await enabledRules(ctx);
+  const { alerts: derived, stats } = deriveAlertsDetailed({ events, cropRisk, now: Date.now(), rules });
 
   let inserted = 0;
   for (const a of derived) {
@@ -281,14 +292,75 @@ async function derive(req, res, ctx) {
         a.basis, a.confidence, a.horizon,
         a.regions || [], a.commodities || [],
         JSON.stringify(a.causalChain || []), JSON.stringify(a.assumptions || []),
-        { modeled: !!a.modeled },
+        { modeled: !!a.modeled, ag_relevance: a.agRelevance != null ? a.agRelevance : null },
       ]
     );
     inserted += rowCount;
   }
-  await audit(ctx, 'alert.derive', 'alert', null, { inserted, considered: derived.length });
+
+  // Idempotently reconcile previously auto-generated low-relevance observed
+  // alerts (e.g. the QA-era raw hazard mirror) into a suppressed/resolved state
+  // WITHOUT destroying data or touching human-touched records.
+  const suppressed = await reconcileLowRelevance(ctx, rules);
+
+  await audit(ctx, 'alert.derive', 'alert', null, { inserted, considered: stats.considered, ...stats, suppressed });
   const payload = await alertsPayload(ctx);
-  return sendJSON(res, 200, { ok: true, inserted, considered: derived.length, ...payload });
+  return sendJSON(res, 200, { ok: true, inserted, considered: stats.considered, stats, suppressed, ...payload });
+}
+
+// Load the active team's enabled alert rules (relevance-scoring inputs).
+async function enabledRules(ctx) {
+  const { rows } = await query(
+    `SELECT id, min_severity, categories, geographies FROM alert_rules WHERE team_id = $1 AND enabled = TRUE`,
+    [ctx.teamId]
+  );
+  return rows;
+}
+
+// Non-destructive, auditable reconciliation. Recompute agricultural relevance
+// for auto-generated OBSERVED alerts still in the 'new' state and, when they
+// fall below the promotion threshold, mark them suppressed + resolved with a
+// reason. The UPDATE re-asserts every protection predicate so a concurrent
+// acknowledge/escalate/assign/mission-link can never be clobbered. Records that
+// are acknowledged, escalated, owned, mission-linked, analyst/modeled, or
+// already suppressed are left untouched.
+async function reconcileLowRelevance(ctx, rules) {
+  const { rows } = await query(
+    `SELECT id, title, category, geography, severity, commodities, regions
+       FROM alerts
+      WHERE team_id = $1 AND status = 'new' AND basis = 'observed'
+        AND mission_id IS NULL AND owner_id IS NULL
+        AND acknowledged_at IS NULL AND escalated_at IS NULL
+        AND COALESCE((metadata->>'suppressed')::boolean, false) = false
+      LIMIT 500`,
+    [ctx.teamId]
+  );
+  let suppressed = 0;
+  for (const r of rows) {
+    const relevance = alertRelevance(r, rules);
+    if (relevance >= AG_PROMOTE_THRESHOLD) continue;
+    const patch = {
+      suppressed: true,
+      suppress_reason: 'low_ag_relevance',
+      ag_relevance: relevance,
+      suppressed_at: new Date().toISOString(),
+    };
+    const { rowCount } = await query(
+      `UPDATE alerts
+          SET status = 'resolved', resolved_at = now(),
+              metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1 AND team_id = $3
+          AND status = 'new' AND basis = 'observed'
+          AND mission_id IS NULL AND owner_id IS NULL
+          AND acknowledged_at IS NULL AND escalated_at IS NULL`,
+      [r.id, JSON.stringify(patch), ctx.teamId]
+    );
+    if (rowCount) {
+      suppressed += 1;
+      await audit(ctx, 'alert.suppress', 'alert', r.id, { reason: 'low_ag_relevance', ag_relevance: relevance });
+    }
+  }
+  return suppressed;
 }
 
 // Explainability panel for a single alert.
