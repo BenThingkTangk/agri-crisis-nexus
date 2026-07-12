@@ -577,6 +577,22 @@ function testGibs() {
   const label = GIBS.contextLabel('modis-terra', '2026-07-11');
   ok('context label names source-type + date + is explicit "not live"',
     /satellite context/i.test(label) && label.indexOf('2026-07-11') !== -1 && /not live/i.test(label));
+
+  // Whole-world WMS GetMap snapshot (EPSG:4326 plate carrée) for the flat 2D canvas.
+  const snap = GIBS.snapshotUrl('modis-terra', '2026-07-11', 2048, 1024);
+  ok('snapshot uses public GIBS WMS EPSG:4326 endpoint', snap.indexOf('gibs.earthdata.nasa.gov/wms/epsg4326/best') !== -1);
+  ok('snapshot is a WMS GetMap request', /SERVICE=WMS/.test(snap) && /REQUEST=GetMap/.test(snap));
+  ok('snapshot embeds the WMTS layer id', snap.indexOf('MODIS_Terra_CorrectedReflectance_TrueColor') !== -1);
+  ok('snapshot spans the whole globe (BBOX -90,-180,90,180)', snap.indexOf('BBOX=-90,-180,90,180') !== -1);
+  ok('snapshot bakes the observation date into TIME', snap.indexOf('TIME=2026-07-11') !== -1);
+  ok('snapshot returns jpeg', /FORMAT=image%2Fjpeg|FORMAT=image\/jpeg/.test(snap));
+  ok('snapshot honors requested pixel dimensions', /WIDTH=2048/.test(snap) && /HEIGHT=1024/.test(snap));
+  ok('snapshot carries NO api key / secret / token', !/(api_?key|token|secret|password)=/i.test(snap));
+  ok('snapshotUrl never throws on unknown layer', (function () { try { GIBS.snapshotUrl('nope'); return true; } catch (e) { return false; } })());
+
+  const fresh = GIBS.freshnessLabel('modis-terra', '2026-07-11');
+  ok('freshness label states daily + observed date + not live',
+    /daily/i.test(fresh) && fresh.indexOf('2026-07-11') !== -1 && /not live/i.test(fresh));
 }
 
 function testCropRisk() {
@@ -783,6 +799,44 @@ function testTheaterCinematicWiring() {
   ok('adds keyboard transport (space/arrows/home)', /k === ' '|Spacebar/.test(src) && src.indexOf('togglePlay()') !== -1);
   ok('announces phase changes to the SR live region', /theaterSr[\s\S]*phase/.test(src));
   ok('transport controls carry tooltips', src.indexOf('title="Play / pause (Space)"') !== -1);
+}
+
+function testTheaterSatelliteWiring() {
+  section('theater: NASA GIBS satellite context + full-panel 2D map (source)');
+  const src = readFileSync(join(ROOT, 'assets', 'theater.js'), 'utf8');
+  const css = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  // Visible satellite-context control group with all required affordances.
+  ok('renders a satellite control container', src.indexOf('data-testid="theater-sat-control"') !== -1);
+  ok('has an on/off toggle', src.indexOf('data-testid="theater-sat-toggle"') !== -1 && src.indexOf('aria-pressed="') !== -1);
+  ok('has a GIBS imagery-layer selector', src.indexOf('data-testid="theater-sat-layer"') !== -1);
+  ok('has an observation-date selector', src.indexOf('data-testid="theater-sat-date"') !== -1);
+  ok('has an opacity slider', src.indexOf('data-testid="theater-sat-opacity"') !== -1);
+  ok('surfaces loading/error/fallback status', src.indexOf('data-testid="theater-sat-status"') !== -1);
+  ok('surfaces a data-freshness label', src.indexOf('data-testid="theater-sat-fresh"') !== -1 && src.indexOf('G.freshnessLabel') !== -1);
+  ok('shows NASA GIBS / Earthdata attribution + link', src.indexOf('data-testid="theater-sat-cite"') !== -1 && src.indexOf('G.SOURCE_URL') !== -1 && src.indexOf('G.ATTRIBUTION') !== -1);
+  // Renders real NASA imagery via the pure GIBS helper, no fabricated tiles/secret.
+  ok('consumes window.GIBS + snapshotUrl for imagery', src.indexOf('window.GIBS') !== -1 && src.indexOf('G.snapshotUrl') !== -1);
+  ok('imagery path carries no api key / token / secret', !/(api_?key|token|secret|password)/i.test(src.slice(src.indexOf('function loadSatImage'), src.indexOf('function loadSatImage') + 500)));
+  // Full-panel equirectangular 2D surface (not a tiny schematic rectangle).
+  ok('2D map is a full-panel equirectangular surface', src.indexOf('function draw2DMap') !== -1 && src.indexOf('function flatMap') !== -1 && src.indexOf('W * st.zoom') !== -1);
+  ok('2D ocean field fills the whole canvas', /fillRect\(0, 0, W, H\)/.test(src));
+  ok('satellite control is shown only in 2D', src.indexOf('function updateSatVisibility') !== -1 && /st\.view === '2d'/.test(src));
+  ok('toggling 2D/3D updates satellite visibility', /updateSatVisibility\(\);[\s\S]*?kick\(\); syncUrl\(\)/.test(src));
+  // Graceful failure: keep the vector basemap, never a blank panel.
+  ok('tracks an imagery-failed state', src.indexOf('st.sat.failed') !== -1);
+  ok('image onerror falls back without blanking', /onerror[\s\S]*failed = true/.test(src) && src.indexOf('vector basemap') !== -1);
+  ok('does not set crossOrigin (avoids needless CORS load failures)', src.indexOf('function loadSatImage') !== -1 && !/\.crossOrigin\s*=/.test(src));
+  // Crop-risk overlay legible over imagery + its own visibility/opacity controls.
+  ok('draws a crop-risk overlay on the map', src.indexOf('function drawCropOverlay') !== -1 && src.indexOf('drawCropOverlay()') !== -1);
+  ok('crop overlay has a visibility toggle', src.indexOf('data-testid="theater-crop-overlay-toggle"') !== -1 && src.indexOf('st.cropOnMap') !== -1);
+  ok('crop overlay has an opacity control', src.indexOf('data-testid="theater-crop-overlay-opacity"') !== -1 && src.indexOf('st.cropMapOpacity') !== -1);
+  // Ledger density: a contained horizontally-navigable phase rail, not a wide grid.
+  ok('ledger is a contained horizontal rail', src.indexOf('data-testid="ledger-rail"') !== -1);
+  ok('ledger rail CSS scrolls horizontally within its region', /\.lg-rail\{[^}]*overflow-x:auto/.test(css));
+  // Satellite overlay CSS: compact, 44px targets, mobile bottom-sheet, no overflow.
+  ok('satellite overlay is positioned + compact', /\.th-sat\{[^}]*position:absolute/.test(css));
+  ok('satellite toggle meets 44px touch target', /\.th-sat-toggle\{[^}]*min-height:44px/.test(css));
+  ok('satellite control collapses on small viewports', /@media \(max-width:420px\)[\s\S]*\.th-sat\{/.test(css));
 }
 
 /* ============================ ingestion pipeline ============================ */
@@ -1675,6 +1729,7 @@ async function testAccounts() {
     testTheaterGlobe();
     testGibsWiring();
     testTheaterCinematicWiring();
+    testTheaterSatelliteWiring();
     testSeverity();
     testNormalize();
     testDedupe();

@@ -23,7 +23,11 @@
   'use strict';
 
   var ENDPOINT = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best';
-  var ATTRIBUTION = 'Satellite context: NASA EOSDIS GIBS';
+  // Public GIBS WMS (EPSG:4326 / plate carrée) — a single GetMap returns one
+  // equirectangular world image, which composites directly onto the flat 2D
+  // theater surface without a client-side tiler. Same open service, no key.
+  var WMS_ENDPOINT = 'https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi';
+  var ATTRIBUTION = 'Satellite context: NASA EOSDIS GIBS / Earthdata';
   var SOURCE_URL = 'https://www.earthdata.nasa.gov/engage/open-data-services-software/earthdata-developer-portal/gibs-api';
   var LIVE = false; // daily product w/ latency — never "live"
 
@@ -81,6 +85,22 @@
       '/{z}/{y}/{x}.' + l.format;
   }
 
+  // Single whole-world WMS GetMap URL (EPSG:4326, plate carrée) for the flat 2D
+  // canvas surface. BBOX is the full globe so the returned image maps linearly
+  // onto an equirectangular projection. No key/secret; TIME bakes in the date.
+  function snapshotUrl(layerId, date, width, height) {
+    var l = LAYER_BY_ID[layerId] || LAYERS[0];
+    var d = date || defaultDate(null, l.id);
+    var w = Math.max(2, Math.round(width || 1024));
+    var h = Math.max(1, Math.round(height || 512));
+    return WMS_ENDPOINT +
+      '?SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0' +
+      '&LAYERS=' + l.wmtsId +
+      '&CRS=EPSG:4326&BBOX=-90,-180,90,180' +
+      '&WIDTH=' + w + '&HEIGHT=' + h +
+      '&FORMAT=image/jpeg&TIME=' + d;
+  }
+
   // Human-facing context label — always names the source + observation date and
   // is explicit that this is daily context, not a live feed.
   function contextLabel(layerId, date) {
@@ -88,9 +108,15 @@
     var d = date || defaultDate(null, l.id);
     return 'Satellite context · ' + l.label + ' · ' + d + ' (daily, not live)';
   }
+  // Short data-freshness label for the control chip.
+  function freshnessLabel(layerId, date) {
+    var d = date || defaultDate(null, layerId);
+    return 'Daily · observed ' + d + ' · near-real-time (not live)';
+  }
 
   var API = {
     ENDPOINT: ENDPOINT,
+    WMS_ENDPOINT: WMS_ENDPOINT,
     ATTRIBUTION: ATTRIBUTION,
     SOURCE_URL: SOURCE_URL,
     LIVE: LIVE,
@@ -100,7 +126,9 @@
     defaultDate: defaultDate,
     availableDates: availableDates,
     tileUrlTemplate: tileUrlTemplate,
-    contextLabel: contextLabel
+    snapshotUrl: snapshotUrl,
+    contextLabel: contextLabel,
+    freshnessLabel: freshnessLabel
   };
   root.GIBS = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

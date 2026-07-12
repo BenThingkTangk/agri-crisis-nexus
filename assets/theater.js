@@ -32,8 +32,13 @@
     simParams: null, sim: null, day: 0, playing: false, speed: 1,
     // cinematic playback
     phases: [], ledger: [], phaseId: null, cropLayer: 'composite',
+    // 2D satellite context (NASA GIBS) + crop-risk map overlay
+    sat: { on: false, layerId: (window.GIBS ? window.GIBS.LAYERS[0].id : 'modis-terra'), date: null, opacity: 0.9, loading: false, failed: false, status: '' },
+    cropOnMap: true, cropMapOpacity: 0.75,
   };
   var CR = window.CROP_RISK;
+  var G = window.GIBS;
+  var satImg = null; // cached whole-world imagery <img> (2D underlay)
 
   var canvas, ctx, W = 0, H = 0, DPR = 1, raf = null, animTo = null, dragging = false, lastPt = null, hoverNode = null;
   var simTimer = null, listeners = [], mounted = false;
@@ -46,13 +51,18 @@
 
   /* ================= projection ================= */
   function radius() { return Math.max(80, Math.min(W, H) * 0.42) * st.zoom; }
+  // Full-panel equirectangular map metrics for 2D: width fills the panel at
+  // zoom 1, height is exactly half (2:1 plate carrée). Longitude pans via rotLng.
+  function flatMap() { var mw = W * st.zoom; return { mw: mw, mh: mw / 2, cx: W / 2, cy: H / 2 }; }
   function project(lat, lng) {
     var R = radius(), cx = W / 2, cy = H / 2;
     if (st.view === '2d') {
-      var x = cx + ((lng - st.rotLng) / 180) * R;
-      var y = cy - (lat / 90) * (R * 0.55);
-      // wrap longitude
-      while (x < cx - R) x += 2 * R; while (x > cx + R) x -= 2 * R;
+      var fm = flatMap();
+      var x = fm.cx + ((lng - st.rotLng) / 360) * fm.mw;
+      var y = fm.cy - (lat / 180) * fm.mh;
+      // wrap longitude across the date-line seam so points stay on-panel
+      var half = fm.mw / 2;
+      while (x < fm.cx - half) x += fm.mw; while (x > fm.cx + half) x -= fm.mw;
       return { x: x, y: y, visible: true, front: true };
     }
     var la = lat * Math.PI / 180, lo = (lng - st.rotLng) * Math.PI / 180;
@@ -123,11 +133,43 @@
       // Crisp chlorophyll rim.
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(95,185,115,0.45)'; ctx.lineWidth = 1.3; ctx.stroke();
     } else {
-      ctx.fillStyle = '#12100c'; ctx.fillRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
-      ctx.strokeStyle = 'rgba(120,190,135,0.10)'; ctx.lineWidth = 1;
-      for (var la2 = -60; la2 <= 60; la2 += 30) { var p = project(la2, st.rotLng); ctx.beginPath(); ctx.moveTo(cx - R, p.y); ctx.lineTo(cx + R, p.y); ctx.stroke(); }
-      ctx.strokeStyle = 'rgba(120,190,135,0.25)'; ctx.strokeRect(cx - R, cy - R * 0.55, 2 * R, R * 1.1);
+      draw2DMap();
     }
+  }
+
+  /* Full-panel equirectangular 2D surface. Paints either NASA GIBS satellite
+     imagery (when enabled + loaded) or a procedural vector basemap, then a
+     graticule. Fills the whole canvas so 2D reads as a real geospatial map,
+     not a small schematic. */
+  function draw2DMap() {
+    var fm = flatMap(), mw = fm.mw, mh = fm.mh, cx = fm.cx, cy = fm.cy;
+    var top = cy - mh / 2;
+    // Deep-ocean field fills the entire panel (no empty black gutters).
+    ctx.fillStyle = '#0b141b'; ctx.fillRect(0, 0, W, H);
+    var usingImagery = st.sat.on && satImg && !st.sat.failed;
+    if (usingImagery) {
+      // World image spans lng -180..180 → width mw. Anchor its left edge where
+      // lng=-180 projects, then tile horizontally to cover panning wrap-around.
+      var left = cx + ((-180 - st.rotLng) / 360) * mw;
+      while (left > 0) left -= mw; while (left <= -mw) left += mw;
+      ctx.save(); ctx.globalAlpha = Math.max(0.15, Math.min(1, st.sat.opacity));
+      for (var ox = left; ox < W + mw; ox += mw) ctx.drawImage(satImg, ox, top, mw, mh);
+      ctx.restore();
+    } else {
+      // Vector basemap: land speckle + framed sea, always usable even if imagery
+      // is off or failed (designed fallback, never a blank panel).
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, top, W, mh); ctx.clip();
+      ctx.fillStyle = '#12261c'; ctx.fillRect(0, top, W, mh);
+      drawLand(Math.max(120, mw * 0.5));
+      ctx.restore();
+    }
+    // Graticule + frame for spatial reference over either base.
+    ctx.strokeStyle = usingImagery ? 'rgba(255,255,255,0.10)' : 'rgba(120,190,135,0.12)';
+    ctx.lineWidth = 1;
+    for (var la2 = -60; la2 <= 60; la2 += 30) { var p = project(la2, st.rotLng); ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(W, p.y); ctx.stroke(); }
+    for (var lo2 = -150; lo2 <= 180; lo2 += 30) { var q = project(0, lo2); ctx.beginPath(); ctx.moveTo(q.x, top); ctx.lineTo(q.x, top + mh); ctx.stroke(); }
+    ctx.strokeStyle = 'rgba(120,190,135,0.28)'; ctx.strokeRect(0.5, top + 0.5, W - 1, mh - 1);
   }
 
   // Procedural dark-emerald landmass speckle sampled over a lat/lng grid and
@@ -238,11 +280,37 @@
   function drawScene() {
     if (!ctx) return;
     clear(); drawGlobe();
+    drawCropOverlay();
     var set = activeSet();
     if (!st.filter.layers.length || st.filter.layers.indexOf('routes') !== -1) drawRoutes(set.routes);
     drawNodes(set.nodes);
     updateSrStatus(set);
     updateTelemetry(set);
+  }
+
+  /* Animated crop-risk map overlay: a modeled-proxy intensity halo + accessible
+     marker glyph at each region, sized by intensity and coloured by risk band.
+     Drawn beneath routes/nodes so both layers stay legible over imagery, and
+     keyed to the current playback phase (phaseT) so it animates with the sim. */
+  function drawCropOverlay() {
+    if (!CR || !st.cropOnMap || !st.sim) return;
+    var ranked = rankedRisk();
+    ctx.save();
+    ranked.forEach(function (r) {
+      var n = D.nodeById(r.id); if (!n) return;
+      var p = project(n.lat, n.lng); if (!p.visible) return;
+      var rad = 7 + r.value * 24;
+      ctx.globalAlpha = st.cropMapOpacity * (0.22 + r.value * 0.2);
+      ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, Math.PI * 2); ctx.fillStyle = r.color; ctx.fill();
+      ctx.globalAlpha = st.cropMapOpacity; ctx.lineWidth = 1.4; ctx.strokeStyle = r.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, Math.PI * 2); ctx.stroke();
+      // Non-colour channel: the band marker glyph, so the overlay is legible in
+      // monochrome / colour-blind contexts.
+      ctx.globalAlpha = 1; ctx.fillStyle = '#0d0a06';
+      ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(r.marker, p.x, p.y);
+    });
+    ctx.restore();
   }
 
   // Corner telemetry HUD — operational readout, refreshed each frame.
@@ -574,7 +642,73 @@
       rb.setAttribute('aria-pressed', autoRotate ? 'true' : 'false');
       markActivity(); kick();
     });
-    on($('#thToggle', host), 'click', function () { st.view = st.view === '3d' ? '2d' : '3d'; $('#thToggle').textContent = st.view === '3d' ? '2D' : '3D'; kick(); syncUrl(); });
+    on($('#thToggle', host), 'click', function () { st.view = st.view === '3d' ? '2d' : '3d'; $('#thToggle').textContent = st.view === '3d' ? '2D' : '3D'; updateSatVisibility(); kick(); syncUrl(); });
+  }
+
+  /* ================= NASA GIBS satellite context (2D only) ================= */
+  // Visible overlay control group for the flat map: enable/disable imagery,
+  // pick a GIBS layer + observation date, set opacity, and surface freshness +
+  // loading/error/fallback status with NASA attribution. 2D-only; hidden in 3D.
+  function buildSatControl() {
+    var host = $('#theaterSat'); if (!host) return;
+    if (!G) { host.innerHTML = '<p class="th-sat-un">Satellite context unavailable.</p>'; return; }
+    if (!st.sat.date) st.sat.date = G.defaultDate(Date.now(), st.sat.layerId);
+    var dates = G.availableDates(Date.now(), 8, st.sat.layerId);
+    host.innerHTML =
+      '<div class="th-sat-head">' +
+        '<button class="th-sat-toggle' + (st.sat.on ? ' on' : '') + '" id="satToggle" data-testid="theater-sat-toggle" aria-pressed="' + (st.sat.on ? 'true' : 'false') + '">' +
+          icon('satellite') + '<span>Satellite context</span></button>' +
+        '<span class="th-sat-fresh" data-testid="theater-sat-fresh">' + esc(G.freshnessLabel(st.sat.layerId, st.sat.date)) + '</span>' +
+      '</div>' +
+      '<div class="th-sat-body"' + (st.sat.on ? '' : ' hidden') + '>' +
+        '<label class="th-sat-field"><span>Imagery</span>' +
+          '<select id="satLayer" data-testid="theater-sat-layer" aria-label="Satellite imagery layer">' +
+            G.LAYERS.map(function (l) { return '<option value="' + l.id + '"' + (l.id === st.sat.layerId ? ' selected' : '') + '>' + esc(l.label) + '</option>'; }).join('') +
+          '</select></label>' +
+        '<label class="th-sat-field"><span>Observation date</span>' +
+          '<select id="satDate" data-testid="theater-sat-date" aria-label="Observation date">' +
+            dates.map(function (d) { return '<option value="' + d + '"' + (d === st.sat.date ? ' selected' : '') + '>' + d + (d === dates[0] ? ' (latest)' : '') + '</option>'; }).join('') +
+          '</select></label>' +
+        '<label class="th-sat-field"><span>Opacity <b id="satOpVal">' + Math.round(st.sat.opacity * 100) + '%</b></span>' +
+          '<input type="range" id="satOpacity" min="15" max="100" value="' + Math.round(st.sat.opacity * 100) + '" data-testid="theater-sat-opacity" aria-label="Satellite opacity"></label>' +
+        '<p class="th-sat-status" id="satStatus" data-testid="theater-sat-status" role="status" aria-live="polite"></p>' +
+        '<p class="th-sat-cite" data-testid="theater-sat-cite"><a href="' + esc(G.SOURCE_URL) + '" target="_blank" rel="noopener">' + esc(G.ATTRIBUTION) + '</a></p>' +
+      '</div>';
+    on($('#satToggle'), 'click', function () {
+      st.sat.on = !st.sat.on; buildSatControl();
+      if (st.sat.on) loadSatImage(); else kick();
+      A.refreshIcons();
+    });
+    on($('#satLayer'), 'change', function (e) { st.sat.layerId = e.target.value; st.sat.date = G.defaultDate(Date.now(), st.sat.layerId); buildSatControl(); if (st.sat.on) loadSatImage(); });
+    on($('#satDate'), 'change', function (e) { st.sat.date = e.target.value; if (st.sat.on) loadSatImage(); buildSatControl(); });
+    on($('#satOpacity'), 'input', function (e) { st.sat.opacity = (+e.target.value) / 100; var v = $('#satOpVal'); if (v) v.textContent = e.target.value + '%'; kick(); });
+    updateSatStatus();
+    A.refreshIcons();
+  }
+  function updateSatStatus() {
+    var s = $('#satStatus'); if (!s || !G) return;
+    if (!st.sat.on) { s.textContent = 'Off — vector basemap.'; s.className = 'th-sat-status'; return; }
+    if (st.sat.loading) { s.textContent = 'Loading NASA GIBS imagery…'; s.className = 'th-sat-status loading'; return; }
+    if (st.sat.failed) { s.innerHTML = '<span class="warn">Imagery unavailable (network/CORS) — vector basemap kept. Try an earlier date.</span>'; s.className = 'th-sat-status fail'; return; }
+    s.textContent = G.contextLabel(st.sat.layerId, st.sat.date); s.className = 'th-sat-status ok';
+  }
+  // Load one whole-world GIBS image; drawImage never reads pixels, so we omit
+  // crossOrigin to avoid needless CORS load failures. onerror → designed fallback.
+  function loadSatImage() {
+    if (!G || typeof Image === 'undefined') { st.sat.failed = true; updateSatStatus(); return; }
+    st.sat.loading = true; st.sat.failed = false; updateSatStatus();
+    var url = G.snapshotUrl(st.sat.layerId, st.sat.date, 2048, 1024);
+    var img = new Image();
+    img.onload = function () { satImg = img; st.sat.loading = false; st.sat.failed = false; updateSatStatus(); kick(); };
+    img.onerror = function () { satImg = null; st.sat.loading = false; st.sat.failed = true; updateSatStatus(); kick(); };
+    img.src = url;
+  }
+  // Show the control only in 2D; kick a load if imagery is enabled on entry.
+  function updateSatVisibility() {
+    var host = $('#theaterSat'); if (!host) return;
+    var show = st.view === '2d';
+    host.hidden = !show;
+    if (show && st.sat.on && !satImg && !st.sat.loading) loadSatImage();
   }
 
   /* ================= legend ================= */
@@ -821,6 +955,12 @@
       '<select id="cropLayerSel" class="select" data-testid="crop-layer" aria-label="Crop-risk layer">' +
       CR.LAYERS.map(function (l) { return '<option value="' + l.id + '"' + (l.id === st.cropLayer ? ' selected' : '') + '>' + esc(l.label) + '</option>'; }).join('') +
       '</select></label></div>' +
+      '<div class="crop-map-ctl">' +
+        '<button class="crop-map-toggle' + (st.cropOnMap ? ' on' : '') + '" id="cropOnMap" data-testid="theater-crop-overlay-toggle" aria-pressed="' + (st.cropOnMap ? 'true' : 'false') + '">' +
+          icon('layers') + '<span>Overlay on map</span></button>' +
+        '<label class="crop-map-op' + (st.cropOnMap ? '' : ' off') + '"><span>Opacity <b id="cropOpVal">' + Math.round(st.cropMapOpacity * 100) + '%</b></span>' +
+          '<input type="range" id="cropMapOpacity" min="20" max="100" value="' + Math.round(st.cropMapOpacity * 100) + '" data-testid="theater-crop-overlay-opacity" aria-label="Crop overlay opacity"' + (st.cropOnMap ? '' : ' disabled') + '></label>' +
+      '</div>' +
       '<div class="crop-legend" data-testid="crop-legend">' + lg.bands.map(function (b) {
         return '<span class="cl-band"><span class="cl-sw" data-pattern="' + b.pattern + '" style="background:' + b.color + '"></span>' +
           '<span class="cl-mk" aria-hidden="true">' + b.marker + '</span>' + esc(b.label) + '</span>';
@@ -829,7 +969,10 @@
       '<div class="crop-rank" id="cropRank" data-testid="crop-rank"></div>' +
       '<p class="crop-summary" id="cropSummary" data-testid="crop-summary" role="status" aria-live="polite"></p>';
     on($('#cropLayerSel'), 'change', function (e) { st.cropLayer = e.target.value; renderCropRisk(); });
+    on($('#cropOnMap'), 'click', function () { st.cropOnMap = !st.cropOnMap; renderCropRisk(); kick(); A.refreshIcons(); });
+    on($('#cropMapOpacity'), 'input', function (e) { st.cropMapOpacity = (+e.target.value) / 100; var v = $('#cropOpVal'); if (v) v.textContent = e.target.value + '%'; kick(); });
     updateCropRanking();
+    A.refreshIcons();
   }
   function updateCropRanking() {
     if (!CR) return;
@@ -854,6 +997,7 @@
     var host = $('#simLedger'); if (!host) return;
     if (!st.ledger || !st.ledger.length) { host.innerHTML = ''; return; }
     host.innerHTML = '<div class="fdim-h">Causal ledger <span class="fdim-or">what changed · why · evidence</span></div>' +
+      '<div class="lg-rail" data-testid="ledger-rail">' +
       st.ledger.map(function (e) {
         return '<button class="lg-entry" data-idx="' + e.index + '" data-testid="ledger-entry" ' +
           'title="Day ' + e.startDay + ' — jump to ' + esc(e.label) + '">' +
@@ -865,7 +1009,7 @@
           '<div class="lg-e-assume">' + esc(e.assumption) + (e.lagDays != null ? ' · lag ~' + e.lagDays + 'd' : '') + '</div>' +
           '<div class="lg-e-next"><b>Next decision:</b> ' + esc(e.nextDecision) + '</div>' +
           '</button>';
-      }).join('');
+      }).join('') + '</div>';
     $$('.lg-entry', host).forEach(function (b) {
       on(b, 'click', function () {
         var e = st.ledger[+b.getAttribute('data-idx')]; if (!e) return;
@@ -983,7 +1127,8 @@
         '<div class="th-stage"><div class="th-canvas-wrap"><canvas id="theaterCanvas" role="application" aria-label="Interactive agricultural trade globe"></canvas>' +
         '<div class="th-telemetry" id="theaterTelemetry" data-testid="theater-telemetry" aria-hidden="true"></div>' +
         '<div class="th-render-status" id="theaterRenderStatus" data-testid="theater-render-status">' + esc(rsel.status) + '</div>' +
-        '<div class="th-toolbar" id="theaterToolbar"></div><div class="th-tip" id="theaterTip" hidden></div></div>' +
+        '<div class="th-toolbar" id="theaterToolbar"></div><div class="th-tip" id="theaterTip" hidden></div>' +
+        '<div class="th-sat" id="theaterSat" data-testid="theater-sat-control" hidden></div></div>' +
         '<div class="th-side"><div class="th-results-h">Results</div><div class="th-results" id="theaterResults"></div></div></div>' +
         legendHtml()
         :
@@ -997,6 +1142,7 @@
     if (canDraw) {
       canvas = $('#theaterCanvas'); ctx = canvas.getContext('2d');
       buildToolbar($('#theaterToolbar')); bindCanvas();
+      buildSatControl(); updateSatVisibility();
     }
     // sim deck
     // transport lives inside deck; build order: presets/interv then transport (needs KPI host)

@@ -1084,6 +1084,36 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .th-tip{position:absolute;pointer-events:none;background:rgba(12,14,17,.94);border:1px solid var(--border);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--text);max-width:200px;z-index:5;}
 .th-tip .tip-s{color:var(--muted);font:500 10.5px/1.4 var(--mono);}
 .th-side{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);max-height:520px;overflow:auto;}
+/* NASA GIBS satellite context overlay (2D only) */
+.th-sat{position:absolute;top:10px;left:10px;z-index:4;width:min(272px,calc(100% - 74px));background:rgba(10,14,18,.94);border:1px solid var(--border-strong);border-radius:10px;padding:8px 10px;box-shadow:0 6px 20px rgba(0,0,0,.45);backdrop-filter:blur(3px);font-size:12px;}
+.th-sat[hidden]{display:none;}
+.th-sat-un{margin:0;font-size:11px;color:var(--muted);}
+.th-sat-head{display:flex;flex-direction:column;gap:5px;}
+.th-sat-toggle{display:inline-flex;align-items:center;gap:7px;min-height:44px;width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-2);color:var(--text);cursor:pointer;font:600 12px/1 var(--ui);}
+.th-sat-toggle .ic{width:16px;height:16px;}
+.th-sat-toggle.on{border-color:var(--cyan);background:rgba(60,168,90,.14);color:var(--text);}
+.th-sat-fresh{font:500 10px/1.35 var(--mono);color:var(--muted);}
+.th-sat-body{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);}
+.th-sat-body[hidden]{display:none;}
+.th-sat-field{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--text-dim);}
+.th-sat-field b{color:var(--cyan);font-family:var(--mono);}
+.th-sat-field select{background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:0 8px;min-height:38px;font-size:12px;}
+.th-sat-field input[type=range]{width:100%;min-height:24px;accent-color:var(--cyan);}
+.th-sat-status{margin:0;font:500 10.5px/1.4 var(--mono);color:var(--text-dim);}
+.th-sat-status.loading{color:var(--cyan);}
+.th-sat-status.fail .warn{color:var(--sev-high,#e07a2c);}
+.th-sat-cite{margin:0;font-size:10px;line-height:1.4;}
+.th-sat-cite a{color:var(--muted);text-decoration:underline;}
+.th-sat-cite a:hover{color:var(--text);}
+/* crop overlay-on-map control */
+.crop-map-ctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 2px;}
+.crop-map-toggle{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-2);color:var(--text-dim);cursor:pointer;font:600 11.5px/1 var(--ui);}
+.crop-map-toggle .ic{width:15px;height:15px;}
+.crop-map-toggle.on{border-color:var(--cyan);background:rgba(60,168,90,.12);color:var(--text);}
+.crop-map-op{display:flex;flex-direction:column;gap:3px;font-size:10.5px;color:var(--text-dim);flex:1;min-width:130px;}
+.crop-map-op.off{opacity:.5;}
+.crop-map-op b{color:var(--cyan);font-family:var(--mono);}
+.crop-map-op input[type=range]{width:100%;min-height:24px;accent-color:var(--cyan);}
 .th-results-h{font:600 10.5px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted);padding:11px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);}
 .th-result{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid var(--border);color:var(--text);padding:9px 12px;cursor:pointer;font-size:12.5px;}
 .th-result:hover{background:rgba(60,168,90,.06);}
@@ -1192,9 +1222,11 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .cr-val em{font-style:normal;color:var(--muted);}
 .crop-summary{font-size:11.5px;color:var(--text-dim);line-height:1.5;margin:10px 0 0;font-family:var(--mono);}
 /* Causal ledger rail */
-.sim-ledger{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin:14px 0;}
-.sim-ledger .fdim-h{grid-column:1/-1;}
-.lg-entry{text-align:left;border:1px solid var(--border);border-left:3px solid var(--border-strong);border-radius:8px;background:var(--surface);padding:9px 11px;cursor:pointer;color:var(--text-dim);display:flex;flex-direction:column;gap:3px;}
+.sim-ledger{margin:14px 0;}
+.lg-rail{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;padding:4px 2px 12px;scroll-snap-type:x proximity;scrollbar-width:thin;}
+.lg-rail::-webkit-scrollbar{height:8px;}
+.lg-rail::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:5px;}
+.lg-entry{flex:0 0 258px;scroll-snap-align:start;text-align:left;border:1px solid var(--border);border-left:3px solid var(--border-strong);border-radius:8px;background:var(--surface);padding:10px 12px;cursor:pointer;color:var(--text-dim);display:flex;flex-direction:column;gap:4px;}
 .lg-entry:hover{border-color:var(--border-strong);}
 .lg-entry.active{border-left-color:var(--sev-high,#e07a2c);background:var(--surface-2,var(--surface));}
 .lg-e-h{display:flex;align-items:center;gap:7px;}
@@ -1212,7 +1244,7 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   .th-stage{grid-template-columns:1fr;}
   .th-side{max-height:260px;}
   .sim-lower{grid-template-columns:1fr;}
-  .sim-ledger{grid-template-columns:1fr;}
+  .lg-entry{flex-basis:78vw;}
   /* Compact playback deck as a sticky bottom sheet on small viewports */
   .sim-transport{position:sticky;bottom:0;z-index:5;box-shadow:0 -4px 14px rgba(0,0,0,.4);}
   .pb-lab{display:none;}
@@ -1223,6 +1255,10 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   .th-toolbar{top:8px;right:8px;}
   .mtool{width:40px;height:40px;min-height:40px;}
   .cr-name{flex:0 0 28%;}
+  /* Satellite control collapses to a compact bottom sheet, not a corner box */
+  .th-sat{top:auto;bottom:8px;left:8px;right:8px;width:auto;max-height:52%;overflow:auto;}
+  .th-sat-body{max-height:none;}
+  .lg-entry{flex-basis:86vw;}
 }
 @media (prefers-reduced-motion:reduce){ .pb-seg,.cr-row,.lg-entry{transition:none;} }
 @media (prefers-reduced-motion:reduce){ .mode-panel.active{animation:none;} }
