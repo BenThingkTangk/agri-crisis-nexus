@@ -6,8 +6,8 @@
 // validates, dedupes and caches. fetchImpl is always injected so every adapter
 // is unit-testable against fixtures with no network.
 //
-// The ten P0 sources implemented here (chosen from the data-source architecture
-// report for immediate, mostly-keyless operation):
+// The eleven sources implemented here (chosen from the data-source architecture
+// report for immediate operation; ten keyless P0 + one keyed USDA source):
 //   1. GDACS          hazard      keyless
 //   2. USGS           hazard      keyless
 //   3. NASA EONET     hazard      keyless
@@ -18,6 +18,7 @@
 //   8. ReliefWeb      humanitarian keyless-ish (appname requested; degrades)
 //   9. GDELT          conflict    keyless
 //  10. IMF PortWatch  logistics   keyless
+//  11. USDA NASS      market      keyed (USDA_NASS_API_KEY; degrades when unset)
 
 import { fetchJSON, fetchText, severityFromScale, isFillValue } from './_sources.js';
 
@@ -367,6 +368,103 @@ export async function portwatch({ fetchImpl, timeoutMs = 7000 } = {}) {
   });
 }
 
+// --------------------------------------------------------------- USDA NASS ---
+// USDA National Agricultural Statistics Service — Quick Stats API.
+//
+// The API key is read ONLY from env.USDA_NASS_API_KEY, server-side. It is placed
+// solely in the outbound request query string (the endpoint's documented `key`
+// param) and never appears in any record we emit: provenance/sourceUrl point at
+// the public Quick Stats site, and thrown errors carry only generic messages
+// (fetchText throws `HTTP <status>`), so the key can never reach client
+// provenance, logs, API responses, error messages, or the (id-only) cache key.
+//
+// Query strategy (deliberately tight + bounded — no broad downloads):
+//   national, annual PRODUCTION totals for four major staples, pinned by exact
+//   `short_desc` so we get exactly the grain/oilseed series and nothing else,
+//   restricted to the most recent NASS_YEAR_WINDOW years. That returns a handful
+//   of rows per commodity, well under the API's row cap, in a single request.
+// If the latest year's value is unavailable/suppressed we backfill to the latest
+// year in the window whose value is a real number.
+const NASS_ENDPOINT = 'https://quickstats.nass.usda.gov/api/api_GET/';
+const NASS_HOMEPAGE = 'https://quickstats.nass.usda.gov/';
+const NASS_YEAR_WINDOW = 3; // current year plus the three prior years
+const NASS_SERIES = [
+  { short: 'CORN, GRAIN - PRODUCTION, MEASURED IN BU', commodity: 'Corn (grain)', unit: 'bushels' },
+  { short: 'WHEAT - PRODUCTION, MEASURED IN BU', commodity: 'Wheat', unit: 'bushels' },
+  { short: 'SOYBEANS - PRODUCTION, MEASURED IN BU', commodity: 'Soybeans', unit: 'bushels' },
+  { short: 'RICE - PRODUCTION, MEASURED IN CWT', commodity: 'Rice', unit: 'cwt' },
+];
+
+// Parse a NASS `Value`: strip thousands separators; treat suppression/formatting
+// codes — (D) withheld, (Z) < half rounding unit, (NA), (X) not applicable,
+// (S)/(L) insufficient, blanks, and any other non-numeric text — as no-data
+// (null). Never fabricates a number.
+export function parseNassValue(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (s.charAt(0) === '(') return null;          // (D) (Z) (NA) (X) (S) (L) ...
+  const cleaned = s.replace(/,/g, '');
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatBig(n) {
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return String(n);
+}
+
+export async function nass({ fetchImpl, timeoutMs = 7000, env = process.env, now = new Date() } = {}) {
+  const key = String((env && env.USDA_NASS_API_KEY) || '').trim();
+  if (!key) { const e = new Error('disabled: USDA_NASS_API_KEY not set'); e.disabled = true; throw e; }
+
+  const yr = new Date(now).getUTCFullYear();
+  const qs = new URLSearchParams();
+  qs.set('key', key);
+  NASS_SERIES.forEach((s) => qs.append('short_desc', s.short));
+  qs.set('agg_level_desc', 'NATIONAL');
+  qs.set('year__GE', String(yr - NASS_YEAR_WINDOW));
+  qs.set('format', 'JSON');
+  const url = NASS_ENDPOINT + '?' + qs.toString();
+
+  const j = await fetchJSON(url, { fetchImpl, timeoutMs });
+  const data = (j && Array.isArray(j.data)) ? j.data : [];
+
+  const out = [];
+  for (const spec of NASS_SERIES) {
+    const rows = data
+      .filter((r) => r && r.short_desc === spec.short)
+      .sort((a, b) => Number(b.year) - Number(a.year)); // newest first
+    let chosen = null, val = null;
+    for (const r of rows) {                 // backfill to latest year with a real value
+      const v = parseNassValue(r.Value != null ? r.Value : r.value);
+      if (v != null) { chosen = r; val = v; break; }
+    }
+    if (!chosen) continue;                  // no valid year -> emit nothing (never fabricate)
+    const year = String(chosen.year || '');
+    const unit = (String(chosen.unit_desc || '').trim() || spec.unit).toLowerCase();
+    out.push({
+      rawId: 'nass-' + spec.commodity.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '-production-national-' + year,
+      domain: 'market',
+      category: 'US crop production',
+      title: 'US ' + spec.commodity + ' production ' + year + ' — ' + formatBig(val) + ' ' + unit,
+      severity: 'moderate',
+      geography: 'United States',
+      lat: null, lon: null,
+      value: val, unit,
+      published: year ? year + '-12-31T00:00:00Z' : null,
+      sourceUrl: NASS_HOMEPAGE,
+      confidence: 0.92,
+      extra: { year, statistic: 'PRODUCTION', aggLevel: 'NATIONAL', shortDesc: spec.short },
+    });
+  }
+  return out;
+}
+
 // Registry the aggregator iterates. `id` maps to SOURCES; `run` is the adapter.
 export const ADAPTERS = [
   { id: 'gdacs', run: gdacs, ttlMs: 300_000 },
@@ -379,4 +477,5 @@ export const ADAPTERS = [
   { id: 'reliefweb', run: reliefweb, ttlMs: 900_000 },
   { id: 'gdelt', run: gdelt, ttlMs: 900_000 },
   { id: 'portwatch', run: portwatch, ttlMs: 3_600_000 },
+  { id: 'nass', run: nass, ttlMs: 43_200_000 },
 ];

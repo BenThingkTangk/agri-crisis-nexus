@@ -29,7 +29,7 @@ import {
   SOURCES, isFillValue, FILL_SENTINELS,
 } from '../api/_sources.js';
 import { aggregate, clearSnapshots, recordSnapshot, getSnapshots } from '../api/_aggregate.js';
-import { gdacs, usgs, worldbank, power } from '../api/_adapters.js';
+import { gdacs, usgs, worldbank, power, nass, parseNassValue, ADAPTERS } from '../api/_adapters.js';
 import {
   loadUsers, authenticate, signSession, verifySession, resolveAccount,
   accountRoleAtLeast, bearerToken, revokeToken, clearRevocations,
@@ -849,6 +849,100 @@ async function testSentinels() {
   ok('implausible extreme temp skipped for valid day', extreme[0].value === 22.0);
 }
 
+/* ===================== USDA NASS (keyed market adapter) ===================== */
+async function testNass() {
+  const CORN = 'CORN, GRAIN - PRODUCTION, MEASURED IN BU';
+  const WHEAT = 'WHEAT - PRODUCTION, MEASURED IN BU';
+  const SOY = 'SOYBEANS - PRODUCTION, MEASURED IN BU';
+  const RICE = 'RICE - PRODUCTION, MEASURED IN CWT';
+  const row = (short, year, value, unit) => ({ short_desc: short, year: String(year), Value: value, unit_desc: unit, agg_level_desc: 'NATIONAL' });
+  const KEY = 'test-fake-nass-key-DO-NOT-LOG';
+  const withKey = { USDA_NASS_API_KEY: KEY };
+  const now = new Date('2026-02-01T00:00:00Z');
+
+  section('nass: value parsing (commas + suppression/formatting codes)');
+  eq('plain integer', parseNassValue('1234'), 1234);
+  eq('thousands separators stripped', parseNassValue('15,148,038,000'), 15148038000);
+  eq('decimal preserved', parseNassValue('177.3'), 177.3);
+  eq('(D) withheld -> null', parseNassValue('(D)'), null);
+  eq('(Z) ~zero -> null', parseNassValue('(Z)'), null);
+  eq('(NA) -> null', parseNassValue('(NA)'), null);
+  eq('(X) not applicable -> null', parseNassValue('(X)'), null);
+  eq('blank -> null', parseNassValue('   '), null);
+  eq('null -> null', parseNassValue(null), null);
+  eq('non-numeric text -> null', parseNassValue('n/a'), null);
+
+  section('nass: successful parse + formatting');
+  const data = [
+    row(CORN, 2024, '15,341,057,000', 'BU'),
+    row(WHEAT, 2024, '1,971,832,000', 'BU'),
+    row(SOY, 2024, '4,366,000,000', 'BU'),
+    row(RICE, 2024, '224,600,000', 'CWT'),
+  ];
+  const ev = await nass({ fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': { data } }), env: withKey, now });
+  eq('emits one indicator per staple', ev.length, 4);
+  const corn = ev.find((e) => e.rawId.indexOf('corn') !== -1);
+  ok('corn value parsed with commas stripped', corn.value === 15341057000);
+  ok('corn is market/national/no fabricated coords', corn.domain === 'market' && corn.geography === 'United States' && corn.lat === null && corn.lon === null);
+  ok('corn title compact-formats value (no raw sentinel/comma-noise)', /15\.34B/.test(corn.title) && corn.title.indexOf('(D)') === -1);
+  ok('deterministic id includes year', corn.rawId === 'nass-corn-grain-production-national-2024');
+  eq('published is marketing-year end', corn.published, '2024-12-31T00:00:00Z');
+  ok('provenance url is public site (no key)', corn.sourceUrl === 'https://quickstats.nass.usda.gov/');
+  ok('unit carried from record', corn.unit === 'bu');
+
+  section('nass: suppressed latest year backfills to last real value');
+  const bf = await nass({ fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': { data: [
+    row(CORN, 2025, '(D)', 'BU'),          // withheld latest
+    row(CORN, 2024, '14,200,000,000', 'BU'),
+    row(CORN, 2023, '13,700,000,000', 'BU'),
+  ] } }), env: withKey, now });
+  ok('backfills past withheld year', bf.length === 1 && bf[0].value === 14200000000);
+  ok('id/year reflect the backfilled year', bf[0].rawId.endsWith('-2024'));
+
+  section('nass: fully suppressed series emits nothing (never fabricate)');
+  const allSup = await nass({ fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': { data: [
+    row(CORN, 2025, '(D)', 'BU'), row(CORN, 2024, '(Z)', 'BU'),
+  ] } }), env: withKey, now });
+  eq('no valid year -> no event', allSup.length, 0);
+
+  section('nass: disabled when key missing, error surfaces upstream failure');
+  let disabled = false;
+  try { await nass({ fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': { data } }), env: {}, now }); }
+  catch (e) { disabled = !!e.disabled; }
+  ok('missing USDA_NASS_API_KEY -> disabled (not a failure)', disabled);
+  let upstreamThrew = false, wasDisabled = true;
+  try { await nass({ fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': 'throw' }), env: withKey, now }); }
+  catch (e) { upstreamThrew = true; wasDisabled = !!e.disabled; }
+  ok('upstream error rejects (breaker/down path), not disabled', upstreamThrew && !wasDisabled);
+
+  section('nass: API key never leaks into records, only into the request');
+  let captured = null;
+  const recFetch = async (url) => { captured = url; return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ data }) }; };
+  const leakEv = await nass({ fetchImpl: recFetch, env: withKey, now });
+  ok('key is sent on the outbound request (server-side)', typeof captured === 'string' && captured.indexOf(KEY) !== -1);
+  ok('key absent from every emitted record', JSON.stringify(leakEv).indexOf(KEY) === -1);
+  ok('no record sourceUrl carries a key param', leakEv.every((e) => e.sourceUrl.indexOf('key=') === -1 && e.sourceUrl.indexOf(KEY) === -1));
+
+  section('nass: registry wiring + aggregate/health rail');
+  ok('ADAPTERS registry now has 11 sources', ADAPTERS.length === 11);
+  ok('nass registered in ADAPTERS', ADAPTERS.some((a) => a.id === 'nass'));
+  ok('SOURCES has nass with env label + not keyless', SOURCES.nass && SOURCES.nass.env === 'USDA_NASS_API_KEY' && SOURCES.nass.keyless === false && SOURCES.nass.domain === 'market');
+
+  resetBreakers(); cacheClear();
+  const nassEntry = { id: 'nass', ttlMs: 1000, run: nass };
+  const agg = await aggregate({ adapters: [nassEntry], fetchImpl: fakeFetch({ 'quickstats.nass.usda.gov': { data } }), env: withKey, sleep: noSleep, now: Date.parse('2026-02-01T00:00:00Z') });
+  const nassHealth = agg.sources.find((s) => s.id === 'nass');
+  ok('aggregate surfaces nass health row', !!nassHealth && nassHealth.status === 'ok' && nassHealth.env === 'USDA_NASS_API_KEY');
+  ok('aggregate counts nass events', nassHealth.count === 4 && agg.summary.byDomain.market === 4);
+  ok('normalized nass events carry USDA NASS source + license', agg.events.every((e) => e.source === 'USDA NASS' && /USDA NASS/.test(e.license)));
+  ok('no key leaks through the full aggregate/normalize path', JSON.stringify(agg).indexOf(KEY) === -1);
+
+  resetBreakers(); cacheClear();
+  const aggOff = await aggregate({ adapters: [nassEntry], fetchImpl: fakeFetch({}), env: {}, sleep: noSleep, now: Date.parse('2026-02-01T00:00:00Z') });
+  ok('nass reports disabled (not down) when key unset', aggOff.sources[0].status === 'disabled');
+  resetBreakers(); cacheClear();
+}
+
 /* ============================ branding + security guards ============================ */
 function testBrandingSecurity() {
   section('branding: AgriOS rebrand + no leakage');
@@ -1142,6 +1236,7 @@ async function testAccounts() {
     await testAggregatePipeline();
     await testRealAdapters();
     await testSentinels();
+    await testNass();
     testBrandingSecurity();
     await testAccounts();
   } catch (e) {

@@ -323,6 +323,7 @@ const SEED_SOURCES={
   usgs:{id:'usgs',name:'USGS',domain:'hazard',status:'connecting',count:null,homepage:'https://earthquake.usgs.gov'},
   eonet:{id:'eonet',name:'NASA EONET',domain:'hazard',status:'connecting',count:null,homepage:'https://eonet.gsfc.nasa.gov'},
   worldbank:{id:'worldbank',name:'World Bank',domain:'market',status:'connecting',count:null,homepage:'https://data.worldbank.org'},
+  nass:{id:'nass',name:'USDA NASS',domain:'market',status:'connecting',count:null,homepage:'https://quickstats.nass.usda.gov'},
 };
 
 /* ================= COMMAND PALETTE ================= */

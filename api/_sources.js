@@ -107,6 +107,11 @@ export const SOURCES = {
     homepage: 'https://portwatch.imf.org/',
     license: 'IMF / UN Global Platform (public)',
   },
+  nass: {
+    id: 'nass', name: 'USDA NASS', domain: 'market', keyless: false, env: 'USDA_NASS_API_KEY',
+    homepage: 'https://quickstats.nass.usda.gov/',
+    license: 'Public domain (US Gov, USDA NASS Quick Stats)',
+  },
 };
 
 // ---------------------------------------------------------------------------

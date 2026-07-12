@@ -53,6 +53,27 @@ PPLX_KEY = pplx-...   # Perplexity API key (server-side only)
 
 If unset, falls back to embedded key (dev only).
 
+### Ingestion source keys (server-side only)
+
+Most of the 11 ingestion adapters are keyless. The USDA NASS adapter needs a
+free API key, read **only** server-side and never exposed to the client:
+
+```
+USDA_NASS_API_KEY = <your USDA NASS Quick Stats key>   # request one at
+                                                       # https://quickstats.nass.usda.gov/api/
+```
+
+- The key is sent only as the endpoint's `key` query param on the outbound
+  server request. It never appears in client provenance/source URLs (those point
+  at the public `quickstats.nass.usda.gov` site), API responses, logs, error
+  messages, or cache keys.
+- If `USDA_NASS_API_KEY` is unset, the NASS source reports **disabled** (not
+  failed) and the rest of the pipeline is unaffected — nothing to commit, no
+  real value in the repo.
+- The adapter pulls a tight, bounded query: national annual PRODUCTION totals
+  for corn, wheat, soybeans, and rice over the most recent few years, and
+  backfills to the latest year with a real (non-suppressed) value.
+
 ### Account authentication (operator sign-in)
 
 The topbar **Sign in** opens server-validated account authentication for the
