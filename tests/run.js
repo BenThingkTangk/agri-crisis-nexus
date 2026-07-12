@@ -856,13 +856,34 @@ function testTheaterSatelliteWiring() {
   ok('Theater 2D defaults to the gap-free visual layer', src.indexOf('G.defaultVisualLayerId()') !== -1 || src.indexOf('window.GIBS.defaultVisualLayerId()') !== -1);
   ok('warns when a MODIS (gappy) layer is selected', src.indexOf('swathGaps') !== -1);
 
-  // Regression: mobile header cannot bleed past the root (body.scrollWidth==viewport).
-  // The variable-width identity label collapses at <=1024 (like the ATOM label), and
-  // the brand can shrink — so no header child pushes the flex row past the viewport.
+  // Regression: mobile header cannot bleed past the root (body.scrollWidth<=375).
+  // The variable-width identity + ATOM labels collapse to icons at <=1024, and the
+  // brand is made the flex shrink-sink so no header child pins the row wider than
+  // the viewport (Playwright measured .topbar-right right edge 381.59 > 375 before).
   const mq = css.slice(css.indexOf('@media (max-width:1024px)'), css.indexOf('@media (min-width:1025px)'));
   ok('identity label is hidden at <=1024 (no variable-width header bleed)', /\.identity-btn \.lbl\{display:none;?\}/.test(mq));
   ok('ATOM label is also hidden at <=1024', /\.btn-atom span\.lbl\{display:none;?\}/.test(mq));
-  ok('brand can shrink to avoid header overflow', /\.brand\{min-width:0;?\}/.test(mq) && /\.brand \.name\{[^}]*text-overflow:ellipsis/.test(mq));
+  // Root-cause contract: the brand must be able to SHRINK (flex-shrink != 0), not
+  // merely have min-width:0 — otherwise flex:0 0 auto pins the row to content width.
+  ok('brand is the flex shrink-sink at <=1024 (flex:1 1 auto + min-width:0)', /\.brand\{flex:1 1 auto;min-width:0;?\}/.test(mq));
+  ok('brand name ellipsizes when the row is tight', /\.brand \.name\{[^}]*text-overflow:ellipsis/.test(mq));
+
+  // Exact sizing contract at the 375x812 phone: the FIXED-width chrome (both
+  // gutters + hamburger + all three visible 44px topbar controls + their gaps +
+  // the two header gaps + the brand logo, which is the brand's min content) must
+  // sum to <= 375. If it does, the shrinkable brand guarantees body.scrollWidth<=375.
+  const num = (re, s) => { const m = s.match(re); return m ? parseFloat(m[1]) : NaN; };
+  const phone = css.slice(css.indexOf('@media (max-width:420px)'));
+  const gutter = num(/header#topbar\{[^}]*padding:0 (\d+)px/, phone); // 12 at <=420
+  const headerGap = num(/header#topbar\{[^}]*gap:(\d+)px/, phone);    // 10 at <=420
+  const topbarGap = num(/\.topbar-right\{gap:(\d+)px;?\}/, mq);       // 10 at <=1024
+  const touch = num(/min-height:44px;min-width:(\d+)px;/, css);      // 44px targets
+  const logo = num(/\.brand \.logo\{width:(\d+)px/, css);            // 30px min brand
+  const nCtrls = 3; // clock/openCmdk/openAlerts hidden -> theme + ATOM + identity
+  ok('phone header gutter/gap/target values are present', [gutter, headerGap, topbarGap, touch, logo].every((n) => Number.isFinite(n)));
+  const fixed = 2 * gutter + touch /* hamburger */ + 2 * headerGap +
+                (nCtrls * touch + (nCtrls - 1) * topbarGap) /* topbar-right */ + logo;
+  ok('fixed mobile header chrome fits within a 375px viewport (' + fixed + ' <= 375)', fixed <= 375);
   ok('root clips residual x-overflow at the viewport', /html\{overflow-x:clip;?\}/.test(css));
 }
 

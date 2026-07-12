@@ -896,8 +896,15 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
      keeping the 44px target + aria-label. Brand can shrink/ellipsize as a guard so
      no header child bleeds past the root at any width. */
   .identity-btn .lbl{display:none;}
-  .brand{min-width:0;}
+  /* Root cause of the 375px header bleed: EVERY header child is flex:0 0 auto,
+     so hamburger(44) + brand + topbar-right + gaps + gutters is forced wide and
+     nothing yields — the row is pinned to its content width (measured 382 > 375).
+     Make the brand the shrink sink (flex:1 1 auto + min-width:0) so it absorbs
+     the slack down to its logo and ellipsizes the name; the fixed 44px controls
+     then fit fully inside 375 with normal gutters (no clipped account button). */
+  .brand{flex:1 1 auto;min-width:0;}
   .brand .name{overflow:hidden;text-overflow:ellipsis;}
+  .topbar-right{gap:10px;}
   #openCmdk{display:none;}
   #map{height:52vh;}
 }
