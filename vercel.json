@@ -24,6 +24,9 @@
     },
     "api/alerts.js": {
       "maxDuration": 20
+    },
+    "api/collab.js": {
+      "maxDuration": 15
     }
   },
   "rewrites": [

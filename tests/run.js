@@ -36,6 +36,14 @@ import {
   ACCOUNT_ROLES, DEFAULT_TTL_MS, MAX_TTL_MS, SCRYPT_PARAMS,
 } from '../api/_accounts.js';
 import accountHandler from '../api/account.js';
+import {
+  SEVERITY_RANK, HORIZONS, ALERT_STATUS, TASK_STATUS, MISSION_STATUS as INTEL_MISSION_STATUS,
+  alertStatusCanTransition, missionStatusCanTransition, taskStatusCanTransition, alertActionToStatus,
+  computeConfidence, alertFromEvent, alertsFromCropRisk, deriveAlerts, explainAlert,
+  slaClock, MISSION_TEMPLATES, templateByKey, instantiateTemplate,
+  presenceFreshness, PRESENCE_ONLINE_MS, PRESENCE_AWAY_MS, parseMentions,
+  buildAlertExplanation, buildMissionBrief, buildActionCards, buildAfterAction,
+} from '../api/_intel.js';
 import { scryptSync, randomBytes, createHmac } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -345,6 +353,117 @@ async function testCollabRace() {
     registry['#identityLabel'].innerHTML.indexOf('Owner One') !== -1);
   ok('alert bell revealed for signed-in user', registry['#openAlerts'].hidden === false);
   ok('new-mission affordance revealed for owner', registry['#newMissionBtn'].hidden === false);
+}
+
+// Phase III: exercise the War Room presence/message paint path and the alert
+// badge (open/unread) through the same node:vm technique. We register the War
+// Room host elements directly and feed a server-backed collab state so the
+// honest near-real-time render (roster + messages + sync label) is asserted.
+function buildWarRoomSandbox() {
+  const registry = {};
+  const surfaces = ['#teamMissions', '#teamMissionsMeta', '#identityLabel', '#identityBtn',
+    '#openAlerts', '#alertCount', '#newMissionBtn', '#scenarioHistorySection', '#scenarioHistory',
+    '#simSave', '#warRoom', '#wrBody', '#wrSync'];
+  surfaces.forEach((s) => { registry[s] = makeEl(s); });
+
+  const documentStub = {
+    body: makeEl('body'),
+    documentElement: makeEl('html'),
+    querySelector(sel) { return registry[sel] || null; },
+    querySelectorAll() { return []; },
+    createElement() { return makeEl(); },
+    getElementById(id) { return registry['#' + id] || null; },
+    addEventListener() {},
+  };
+
+  const SESSION = {
+    user: { id: 'u1', email: 'owner@example.com', displayName: 'Owner One' },
+    activeTeamId: 't1', role: 'owner', memberships: [], csrfToken: 'csrf-1',
+  };
+  const COLLAB_STATE = {
+    ok: true,
+    members: [
+      { id: 'u1', name: 'Owner One', role: 'owner', presence: 'online', focus: 'War Room', isMe: true },
+      { id: 'u2', name: 'Analyst Two', role: 'analyst', presence: 'away', focus: null, isMe: false },
+    ],
+    online: 1,
+    messages: [
+      { id: 'msg1', user_id: 'u1', user_name: 'Owner One', body: 'Watching the grain corridor.', kind: 'message', created_at: '2026-07-12T00:00:00Z' },
+      { id: 'sys1', user_id: null, user_name: null, body: '@Analyst Two assigned to alert.', kind: 'system', created_at: '2026-07-12T00:01:00Z' },
+    ],
+    serverTime: '2026-07-12T00:02:00Z',
+  };
+  const ALERTS = {
+    ok: true, unread: 2, open: 3,
+    alerts: [
+      { id: 'a1', title: 'Modeled wheat risk', severity: 'high', basis: 'modeled', confidence: 0.62, horizon: '30d', status: 'new', is_read: false, regions: ['Sahel'], commodities: ['wheat'] },
+      { id: 'a2', title: 'Observed port closure', severity: 'critical', basis: 'observed', confidence: 0.8, horizon: '24h', status: 'acknowledged', is_read: true },
+    ],
+  };
+
+  const fetchLog = [];
+  function fetchStub(path, opts) {
+    fetchLog.push({ path, method: (opts && opts.method) || 'GET' });
+    let body = {};
+    if (path.indexOf('/api/auth?action=session') === 0) body = { authenticated: true, session: SESSION };
+    else if (path.indexOf('/api/missions') === 0) body = { missions: [] };
+    else if (path.indexOf('/api/scenarios') === 0) body = { scenarios: [] };
+    else if (path.indexOf('/api/collab') === 0) body = COLLAB_STATE;
+    else if (path.indexOf('/api/alerts') === 0) body = ALERTS;
+    return Promise.resolve({ ok: true, status: 200, json() { return Promise.resolve(body); } });
+  }
+
+  const A = {
+    esc: (s) => String(s == null ? '' : s),
+    icon: () => '',
+    reduced: true,
+    refreshIcons() {},
+    getSimSnapshot() { return null; },
+    applyScenario() {}, activateMode() {}, openDrawer() {}, closeDrawer() {},
+    pillars: [], badge: () => '', el: () => makeEl(),
+  };
+  const windowStub = { AGRI_APP: A };
+  const sandbox = {
+    window: windowStub, document: documentStub, fetch: fetchStub,
+    navigator: { clipboard: { writeText: () => Promise.resolve() }, userAgent: 'test' },
+    location: { href: 'https://app.example.com/', origin: 'https://app.example.com', search: '' },
+    URLSearchParams, setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {}, console,
+  };
+  return { sandbox, registry, fetchLog, windowStub };
+}
+
+async function testWarRoomCollab() {
+  section('frontend: War Room presence/messages + alert badge (Phase III)');
+  const src = readFileSync(join(ROOT, 'assets', 'collab.js'), 'utf8');
+  const { sandbox, registry, fetchLog, windowStub } = buildWarRoomSandbox();
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { filename: 'assets/collab.js' });
+  const collab = windowStub.AGRI_COLLAB;
+
+  await collab.refreshSession();
+  await flush();
+  // Signed-in: alert badge reflects unread count from the enriched payload.
+  ok('alert badge shows unread count', registry['#alertCount'].textContent === '2');
+  ok('alert badge visible when unread', registry['#alertCount'].hidden === false);
+  ok('synced alerts on restore', fetchLog.some((c) => c.path.indexOf('/api/alerts') === 0));
+
+  // Render the simulate panel — this mounts + paints the War Room.
+  collab.onSimRendered();
+  await flush();
+  ok('fetched War Room collab state', fetchLog.some((c) => c.path.indexOf('/api/collab') === 0));
+  ok('sent a heartbeat', fetchLog.some((c) => c.path.indexOf('/api/collab?action=heartbeat') === 0));
+
+  const wr = registry['#wrBody'].innerHTML;
+  ok('roster renders both members', wr.indexOf('Owner One') !== -1 && wr.indexOf('Analyst Two') !== -1);
+  ok('presence dots reflect server status', wr.indexOf('wr-dot online') !== -1 && wr.indexOf('wr-dot away') !== -1);
+  ok('renders a chat message', wr.indexOf('Watching the grain corridor.') !== -1);
+  ok('renders a system event', wr.indexOf('wr-msg system') !== -1);
+  ok('highlights @mentions', wr.indexOf('class="mention"') !== -1);
+  ok('composer present for writer', wr.indexOf('wr-compose') !== -1);
+
+  const sync = registry['#wrSync'].textContent;
+  ok('sync label states online count + last sync (honest near-real-time)',
+    /online/.test(sync) && /synced/.test(sync));
 }
 
 /* ============================ geospatial theater + Food War engine ============================ */
@@ -1757,6 +1876,175 @@ async function testAccounts() {
   resetLimiters();
 }
 
+/* ============================ Phase III: intel engine ============================ */
+function testIntelEngine() {
+  section('phase3: alert/mission/task state machines');
+  ok('alert new->acknowledged', alertStatusCanTransition('new', 'acknowledged'));
+  ok('alert new->escalated', alertStatusCanTransition('new', 'escalated'));
+  ok('alert acknowledged->resolved', alertStatusCanTransition('acknowledged', 'resolved'));
+  ok('alert resolved is terminal (no ->new)', !alertStatusCanTransition('resolved', 'new'));
+  ok('alert idempotent same-status', alertStatusCanTransition('new', 'new'));
+  ok('alert rejects unknown target', !alertStatusCanTransition('new', 'bogus'));
+  eq('action acknowledge->acknowledged', alertActionToStatus('acknowledge'), 'acknowledged');
+  eq('action escalate->escalated', alertActionToStatus('escalate'), 'escalated');
+  eq('action resolve->resolved', alertActionToStatus('resolve'), 'resolved');
+  eq('action unknown->null', alertActionToStatus('nope'), null);
+
+  ok('mission proposed->active', missionStatusCanTransition('proposed', 'active'));
+  ok('mission active->complete', missionStatusCanTransition('active', 'complete'));
+  ok('mission blocked->active', missionStatusCanTransition('blocked', 'active'));
+  ok('mission proposed->complete rejected', !missionStatusCanTransition('proposed', 'complete'));
+  ok('mission archived terminal', !missionStatusCanTransition('archived', 'active'));
+
+  ok('task todo->doing', taskStatusCanTransition('todo', 'doing'));
+  ok('task doing->done', taskStatusCanTransition('doing', 'done'));
+  ok('task done->todo (reopen)', taskStatusCanTransition('done', 'todo'));
+  ok('task todo->bogus rejected', !taskStatusCanTransition('todo', 'bogus'));
+  ok('ALERT_STATUS/TASK_STATUS/HORIZONS exported', ALERT_STATUS.length === 4 && TASK_STATUS.length === 4 && HORIZONS.length === 4);
+  ok('intel MISSION_STATUS matches validate set', INTEL_MISSION_STATUS.join(',') === MISSION_STATUS.join(','));
+
+  section('phase3: confidence never asserts certainty');
+  ok('confidence in [0.2,0.9]', [
+    computeConfidence({ basis: 'observed', severity: 'critical', sourceCount: 9, corroboration: 9 }),
+    computeConfidence({ basis: 'modeled', severity: 'moderate', sourceCount: 0 }),
+  ].every((c) => c >= 0.2 && c <= 0.9));
+  ok('observed >= modeled at equal inputs',
+    computeConfidence({ basis: 'observed', severity: 'high' }) >= computeConfidence({ basis: 'modeled', severity: 'high' }));
+  ok('confidence strictly < 1 (no certainty)', computeConfidence({ basis: 'observed', severity: 'critical', sourceCount: 99, corroboration: 99 }) < 1);
+
+  section('phase3: alert derivation (observed + modeled)');
+  const ev = { id: 'e1', source: 'GDACS', title: 'Severe drought expands across Ethiopia wheat belt', severity: 'high', geography: 'Ethiopia', category: 'drought' };
+  const a = alertFromEvent(ev);
+  eq('observed alert basis', a.basis, 'observed');
+  ok('observed alert not modeled', a.modeled === false);
+  eq('observed alert horizon seasonal (drought)', a.horizon, 'seasonal');
+  ok('observed alert detects wheat commodity', a.commodities.includes('wheat'));
+  ok('observed alert carries causal chain', Array.isArray(a.causalChain) && a.causalChain.length >= 1);
+  ok('observed alert has hedged assumption', a.assumptions.some((s) => /projection|not a certainty/i.test(s)));
+  ok('alertFromEvent rejects titleless event', alertFromEvent({ source: 'x' }) === null);
+
+  const modeled = alertsFromCropRisk([
+    { region: 'Black Sea', commodity: 'wheat', score: 90, drivers: ['export ban', 'low rainfall'], sources: ['a', 'b'] },
+    { region: 'South Asia', commodity: 'rice', score: 40 }, // below threshold -> ignored
+  ]);
+  eq('one modeled alert above threshold', modeled.length, 1);
+  eq('modeled alert basis', modeled[0].basis, 'modeled');
+  ok('modeled alert flagged modeled', modeled[0].modeled === true);
+  ok('modeled alert severity critical (score>=85)', modeled[0].severity === 'critical');
+  ok('modeled alert labels PROJECTION', modeled[0].assumptions.some((s) => /PROJECTION/.test(s)));
+
+  const derived = deriveAlerts({ events: [ev, ev], cropRisk: [{ region: 'Black Sea', commodity: 'wheat', score: 90, drivers: [], sources: [] }] });
+  ok('derive dedupes repeated events', derived.filter((x) => x.basis === 'observed').length === 1);
+  ok('derive sorts critical first', SEVERITY_RANK[derived[0].severity] >= SEVERITY_RANK[derived[derived.length - 1].severity]);
+  ok('every derived confidence < 1', derived.every((x) => x.confidence < 1));
+
+  section('phase3: explainability panel');
+  const x = explainAlert(modeled[0]);
+  ok('explain marks modeled projection', x.modeled === true && /projection/i.test(x.label));
+  ok('explain lists why-fired', Array.isArray(x.whyFired) && x.whyFired.length >= 1);
+  ok('explain states uncertainty (no certainty)', /never implies certainty|uncertain|projection/i.test(x.uncertainty));
+  ok('explain gives recommended decisions', x.recommendedDecisions.length >= 1);
+
+  section('phase3: SLA clock');
+  const noSla = slaClock({ status: 'active' });
+  ok('no SLA when unset', noSla.hasSla === false);
+  const breach = slaClock({ sla_minutes: 60, activated_at: new Date(Date.now() - 90 * 60000).toISOString(), status: 'active' });
+  ok('SLA breached past budget', breach.breached === true && breach.remainingMs < 0);
+  const atRisk = slaClock({ sla_minutes: 100, activated_at: new Date(Date.now() - 85 * 60000).toISOString(), status: 'active' });
+  ok('SLA at-risk near budget', atRisk.atRisk === true && atRisk.breached === false);
+  const done = slaClock({ sla_minutes: 60, activated_at: new Date(Date.now() - 999 * 60000).toISOString(), status: 'complete' });
+  ok('completed mission not breached', done.breached === false);
+
+  section('phase3: mission templates (five playbooks)');
+  eq('exactly five templates', MISSION_TEMPLATES.length, 5);
+  ['chokepoint-disruption', 'crop-failure', 'fertilizer-shock', 'humanitarian-surge', 'logistics-cyber']
+    .forEach((k) => ok('template ' + k + ' present', !!templateByKey(k)));
+  ok('all template pillars canonical', MISSION_TEMPLATES.every((t) => PILLARS.includes(t.pillar)));
+  ok('all template priorities valid', MISSION_TEMPLATES.every((t) => MISSION_PRIORITY.includes(t.priority)));
+  ok('templateByKey unknown -> null', templateByKey('nope') === null);
+  const inst = instantiateTemplate('logistics-cyber', { geography: 'EU-27', sourceRef: 'alert:abc' });
+  ok('instantiate seeds proposed mission', inst.mission.status === 'proposed' && inst.mission.templateKey === 'logistics-cyber');
+  ok('instantiate carries overrides', inst.mission.geography === 'EU-27' && inst.mission.sourceRef === 'alert:abc');
+  ok('instantiate seeds ordered tasks', inst.tasks.length >= 1 && inst.tasks[0].sort === 0 && inst.tasks[0].status === 'todo');
+  ok('instantiate carries decision gates', Array.isArray(inst.gates) && inst.gates.length >= 1);
+  ok('instantiate unknown -> null', instantiateTemplate('nope') === null);
+
+  section('phase3: presence freshness (derived, never faked)');
+  ok('online thresholds ordered', PRESENCE_ONLINE_MS < PRESENCE_AWAY_MS);
+  eq('recent heartbeat -> online', presenceFreshness(new Date(Date.now() - 5000).toISOString()).status, 'online');
+  eq('stale-ish -> away', presenceFreshness(new Date(Date.now() - 120000).toISOString()).status, 'away');
+  eq('old -> offline', presenceFreshness(new Date(Date.now() - 999000).toISOString()).status, 'offline');
+  eq('never seen -> offline', presenceFreshness(null).status, 'offline');
+
+  section('phase3: @mention parsing');
+  const rosterM = [{ id: 'u1', display_name: 'Ben Carter' }, { id: 'u2', display_name: 'Joel Smith' }];
+  eq('matches first-name + dotted handle', JSON.stringify(parseMentions('ping @ben and @joel.smith now', rosterM)), JSON.stringify(['u1', 'u2']));
+  eq('no mentions -> empty', JSON.stringify(parseMentions('no mentions here', rosterM)), '[]');
+  eq('unknown handle ignored', JSON.stringify(parseMentions('@nobody here', rosterM)), '[]');
+
+  section('phase3: deterministic ATOM builders (labeled AI-free fallback)');
+  const ax = buildAlertExplanation(modeled[0]);
+  ok('alert-explanation labeled deterministic', ax.generator === 'deterministic' && ax.kind === 'alert-explanation');
+  ok('alert-explanation flags modeled', ax.modeled === true);
+  const mb = buildMissionBrief({ title: 'Op X', objective: 'contain', priority: 'critical', geography: 'EU' }, { tasks: [{ title: 't1' }], alerts: [{}] });
+  ok('mission-brief deterministic + fields', mb.generator === 'deterministic' && mb.objectives.includes('t1') && mb.title === 'Op X');
+  const ac = buildActionCards({ severity: 'critical', basis: 'modeled' });
+  ok('action-cards include escalate + corroborate', ac.cards.some((c) => c.action === 'escalate') && ac.cards.some((c) => c.action === 'corroborate'));
+  const aa = buildAfterAction({ title: 'Op X', status: 'complete' }, { tasks: [{ status: 'done' }, { status: 'todo' }], decisions: [{ gate: 'g', decision: 'approve' }] });
+  ok('after-action deterministic + tallies tasks', aa.generator === 'deterministic' && aa.tasksCompleted === '1/2');
+  ok('after-action flags residual tasks', aa.lessons.some((l) => /residual|not all/i.test(l)));
+}
+
+/* ============================ Phase III: migration 002 shape ============================ */
+function testMigrationPhase3() {
+  section('phase3 migration: lifecycle columns + new tables');
+  const dir = join(ROOT, 'migrations');
+  const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+  ok('has a 002 phase3 migration', files.some((f) => /002/.test(f)));
+  const sql = files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n').toLowerCase();
+
+  ['alert_status', 'task_status', 'presence_status'].forEach((e) =>
+    ok('creates enum ' + e, sql.includes("create type " + e)));
+
+  // Alert lifecycle columns added idempotently.
+  ['status', 'basis', 'confidence', 'horizon', 'regions', 'commodities', 'causal_chain', 'assumptions', 'owner_id', 'mission_id']
+    .forEach((c) => ok('alerts adds column ' + c, sql.includes('add column if not exists ' + c) || new RegExp('add column if not exists\\s+' + c).test(sql)));
+  ok('alter uses add column if not exists (idempotent)', !/add column (?!if not exists)/.test(sql));
+
+  ['mission_tasks', 'mission_decisions', 'mission_events', 'room_presence', 'room_messages']
+    .forEach((t) => ok('creates table ' + t, sql.includes('create table if not exists ' + t)));
+
+  ok('mission sub-resources cascade on mission delete', /mission_tasks[\s\S]*references missions\(id\) on delete cascade/.test(sql));
+  ok('presence keyed by team+user', /room_presence[\s\S]*primary key \(team_id, user_id\)/.test(sql));
+  ok('messages store mentions array', /room_messages[\s\S]*mentions\s+text\[\]/.test(sql));
+  ok('phase3 tenant-scoped by team_id', /mission_tasks[\s\S]*team_id/.test(sql) && /room_messages[\s\S]*team_id/.test(sql));
+}
+
+/* ============================ Phase III: API + client hygiene ============================ */
+function testPhase3Hygiene() {
+  section('phase3 hygiene: no secrets / forbidden brands / storage');
+  const files = ['api/_intel.js', 'api/alerts.js', 'api/missions.js', 'api/collab.js'];
+  const forbidden = ['clinixai', 'antimatterai', 'rrg.bio', 'thingktangk', 'humanos'];
+  const secretEnv = ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN'];
+  for (const f of files) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    const low = src.toLowerCase();
+    forbidden.forEach((b) => ok(`${f} has no forbidden brand ${b}`, !low.includes(b)));
+    // No hardcoded secret VALUES (referencing process.env.X by name is fine).
+    secretEnv.forEach((k) => ok(`${f} does not hardcode ${k} value`, !new RegExp(k + "\\s*[:=]\\s*['\"]").test(src)));
+  }
+  const intel = readFileSync(join(ROOT, 'api/_intel.js'), 'utf8');
+  ok('_intel.js is DB/DOM/network free', !/from '\.\/_db|require\(|\bfetch\(|document\.|localStorage/.test(intel));
+  ok('_intel.js never emits confidence 1.0 literally in cap', intel.includes('Math.min(0.9'));
+
+  section('phase3 hygiene: War Room client honesty');
+  const collab = readFileSync(join(ROOT, 'assets/collab.js'), 'utf8');
+  ok('collab client no localStorage', !/localStorage\s*[.[]/.test(collab));
+  ok('collab client no sessionStorage', !/sessionStorage\s*[.[]/.test(collab));
+  ok('collab client no document.cookie', collab.indexOf('document.cookie') === -1);
+  ok('collab client no indexedDB', !/indexedDB\s*\./.test(collab));
+}
+
 /* ============================ run ============================ */
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
@@ -1766,7 +2054,11 @@ async function testAccounts() {
     await testValidation();
     testHttp();
     testMigration();
+    testIntelEngine();
+    testMigrationPhase3();
+    testPhase3Hygiene();
     await testCollabRace();
+    await testWarRoomCollab();
     testTheaterData();
     testTheaterFilters();
     testSimEngine();

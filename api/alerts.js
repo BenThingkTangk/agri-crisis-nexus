@@ -15,7 +15,10 @@
 import { query, withTransaction } from './_db.js';
 import { readJSON, sendJSON, sendError } from './_http.js';
 import { requireAuth, requireWrite, audit } from './_auth.js';
-import { str, uuid, oneOf, strArray, SEVERITIES, ValidationError } from './_validate.js';
+import { str, uuid, optionalUuid, oneOf, strArray, SEVERITIES, ValidationError } from './_validate.js';
+import {
+  deriveAlerts, alertActionToStatus, alertStatusCanTransition, explainAlert, buildAlertExplanation,
+} from './_intel.js';
 
 const SEV_RANK = { moderate: 1, high: 2, critical: 3 };
 
@@ -27,6 +30,11 @@ export default async function handler(req, res) {
   try {
     if (action === 'list') return await listAlerts(req, res, ctx);
     if (action === 'sync') return await sync(req, res, ctx);
+    if (action === 'derive') return await derive(req, res, ctx);
+    if (action === 'explain') return await explain(req, res, ctx);
+    if (action === 'acknowledge' || action === 'escalate' || action === 'resolve') return await lifecycle(req, res, ctx, action);
+    if (action === 'assign') return await assign(req, res, ctx);
+    if (action === 'link-mission') return await linkMission(req, res, ctx);
     if (action === 'mark-read') return await markRead(req, res, ctx);
     if (action === 'mark-all') return await markAll(req, res, ctx);
     if (action === 'rules') return await listRules(req, res, ctx);
@@ -42,16 +50,35 @@ export default async function handler(req, res) {
 async function alertsPayload(ctx, limit = 60) {
   const { rows } = await query(
     `SELECT a.id, a.source, a.title, a.category, a.severity, a.geography, a.url,
-            a.event_at, a.created_at, (r.user_id IS NOT NULL) AS is_read
+            a.event_at, a.created_at, a.updated_at,
+            a.status, a.basis, a.confidence, a.horizon, a.regions, a.commodities,
+            a.causal_chain, a.assumptions, a.owner_id, a.mission_id,
+            a.acknowledged_at, a.escalated_at, a.resolved_at,
+            o.display_name AS owner_name,
+            (r.user_id IS NOT NULL) AS is_read
        FROM alerts a
        LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = $2
+       LEFT JOIN users o ON o.id = a.owner_id
       WHERE a.team_id = $1
-      ORDER BY a.created_at DESC
+      ORDER BY CASE a.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+               a.created_at DESC
       LIMIT $3`,
     [ctx.teamId, ctx.user.id, limit]
   );
   const unread = rows.filter((a) => !a.is_read).length;
-  return { alerts: rows, unread };
+  const open = rows.filter((a) => a.status !== 'resolved').length;
+  return { alerts: rows, unread, open };
+}
+
+async function alertRow(ctx, id) {
+  const { rows } = await query(
+    `SELECT id, source, title, category, severity, geography, url, status, basis,
+            confidence, horizon, regions, commodities, causal_chain, assumptions,
+            owner_id, mission_id
+       FROM alerts WHERE id = $1 AND team_id = $2`,
+    [id, ctx.teamId]
+  );
+  return rows[0] || null;
 }
 
 async function listAlerts(req, res, ctx) {
@@ -189,6 +216,131 @@ async function sync(req, res, ctx) {
 
   const payload = await alertsPayload(ctx);
   return sendJSON(res, 200, { ok: true, inserted, ...payload });
+}
+
+// Fetch the live feed for the derive pass (same source as sync).
+async function fetchLiveEvents(req) {
+  try {
+    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0];
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    const r = await fetch(`${proto}://${host}/api/live`, { headers: { accept: 'application/json' } });
+    if (r.ok) {
+      const j = await r.json();
+      return Array.isArray(j.events) ? j.events : [];
+    }
+  } catch (_) { /* live feed unreachable */ }
+  return [];
+}
+
+// Predictive derivation: build observed + modeled alerts and materialize any
+// that are new (deduped on team_id+event_key). Modeled projections are stored
+// with basis='modeled' + confidence + assumptions so the UI can label them.
+async function derive(req, res, ctx) {
+  if (!requireWrite(req, res, ctx, 'analyst')) return;
+  const body = await readJSON(req);
+  // Optional analyst-supplied crop-risk state (labeled modeled downstream).
+  const cropRisk = Array.isArray(body.cropRisk) ? body.cropRisk.slice(0, 100) : [];
+  const events = await fetchLiveEvents(req);
+  const derived = deriveAlerts({ events, cropRisk, now: Date.now() });
+
+  let inserted = 0;
+  for (const a of derived) {
+    const eventAt = a.eventAt ? new Date(a.eventAt) : null;
+    const { rowCount } = await query(
+      `INSERT INTO alerts
+         (team_id, event_key, source, title, category, severity, geography, url, event_at,
+          status, basis, confidence, horizon, regions, commodities, causal_chain, assumptions, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'new',$10,$11,$12,$13,$14,$15,$16,$17)
+       ON CONFLICT (team_id, event_key) DO NOTHING`,
+      [
+        ctx.teamId, a.key,
+        str(a.source, 's', { required: false, max: 80 }),
+        str(a.title, 't', { required: false, max: 400 }) || 'Alert',
+        str(a.category, 'c', { required: false, max: 120 }),
+        a.severity,
+        str(a.geography, 'g', { required: false, max: 200 }),
+        str(a.url, 'u', { required: false, max: 500 }),
+        eventAt && !Number.isNaN(eventAt.getTime()) ? eventAt.toISOString() : null,
+        a.basis, a.confidence, a.horizon,
+        a.regions || [], a.commodities || [],
+        JSON.stringify(a.causalChain || []), JSON.stringify(a.assumptions || []),
+        { modeled: !!a.modeled },
+      ]
+    );
+    inserted += rowCount;
+  }
+  await audit(ctx, 'alert.derive', 'alert', null, { inserted, considered: derived.length });
+  const payload = await alertsPayload(ctx);
+  return sendJSON(res, 200, { ok: true, inserted, considered: derived.length, ...payload });
+}
+
+// Explainability panel for a single alert.
+async function explain(req, res, ctx) {
+  const id = uuid((req.query && req.query.id) || '', 'id');
+  const a = await alertRow(ctx, id);
+  if (!a) return sendError(res, 404, 'not_found', 'Alert not found.');
+  return sendJSON(res, 200, { ok: true, explanation: explainAlert(a), atom: buildAlertExplanation(a) });
+}
+
+// Status transitions: acknowledge / escalate / resolve. Validated against the
+// alert state machine so illegal jumps (e.g. resolved -> new) are rejected.
+async function lifecycle(req, res, ctx, action) {
+  if (!requireWrite(req, res, ctx, 'analyst')) return;
+  const body = await readJSON(req);
+  const id = uuid(body.id, 'id');
+  const next = alertActionToStatus(action);
+  const a = await alertRow(ctx, id);
+  if (!a) return sendError(res, 404, 'not_found', 'Alert not found.');
+  if (!alertStatusCanTransition(a.status, next)) {
+    return sendError(res, 409, 'invalid_transition', `Cannot ${action} an alert that is ${a.status}.`);
+  }
+  const stamp = { acknowledged: 'acknowledged_at', escalated: 'escalated_at', resolved: 'resolved_at' }[next];
+  await query(
+    `UPDATE alerts SET status = $1, ${stamp} = now() WHERE id = $2 AND team_id = $3`,
+    [next, id, ctx.teamId]
+  );
+  await audit(ctx, `alert.${action}`, 'alert', id, { from: a.status, to: next });
+  const payload = await alertsPayload(ctx);
+  return sendJSON(res, 200, { ok: true, id, status: next, ...payload });
+}
+
+async function assign(req, res, ctx) {
+  if (!requireWrite(req, res, ctx, 'analyst')) return;
+  const body = await readJSON(req);
+  const id = uuid(body.id, 'id');
+  const ownerId = optionalUuid(body.ownerId, 'ownerId');
+  if (ownerId) {
+    const m = await query('SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2', [ctx.teamId, ownerId]);
+    if (!m.rows.length) return sendError(res, 400, 'invalid', 'Owner must be a member of this team.');
+  }
+  const { rowCount } = await query(
+    'UPDATE alerts SET owner_id = $1 WHERE id = $2 AND team_id = $3',
+    [ownerId, id, ctx.teamId]
+  );
+  if (!rowCount) return sendError(res, 404, 'not_found', 'Alert not found.');
+  await audit(ctx, 'alert.assign', 'alert', id, { ownerId });
+  const payload = await alertsPayload(ctx);
+  return sendJSON(res, 200, { ok: true, id, ...payload });
+}
+
+// Link an alert to a mission (the persisted side of "escalate to mission").
+async function linkMission(req, res, ctx) {
+  if (!requireWrite(req, res, ctx, 'analyst')) return;
+  const body = await readJSON(req);
+  const id = uuid(body.id, 'id');
+  const missionId = optionalUuid(body.missionId, 'missionId');
+  if (missionId) {
+    const m = await query('SELECT 1 FROM missions WHERE id = $1 AND team_id = $2', [missionId, ctx.teamId]);
+    if (!m.rows.length) return sendError(res, 400, 'invalid', 'Mission not found for this team.');
+  }
+  const { rowCount } = await query(
+    'UPDATE alerts SET mission_id = $1 WHERE id = $2 AND team_id = $3',
+    [missionId, id, ctx.teamId]
+  );
+  if (!rowCount) return sendError(res, 404, 'not_found', 'Alert not found.');
+  await audit(ctx, 'alert.link_mission', 'alert', id, { missionId });
+  const payload = await alertsPayload(ctx);
+  return sendJSON(res, 200, { ok: true, id, missionId, ...payload });
 }
 
 function eventMatchesRule(ev, rule) {

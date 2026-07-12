@@ -20,10 +20,17 @@
   /* ---------------- state ---------------- */
   var session = null;          // publicSession or null when unauthenticated
   var missionsCache = [];      // last-loaded team missions (for edit prefill)
-  var alertsState = { alerts: [], unread: 0 };
+  var alertsState = { alerts: [], unread: 0, open: 0 };
   var seenAlertIds = Object.create(null); // for arrival stagger animation
+  var expandedAlerts = Object.create(null); // alert ids with explainability open
+  var alertFilter = { q: '', status: 'all', basis: 'all' };
   var pollTimer = null;
   var currentDrawer = null;    // 'identity' | 'alerts' | null
+
+  // War Room collaboration (server-backed presence + messages).
+  var wrState = null;          // last /api/collab state
+  var wrTimer = null;          // presence/message poll
+  var wrHbTimer = null;        // heartbeat
 
   var ROLE_RANK = { viewer: 1, analyst: 2, admin: 3, owner: 4 };
   function rankOf(r) { return ROLE_RANK[r] || 0; }
@@ -114,9 +121,49 @@
      SESSION + IDENTITY
      ============================================================ */
   function init() {
+    injectStyles();
     refreshSession().catch(function () { paintIdentity(); });
     // Pre-fill invite token banner if arriving via an invite link.
     // (Handled inside the auth form when opened.)
+  }
+
+  // Phase III presentation lives in the enhancement layer (same pattern as the
+  // dynamic toast host) so the base index.html stylesheet stays untouched.
+  var stylesInjected = false;
+  function injectStyles() {
+    if (stylesInjected) return;
+    stylesInjected = true;
+    var css =
+      '.ai-badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}' +
+      '.ai-badge{font:600 10px/1 var(--mono,monospace);letter-spacing:.03em;text-transform:uppercase;padding:3px 6px;border-radius:5px;border:1px solid var(--border);color:var(--muted)}' +
+      '.ai-badge.modeled{border-color:var(--sev-high,#e08a1e);color:var(--sev-high,#e08a1e)}' +
+      '.ai-badge.observed{border-color:var(--cyan,#3ca85a);color:var(--cyan,#3ca85a)}' +
+      '.ai-badge.analyst{border-color:var(--muted)}' +
+      '.ai-badge.status-escalated{border-color:var(--sev-critical,#d43e28);color:var(--sev-critical,#d43e28)}' +
+      '.ai-badge.status-resolved{opacity:.6}' +
+      '.ai-explain{margin-top:8px;padding:9px 11px;border:1px solid var(--border);border-left:3px solid var(--sev-high,#e08a1e);border-radius:8px;background:var(--surface,#1a160f)}' +
+      '.ai-explain h5{margin:0 0 4px;font:600 11px/1.2 var(--mono,monospace);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}' +
+      '.ai-explain ul{margin:0 0 8px;padding-left:16px}.ai-explain li{font-size:12px;margin:2px 0}' +
+      '.ai-explain .uncert{font-size:12px;color:var(--sev-high,#e08a1e);font-style:italic}' +
+      '.wr-wrap{margin-top:14px;border:1px solid var(--border);border-radius:11px;padding:12px}' +
+      '.wr-head{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-bottom:8px}' +
+      '.wr-title{font:600 13px/1 var(--sans,system-ui)}' +
+      '.wr-sync{font:500 11px/1 var(--mono,monospace);color:var(--muted)}' +
+      '.wr-roster{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}' +
+      '.wr-member{display:flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--border);border-radius:20px;font-size:12px}' +
+      '.wr-dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}' +
+      '.wr-dot.online{background:var(--cyan,#3ca85a)}.wr-dot.away{background:var(--sev-high,#e08a1e)}.wr-dot.offline{background:var(--muted)}' +
+      '.wr-msgs{max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:7px;margin-bottom:9px}' +
+      '.wr-msg{font-size:12.5px;line-height:1.4}.wr-msg .who{font-weight:600}.wr-msg.system{color:var(--muted);font-style:italic}' +
+      '.wr-msg .mention{color:var(--cyan,#3ca85a);font-weight:600}' +
+      '.wr-compose{display:flex;gap:7px}.wr-compose input{flex:1;min-width:0}' +
+      '@media (max-width:600px){.wr-msgs{max-height:180px}.ai-acts{flex-wrap:wrap}}';
+    try {
+      var st = document.createElement('style');
+      st.id = 'phase3-collab-style';
+      st.textContent = css;
+      (document.head || document.body || document.documentElement).appendChild(st);
+    } catch (_) { /* non-fatal */ }
   }
 
   function refreshSession() {
@@ -630,6 +677,14 @@
       }
       var url = editing ? '/api/missions?id=' + encodeURIComponent(editId) : '/api/missions';
       api(url, { method: editing ? 'PATCH' : 'POST', body: payload })
+        .then(function (j) {
+          // If this mission was spun up from an alert, persist the linkage.
+          var newId = j && j.mission && j.mission.id;
+          if (!editing && prefill.alertId && newId) {
+            return api('/api/alerts?action=link-mission', { method: 'POST', body: { id: prefill.alertId, missionId: newId } })
+              .then(function (aj) { applyAlerts(aj); }).catch(function () {});
+          }
+        })
         .then(function () {
           toast(editing ? 'Mission updated.' : 'Mission created.', 'ok');
           A.closeDrawer();
@@ -649,6 +704,7 @@
   function onSimRendered() {
     loadScenarioHistory();
     updateSaveButtonState();
+    renderWarRoom();
   }
   function onSimResolved() {
     updateSaveButtonState();
@@ -735,6 +791,149 @@
   }
 
   /* ============================================================
+     WAR ROOM — server-backed presence + messages (honest near-real-time).
+     The client polls /api/collab and labels the last sync time; presence
+     freshness is derived server-side from each member's last heartbeat, so a
+     member who stops heartbeating decays online -> away -> offline. We never
+     fake realtime — the "synced" label always reflects the last real poll.
+     ============================================================ */
+  var WR_POLL_MS = 20000, WR_HEARTBEAT_MS = 30000;
+
+  // Locate (or lazily create) the War Room host inside the simulate panel.
+  // Returns null when the panel/DOM can't host it (keeps callers fail-soft).
+  function warRoomHost() {
+    var host = $('#warRoom');
+    if (host) return host;
+    var anchor = $('#scenarioHistorySection');
+    if (!anchor || !anchor.parentNode || typeof anchor.parentNode.insertBefore !== 'function') return null;
+    try {
+      host = document.createElement('div');
+      host.id = 'warRoom';
+      host.className = 'section';
+      host.setAttribute('data-testid', 'war-room-section');
+      anchor.parentNode.insertBefore(host, anchor);
+      return host;
+    } catch (_) { return null; }
+  }
+
+  function renderWarRoom() {
+    var host = warRoomHost();
+    if (!host) return;
+    if (!session) {
+      stopWarRoom();
+      host.hidden = false;
+      host.innerHTML = '<div class="section-title"><h3>' + icon('users') + ' War Room</h3></div>' +
+        '<div class="empty" data-testid="war-room-signedout" style="padding:16px;text-align:center;color:var(--muted)">' +
+        icon('lock') + '<div style="margin-top:6px">Sign in to join your team\'s War Room.</div></div>';
+      A.refreshIcons();
+      return;
+    }
+    host.hidden = false;
+    // First paint of the shell (idempotent — re-render fills #wrBody in place).
+    if (!$('#wrBody', host)) {
+      host.innerHTML =
+        '<div class="section-title"><h3>' + icon('users') + ' War Room</h3>' +
+          '<span class="wr-sync" data-testid="wr-sync" id="wrSync">connecting…</span></div>' +
+        '<div class="wr-wrap"><div id="wrBody" data-testid="war-room"></div></div>';
+      A.refreshIcons();
+    }
+    fetchWarRoom();
+    startWarRoom();
+  }
+
+  function startWarRoom() {
+    stopWarRoom();
+    if (!session) return;
+    heartbeat();
+    wrTimer = setInterval(fetchWarRoom, WR_POLL_MS);
+    wrHbTimer = setInterval(heartbeat, WR_HEARTBEAT_MS);
+  }
+  function stopWarRoom() {
+    if (wrTimer) { clearInterval(wrTimer); wrTimer = null; }
+    if (wrHbTimer) { clearInterval(wrHbTimer); wrHbTimer = null; }
+  }
+
+  function heartbeat() {
+    if (!session) return Promise.resolve();
+    return api('/api/collab?action=heartbeat', { method: 'POST', body: {} })
+      .then(function (j) { wrState = j; paintWarRoom(); })
+      .catch(function () { markWarRoomStale(); });
+  }
+
+  function fetchWarRoom() {
+    if (!session) return Promise.resolve();
+    return api('/api/collab?action=state')
+      .then(function (j) { wrState = j; paintWarRoom(); })
+      .catch(function () { markWarRoomStale(); });
+  }
+
+  function markWarRoomStale() {
+    var sync = $('#wrSync');
+    if (sync) sync.textContent = 'offline — showing last sync';
+  }
+
+  function highlightMentions(body) {
+    // body is already escaped; wrap @mentions for emphasis.
+    return String(body).replace(/(^|\s)(@[\w][\w .-]{0,60})/g, function (m, pre, name) {
+      return pre + '<span class="mention">' + name + '</span>';
+    });
+  }
+
+  function paintWarRoom() {
+    var host = $('#warRoom');
+    var body = $('#wrBody');
+    if (!host || !body || !wrState) return;
+    var sync = $('#wrSync');
+    if (sync) {
+      sync.textContent = (wrState.online || 0) + ' online · synced ' + fmtWhen(wrState.serverTime);
+    }
+    var members = wrState.members || [];
+    var roster = '<div class="wr-roster" data-testid="wr-roster">' + members.map(function (m) {
+      return '<span class="wr-member" data-testid="wr-member">' +
+        '<span class="wr-dot ' + esc(m.presence || 'offline') + '"></span>' +
+        esc(m.name) + '<span class="ts-role">' + esc(m.role || '') + '</span>' +
+        (m.focus ? '<span class="meta" style="font-size:10px">· ' + esc(m.focus) + '</span>' : '') +
+        '</span>';
+    }).join('') + '</div>';
+
+    var messages = wrState.messages || [];
+    var msgs = messages.length
+      ? messages.map(function (msg) {
+          var when = fmtWhen(msg.created_at);
+          if (msg.kind === 'system') {
+            return '<div class="wr-msg system" data-testid="wr-msg">' + icon('info') + ' ' +
+              highlightMentions(esc(msg.body)) + ' <span class="meta">· ' + esc(when) + '</span></div>';
+          }
+          return '<div class="wr-msg" data-testid="wr-msg"><span class="who">' + esc(msg.user_name || '—') +
+            '</span> <span class="meta">' + esc(when) + '</span><div>' + highlightMentions(esc(msg.body)) + '</div></div>';
+        }).join('')
+      : '<div class="meta" data-testid="wr-empty">No messages yet. Start the conversation.</div>';
+
+    var composer = canWrite('viewer')
+      ? '<form class="wr-compose" data-testid="wr-compose">' +
+          '<input data-testid="wr-input" maxlength="4000" placeholder="Message the room… use @name to mention" ' +
+          'style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font:inherit">' +
+          '<button class="btn sm primary" type="submit">' + icon('send') + 'Send</button>' +
+        '</form>'
+      : '<div class="meta">Sign in as viewer+ to post.</div>';
+
+    body.innerHTML = roster + '<div class="wr-msgs" data-testid="wr-msgs">' + msgs + '</div>' + composer;
+    A.refreshIcons();
+
+    var form = $('[data-testid="wr-compose"]', body);
+    if (form) form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var input = $('[data-testid="wr-input"]', form);
+      var text = (input.value || '').trim();
+      if (!text) return;
+      input.disabled = true;
+      api('/api/collab?action=message', { method: 'POST', body: { body: text } })
+        .then(function (j) { wrState = j; input.value = ''; input.disabled = false; paintWarRoom(); })
+        .catch(function (err) { toast(err.message, 'error'); input.disabled = false; });
+    });
+  }
+
+  /* ============================================================
      ALERTS
      ============================================================ */
   function setAlertBadge(n) {
@@ -752,6 +951,7 @@
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    stopWarRoom();
   }
 
   function syncAlerts() {
@@ -765,57 +965,132 @@
   }
 
   function applyAlerts(j) {
-    alertsState = { alerts: j.alerts || [], unread: j.unread || 0 };
+    alertsState = { alerts: j.alerts || [], unread: j.unread || 0, open: j.open || 0 };
     setAlertBadge(alertsState.unread);
     if (currentDrawer === 'alerts') renderAlertsList();
   }
 
   function openAlerts() {
     currentDrawer = 'alerts';
+    var canDerive = canWrite('analyst');
     var html =
-      '<div class="btn-row" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
+      '<div class="wr-sync" data-testid="alerts-summary" style="margin-bottom:8px"></div>' +
+      '<div class="btn-row" style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">' +
         '<button class="btn sm" data-testid="alerts-mark-all">' + icon('check-check') + 'Mark all read</button>' +
         '<button class="btn sm" data-testid="alerts-refresh">' + icon('refresh-cw') + 'Refresh</button>' +
+        (canDerive ? '<button class="btn sm" data-testid="alerts-derive">' + icon('activity') + 'Derive predictive</button>' : '') +
         '<button class="btn sm" data-testid="alerts-rules">' + icon('sliders-horizontal') + 'Alert rules</button>' +
       '</div>' +
+      '<div class="alerts-filters" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<input data-testid="alerts-search" placeholder="Search title/region…" value="' + esc(alertFilter.q) + '" style="flex:1;min-width:130px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit">' +
+        '<select class="select" data-testid="alerts-status">' +
+          ['all', 'new', 'acknowledged', 'escalated', 'resolved'].map(function (s) { return '<option value="' + s + '"' + (alertFilter.status === s ? ' selected' : '') + '>' + (s === 'all' ? 'all status' : s) + '</option>'; }).join('') + '</select>' +
+        '<select class="select" data-testid="alerts-basis">' +
+          ['all', 'observed', 'modeled', 'analyst'].map(function (b) { return '<option value="' + b + '"' + (alertFilter.basis === b ? ' selected' : '') + '>' + (b === 'all' ? 'all basis' : b) + '</option>'; }).join('') + '</select>' +
+      '</div>' +
       '<div id="collabAlerts" data-testid="alerts-list"></div>';
-    A.openDrawer('Alerts', html);
+    A.openDrawer('Alert Center', html);
     currentDrawer = 'alerts';
     var body = drawerBody();
     $('[data-testid="alerts-mark-all"]', body).addEventListener('click', function () {
       api('/api/alerts?action=mark-all', { method: 'POST', body: {} }).then(applyAlerts).catch(function (e) { toast(e.message, 'error'); });
     });
     $('[data-testid="alerts-refresh"]', body).addEventListener('click', function () { syncAlerts(); toast('Refreshing alerts…'); });
+    var db = $('[data-testid="alerts-derive"]', body);
+    if (db) db.addEventListener('click', function () {
+      db.disabled = true;
+      api('/api/alerts?action=derive', { method: 'POST', body: {} })
+        .then(function (j) {
+          applyAlerts(j);
+          toast(j.inserted ? j.inserted + ' new predictive alert' + (j.inserted === 1 ? '' : 's') + ' derived.' : 'No new alerts to derive.', 'ok');
+        })
+        .catch(function (e) { toast(e.message, 'error'); })
+        .then(function () { db.disabled = false; });
+    });
     $('[data-testid="alerts-rules"]', body).addEventListener('click', openAlertRules);
+    var sInput = $('[data-testid="alerts-search"]', body);
+    if (sInput) sInput.addEventListener('input', function () { alertFilter.q = sInput.value; renderAlertsList(); });
+    var stSel = $('[data-testid="alerts-status"]', body);
+    if (stSel) stSel.addEventListener('change', function () { alertFilter.status = stSel.value; renderAlertsList(); });
+    var bSel = $('[data-testid="alerts-basis"]', body);
+    if (bSel) bSel.addEventListener('change', function () { alertFilter.basis = bSel.value; renderAlertsList(); });
     renderAlertsList();
     // Ensure we have fresh data on open.
     syncAlerts();
   }
 
+  function filteredAlerts() {
+    var q = String(alertFilter.q || '').trim().toLowerCase();
+    return alertsState.alerts.filter(function (a) {
+      if (alertFilter.status !== 'all' && (a.status || 'new') !== alertFilter.status) return false;
+      if (alertFilter.basis !== 'all' && (a.basis || 'observed') !== alertFilter.basis) return false;
+      if (q) {
+        var hay = ((a.title || '') + ' ' + (a.geography || '') + ' ' + ((a.regions || []).join(' ')) + ' ' + ((a.commodities || []).join(' '))).toLowerCase();
+        if (hay.indexOf(q) === -1) return false;
+      }
+      return true;
+    });
+  }
+
+  // Basis is provenance: observed = real ingested trigger, modeled = projection
+  // (never certainty), analyst = human-entered signal. Confidence is shown as a
+  // bounded percent — the engine caps it below 100 so we never claim certainty.
+  var BASIS_LABEL = { observed: 'Observed', modeled: 'Modeled', analyst: 'Analyst' };
+  function alertBadges(a) {
+    var basis = a.basis || 'observed';
+    var out = '<span class="ai-badge ' + esc(basis) + '" data-testid="alert-basis">' + esc(BASIS_LABEL[basis] || basis) + '</span>';
+    if (a.confidence != null) {
+      out += '<span class="ai-badge" data-testid="alert-confidence">' + Math.round(a.confidence * 100) + '% conf</span>';
+    }
+    if (a.horizon) out += '<span class="ai-badge">' + esc(a.horizon) + '</span>';
+    var st = a.status || 'new';
+    if (st !== 'new') out += '<span class="ai-badge status-' + esc(st) + '" data-testid="alert-status">' + esc(st) + '</span>';
+    if (basis === 'modeled') out += '<span class="ai-badge modeled" title="Modeled projection — not a forecast of certainty">projection</span>';
+    return '<div class="ai-badges">' + out + '</div>';
+  }
+
   function renderAlertsList() {
     var host = $('#collabAlerts');
     if (!host) return;
-    var list = alertsState.alerts;
+    var summary = $('[data-testid="alerts-summary"]');
+    if (summary) {
+      summary.textContent = alertsState.alerts.length + ' alert' + (alertsState.alerts.length === 1 ? '' : 's') +
+        ' · ' + alertsState.open + ' open · ' + alertsState.unread + ' unread';
+    }
+    var list = filteredAlerts();
     if (!list.length) {
+      var msg = alertsState.alerts.length
+        ? 'No alerts match this filter.'
+        : 'No alerts yet. Configure alert rules or derive predictive alerts to start.';
       host.innerHTML = '<div class="empty" data-testid="alerts-empty" style="padding:18px;text-align:center;color:var(--muted)">' +
-        icon('bell-off') + '<div style="margin-top:6px">No alerts yet. Configure alert rules to start matching live events.</div></div>';
+        icon('bell-off') + '<div style="margin-top:6px">' + esc(msg) + '</div></div>';
       A.refreshIcons();
       return;
     }
+    var writable = canWrite('analyst');
     host.innerHTML = list.map(function (a, i) {
       var isNew = !seenAlertIds[a.id] && !a.is_read;
       var stagger = (isNew && !REDUCED) ? ' style="animation-delay:' + Math.min(i, 8) * 45 + 'ms"' : '';
       var cls = 'alert-item' + (a.is_read ? '' : ' unread') + (isNew && !REDUCED ? ' alert-arrival' : '');
+      var st = a.status || 'new';
       return '<div class="' + cls + '"' + stagger + ' data-testid="alert-item" data-id="' + esc(a.id) + '">' +
         '<span class="ai-sev" style="background:' + (SEV_COLOR[a.severity] || 'var(--muted)') + '"></span>' +
         '<div class="ai-main"><div class="ai-t">' + esc(a.title) + '</div>' +
         '<div class="ai-s">' + esc(a.source || '') + (a.category ? ' · ' + esc(a.category) : '') +
-        (a.geography ? ' · ' + esc(a.geography) : '') + ' · ' + fmtWhen(a.event_at || a.created_at) + '</div>' +
-        '<div class="ai-acts">' +
+        (a.geography ? ' · ' + esc(a.geography) : '') + ' · ' + fmtWhen(a.event_at || a.created_at) +
+        (a.owner_name ? ' · owner ' + esc(a.owner_name) : '') + '</div>' +
+        alertBadges(a) +
+        '<div class="ai-acts" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' +
           (a.is_read ? '' : '<button class="btn sm" data-testid="alert-read" data-id="' + esc(a.id) + '">' + icon('check') + 'Mark read</button>') +
+          '<button class="btn sm" data-testid="alert-explain" data-id="' + esc(a.id) + '">' + icon('help-circle') + 'Why?</button>' +
           (a.url ? '<a class="btn sm" href="' + esc(a.url) + '" target="_blank" rel="noopener">' + icon('external-link') + 'Source</a>' : '') +
-          (canWrite('analyst') ? '<button class="btn sm" data-testid="alert-mission" data-id="' + esc(a.id) + '">' + icon('plus') + 'Create mission</button>' : '') +
-        '</div></div></div>';
+          (writable && st === 'new' ? '<button class="btn sm" data-testid="alert-acknowledge" data-id="' + esc(a.id) + '">' + icon('eye') + 'Acknowledge</button>' : '') +
+          (writable && (st === 'new' || st === 'acknowledged') ? '<button class="btn sm" data-testid="alert-escalate" data-id="' + esc(a.id) + '">' + icon('trending-up') + 'Escalate → mission</button>' : '') +
+          (writable && st !== 'resolved' ? '<button class="btn sm" data-testid="alert-resolve" data-id="' + esc(a.id) + '">' + icon('check-circle') + 'Resolve</button>' : '') +
+          (writable ? '<button class="btn sm" data-testid="alert-mission" data-id="' + esc(a.id) + '">' + icon('plus') + 'Create mission</button>' : '') +
+        '</div>' +
+        '<div class="ai-explain-host" data-explain-for="' + esc(a.id) + '"></div>' +
+        '</div></div>';
     }).join('');
     A.refreshIcons();
     list.forEach(function (a) { seenAlertIds[a.id] = true; });
@@ -826,19 +1101,100 @@
           .then(applyAlerts).catch(function (e) { toast(e.message, 'error'); });
       });
     });
+    $all('[data-testid="alert-explain"]', host).forEach(function (b) {
+      b.addEventListener('click', function () { toggleExplain(b.getAttribute('data-id')); });
+    });
+    bindAlertLifecycle(host, 'alert-acknowledge', 'acknowledge');
+    bindAlertLifecycle(host, 'alert-resolve', 'resolve');
+    $all('[data-testid="alert-escalate"]', host).forEach(function (b) {
+      b.addEventListener('click', function () { escalateAlert(b.getAttribute('data-id')); });
+    });
     $all('[data-testid="alert-mission"]', host).forEach(function (b) {
+      b.addEventListener('click', function () { createMissionFromAlert(b.getAttribute('data-id')); });
+    });
+    // Re-open any explainability panels that were expanded before re-render.
+    Object.keys(expandedAlerts).forEach(function (id) { if (expandedAlerts[id]) renderExplain(id); });
+  }
+
+  function bindAlertLifecycle(host, testid, action) {
+    $all('[data-testid="' + testid + '"]', host).forEach(function (b) {
       b.addEventListener('click', function () {
-        var a = alertsState.alerts.find(function (x) { return x.id === b.getAttribute('data-id'); });
-        if (!a) return;
-        openMissionComposer({
-          title: a.title,
-          priority: SEV_TO_PRIORITY[a.severity] || 'medium',
-          geography: a.geography || '',
-          sourceRef: (a.source || 'alert') + ':' + a.id,
-          objective: a.url ? 'Source: ' + a.url : '',
-        });
+        b.disabled = true;
+        api('/api/alerts?action=' + action, { method: 'POST', body: { id: b.getAttribute('data-id') } })
+          .then(function (j) { applyAlerts(j); toast('Alert ' + action + 'd.', 'ok'); })
+          .catch(function (e) { toast(e.message, 'error'); b.disabled = false; });
       });
     });
+  }
+
+  function toggleExplain(id) {
+    expandedAlerts[id] = !expandedAlerts[id];
+    if (expandedAlerts[id]) renderExplain(id);
+    else {
+      var host = $('[data-explain-for="' + id + '"]');
+      if (host) host.innerHTML = '';
+    }
+  }
+
+  function renderExplain(id) {
+    var host = $('[data-explain-for="' + id + '"]');
+    if (!host) return;
+    host.innerHTML = '<div class="meta" style="margin-top:6px">Loading explanation…</div>';
+    api('/api/alerts?action=explain&id=' + encodeURIComponent(id)).then(function (j) {
+      var ex = j.explanation || {};
+      var atom = j.atom || {};
+      var gen = atom.generator || 'deterministic';
+      function ul(items) {
+        return '<ul>' + (items || []).map(function (x) {
+          if (x && typeof x === 'object') {
+            if (x.url) return '<li><a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.label || x.url) + '</a></li>';
+            return '<li>' + esc(x.label || JSON.stringify(x)) + '</li>';
+          }
+          return '<li>' + esc(x) + '</li>';
+        }).join('') + '</ul>';
+      }
+      host.innerHTML =
+        '<div class="ai-explain" data-testid="alert-explain-panel">' +
+          '<h5>Why this fired' + (gen === 'deterministic' ? ' · deterministic fallback' : ' · ' + esc(gen)) + '</h5>' +
+          (ex.label ? '<div style="font-size:12.5px;margin-bottom:6px">' + esc(ex.label) + '</div>' : '') +
+          (ex.whyFired && ex.whyFired.length ? ul(ex.whyFired) : '') +
+          (ex.evidence && ex.evidence.length ? '<h5>Evidence</h5>' + ul(ex.evidence) : '') +
+          (ex.thresholds && ex.thresholds.length ? '<h5>Thresholds</h5>' + ul(ex.thresholds) : '') +
+          (ex.assumptions && ex.assumptions.length ? '<h5>Assumptions</h5>' + ul(ex.assumptions) : '') +
+          (ex.nextEffects && ex.nextEffects.length ? '<h5>Likely next effects</h5>' + ul(ex.nextEffects) : '') +
+          (ex.recommendedDecisions && ex.recommendedDecisions.length ? '<h5>Recommended decisions</h5>' + ul(ex.recommendedDecisions) : '') +
+          (ex.uncertainty ? '<div class="uncert">' + esc(ex.uncertainty) + '</div>' : '') +
+        '</div>';
+      A.refreshIcons();
+    }).catch(function () {
+      host.innerHTML = '<div class="meta" style="margin-top:6px">Unable to load explanation.</div>';
+    });
+  }
+
+  function createMissionFromAlert(id) {
+    var a = alertsState.alerts.find(function (x) { return x.id === id; });
+    if (!a) return;
+    openMissionComposer({
+      title: a.title,
+      priority: SEV_TO_PRIORITY[a.severity] || 'medium',
+      geography: a.geography || (a.regions && a.regions[0]) || '',
+      sourceRef: (a.source || 'alert') + ':' + a.id,
+      objective: a.url ? 'Source: ' + a.url : '',
+      alertId: a.id,
+    });
+  }
+
+  // Escalate = flip the alert to 'escalated' AND spin up a linked mission. The
+  // composer is pre-filled and, on save, the alert is linked to the new mission.
+  function escalateAlert(id) {
+    if (!canWrite('analyst')) { toast('Analyst role required.', 'error'); return; }
+    api('/api/alerts?action=escalate', { method: 'POST', body: { id: id } })
+      .then(function (j) {
+        applyAlerts(j);
+        toast('Escalated — open a mission to coordinate response.', 'ok');
+        createMissionFromAlert(id);
+      })
+      .catch(function (e) { toast(e.message, 'error'); });
   }
 
   // ---- alert rules builder ----
@@ -970,6 +1326,7 @@
   function softRefresh() {
     if ($('#teamMissions')) renderTeamMissions();
     if (document.querySelector('#scenarioHistorySection')) { loadScenarioHistory(); updateSaveButtonState(); }
+    if ($('#warRoom') || document.querySelector('#scenarioHistorySection')) renderWarRoom();
     if (session) syncAlerts(); else setAlertBadge(0);
   }
 
