@@ -769,6 +769,8 @@ function renderTheater(p){
 
 /* ================= MAP ================= */
 let mapObj=null, mapLayerGroup=null, liveLayerGroup=null, activeLayer='food', wheelOn=false, liveOverlayOn=false;
+// NASA GIBS satellite-context layer (Map/2D only). No key, daily product, never "live".
+let satLayer=null, satOn=false, satLayerId=(window.GIBS?window.GIBS.LAYERS[0].id:'modis-terra'), satDate=null, satOpacity=0.85;
 const LAYERS=[
   {id:'food',label:'Food security',metric:c=>c.hungerPct,color:c=>c.tl},
   {id:'conflict',label:'Conflict',metric:c=>c.conflict,color:c=>c.conflict>80?'critical':c.conflict>60?'high':c.conflict>40?'moderate':'stable'},
@@ -784,6 +786,7 @@ function renderMap(p){
       <p class="lede">${D.COUNTRIES.length} monitored countries and ${D.AQUIFERS.length} stressed aquifers. Toggle layers to re-weight the map. Mouse-wheel zoom is off by default so the page scrolls freely — enable it with the control below.</p>
     </div>
     <div class="map-layers" id="mapLayers"></div>
+    <div class="sat-control" id="satControl" data-testid="sat-control"></div>
     <div class="btn-row" style="margin-bottom:12px">
       <button class="btn sm" id="wheelToggle" data-testid="wheel-toggle">${icon('mouse-pointer-2')} Wheel-zoom: OFF</button>
       <button class="btn sm" id="liveToggle" data-testid="live-toggle">${icon('radio')} Live events: OFF</button>
@@ -809,6 +812,7 @@ function renderMap(p){
     updateLiveOverlay(); refreshIcons();
   });
   $('#compareBtn').addEventListener('click',()=>openCompare());
+  buildSatControl();
   $('#mapAquifers').innerHTML = D.AQUIFERS.map(a=>`
     <div class="card">
       <div class="ch"><div class="src-line">${icon('droplet','ic')} ${esc(a.region)}</div>${badge(a.tl)}</div>
@@ -828,7 +832,66 @@ function initMap(){
   liveLayerGroup=L.layerGroup().addTo(mapObj);
   drawMarkers();
   updateLiveOverlay();
+  if(satOn) applySatellite();
   setTimeout(()=>mapObj.invalidateSize(),120);
+}
+/* ---- NASA GIBS satellite context (Map/2D only; no key, daily, not live) ---- */
+function buildSatControl(){
+  const host=$('#satControl'); if(!host) return;
+  const G=window.GIBS;
+  if(!G){ host.innerHTML=`<p class="muted" style="font-size:12px;margin:0">Satellite context unavailable.</p>`; return; }
+  if(!satDate) satDate=G.defaultDate(Date.now(),satLayerId);
+  const dates=G.availableDates(Date.now(),8,satLayerId);
+  host.innerHTML=`
+    <div class="sat-head">
+      <button class="btn sm ${satOn?'primary':''}" id="satToggle" data-testid="sat-toggle" aria-pressed="${satOn}">${icon('satellite')} Satellite context: ${satOn?'ON':'OFF'}</button>
+      <span class="sat-tag" data-testid="sat-label">2D only · daily · not live</span>
+    </div>
+    <div class="sat-body" ${satOn?'':'hidden'}>
+      <label class="sat-field"><span>Imagery</span>
+        <select class="select" id="satLayerSel" data-testid="sat-layer" aria-label="Satellite imagery layer">
+          ${G.LAYERS.map(l=>`<option value="${l.id}" ${l.id===satLayerId?'selected':''}>${esc(l.label)}</option>`).join('')}
+        </select></label>
+      <label class="sat-field"><span>Observation date</span>
+        <select class="select" id="satDateSel" data-testid="sat-date" aria-label="Observation date">
+          ${dates.map(d=>`<option value="${d}" ${d===satDate?'selected':''}>${d}${d===dates[0]?' (latest)':''}</option>`).join('')}
+        </select></label>
+      <label class="sat-field"><span>Opacity <b id="satOpVal">${Math.round(satOpacity*100)}%</b></span>
+        <input type="range" id="satOpacity" min="20" max="100" value="${Math.round(satOpacity*100)}" data-testid="sat-opacity" aria-label="Satellite opacity"></label>
+      <p class="sat-cite" id="satCite" data-testid="sat-cite"></p>
+    </div>`;
+  $('#satToggle').addEventListener('click',()=>{ satOn=!satOn; buildSatControl(); refreshIcons(); if(!mapObj) initMap(); applySatellite(); });
+  const ls=$('#satLayerSel'); if(ls) ls.addEventListener('change',e=>{ satLayerId=e.target.value; satDate=G.defaultDate(Date.now(),satLayerId); buildSatControl(); applySatellite(); });
+  const ds=$('#satDateSel'); if(ds) ds.addEventListener('change',e=>{ satDate=e.target.value; applySatellite(); });
+  const op=$('#satOpacity'); if(op) op.addEventListener('input',e=>{ satOpacity=(+e.target.value)/100; const v=$('#satOpVal'); if(v) v.textContent=e.target.value+'%'; if(satLayer) satLayer.setOpacity(satOpacity); });
+  updateSatCite();
+  refreshIcons();
+}
+function updateSatCite(){
+  const c=$('#satCite'), G=window.GIBS; if(!c||!G) return;
+  c.innerHTML=`${esc(G.contextLabel(satLayerId,satDate))} · <a href="${esc(G.SOURCE_URL)}" target="_blank" rel="noopener">${esc(G.ATTRIBUTION)}</a>`;
+}
+function applySatellite(){
+  const G=window.GIBS; if(!G||!window.L) return;
+  if(!mapObj){ if(satOn) initMap(); return; }
+  if(satLayer){ try{mapObj.removeLayer(satLayer);}catch(e){} satLayer=null; }
+  const status=$('#satCite');
+  if(!satOn){ updateSatCite(); return; }
+  const L0=G.LAYER_BY_ID[satLayerId]||G.LAYERS[0];
+  satLayer=L.tileLayer(G.tileUrlTemplate(satLayerId,satDate),{
+    tileSize:256, opacity:satOpacity, maxNativeZoom:L0.maxNativeZoom, maxZoom:8,
+    attribution:G.ATTRIBUTION, crossOrigin:true, noWrap:false
+  });
+  let failed=false;
+  satLayer.on('tileerror',()=>{ if(failed) return; failed=true;
+    if(status) status.innerHTML=`<span class="warn">Satellite tiles unavailable for ${esc(satDate)} — kept base map. Try an earlier date.</span>`;
+    try{ mapObj.removeLayer(satLayer); }catch(e){} satLayer=null; satOn=false;
+    const t=$('#satToggle'); if(t){ t.classList.remove('primary'); t.setAttribute('aria-pressed','false'); t.innerHTML=`${icon('satellite')} Satellite context: OFF`; refreshIcons(); }
+    const b=$('.sat-body'); if(b) b.hidden=true;
+  });
+  satLayer.addTo(mapObj); satLayer.bringToFront();
+  if(mapLayerGroup&&mapLayerGroup.eachLayer) mapLayerGroup.eachLayer(l=>{ if(l.bringToFront) l.bringToFront(); });
+  updateSatCite();
 }
 function drawMarkers(){
   if(!mapObj) return;

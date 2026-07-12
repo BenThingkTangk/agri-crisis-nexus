@@ -353,7 +353,7 @@ async function testCollabRace() {
 // filter/NL/URL semantics, simulation determinism/bounds, and the ATOM action
 // allowlist. These modules attach to `window` and never touch the DOM.
 function loadTheaterModules() {
-  const files = ['theater-data.js', 'sim-engine.js', 'theater-filters.js', 'theater-actions.js', 'theater-globe.js'];
+  const files = ['theater-data.js', 'sim-engine.js', 'theater-filters.js', 'theater-actions.js', 'theater-globe.js', 'gibs.js', 'crop-risk.js'];
   const win = {};
   const sandbox = { window: win, module: { exports: {} }, console };
   vm.createContext(sandbox);
@@ -545,6 +545,110 @@ function testTheaterActions() {
   ok('parseAtomActions no block -> empty actions', ACT.parseAtomActions('just prose, no actions').actions.length === 0);
 }
 
+function testGibs() {
+  section('theater: NASA GIBS satellite-context helper');
+  const GIBS = loadTheaterModules().GIBS;
+  const NOW = Date.parse('2026-07-12T00:00:00Z');
+  ok('GIBS published', !!GIBS);
+  ok('never labels imagery as live', GIBS.LIVE === false);
+  ok('carries NASA GIBS attribution', /NASA|GIBS|EOSDIS/.test(GIBS.ATTRIBUTION));
+  ok('source url is https', /^https:\/\//.test(GIBS.SOURCE_URL));
+  ok('ships >=3 EPSG:3857 true-colour layers', GIBS.LAYERS.length >= 3 &&
+    GIBS.LAYERS.every((l) => l.tileMatrixSet.indexOf('GoogleMapsCompatible') === 0 && l.cadence === 'daily'));
+
+  // Default observation date is (now - latency), UTC ISO, i.e. yesterday.
+  eq('defaultDate is now minus 1-day latency (UTC ISO)', GIBS.defaultDate(NOW, 'modis-terra'), '2026-07-11');
+  const dates = GIBS.availableDates(NOW, 7, 'modis-terra');
+  eq('availableDates count honored', dates.length, 7);
+  eq('availableDates newest first', dates[0], '2026-07-11');
+  ok('availableDates strictly descending ISO days', dates.every((d, i) => i === 0 || d < dates[i - 1]));
+  ok('all dates are ISO YYYY-MM-DD', dates.every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)));
+
+  const url = GIBS.tileUrlTemplate('modis-terra', '2026-07-11');
+  ok('tile template targets EPSG:3857 best WMTS', url.indexOf('gibs.earthdata.nasa.gov/wmts/epsg3857/best') !== -1);
+  ok('tile template embeds the WMTS layer id', url.indexOf('MODIS_Terra_CorrectedReflectance_TrueColor') !== -1);
+  ok('tile template embeds the observation date', url.indexOf('/default/2026-07-11/') !== -1);
+  ok('tile template uses GoogleMapsCompatible matrix set', url.indexOf('GoogleMapsCompatible_Level9') !== -1);
+  ok('tile template keeps Leaflet {z}/{y}/{x} placeholders + jpg', /\{z\}\/\{y\}\/\{x\}\.jpg$/.test(url));
+  ok('tile template carries NO api key / secret / token', !/(api_?key|token|secret|password)=/i.test(url));
+  ok('unknown layer falls back to first layer (never throws)',
+    (function () { try { return GIBS.tileUrlTemplate('nope').indexOf('MODIS_Terra') !== -1; } catch (e) { return false; } })());
+
+  const label = GIBS.contextLabel('modis-terra', '2026-07-11');
+  ok('context label names source-type + date + is explicit "not live"',
+    /satellite context/i.test(label) && label.indexOf('2026-07-11') !== -1 && /not live/i.test(label));
+}
+
+function testCropRisk() {
+  section('theater: animated crop-risk layer stack');
+  const CR = loadTheaterModules().CROP_RISK;
+  ok('CROP_RISK published', !!CR);
+  ok('ships 8 risk layers', CR.LAYERS.length === 8);
+  const ids = CR.LAYERS.map((l) => l.id).join(',');
+  ok('layer roster covers required domains', ['crop-stress', 'drought', 'heat', 'flood', 'fertilizer', 'conflict', 'breadbasket-vuln', 'composite'].every((k) => ids.indexOf(k) !== -1));
+  ok('every layer is labeled a modeled proxy (never fabricated observation)', CR.LAYERS.every((l) => l.evidence === 'modeled'));
+  ok('every layer discloses methodology + limitations', CR.LAYERS.every((l) => l.methodology && l.limitations));
+  ok('every layer cites observed structural inputs (https)', CR.LAYERS.every((l) => l.observedInputs.length > 0 && l.observedInputs.every((s) => /^https:\/\//.test(s.url))));
+
+  // Bands never communicate by colour alone — each carries a pattern + marker.
+  ok('4 risk bands with distinct non-colour channels', CR.BANDS.length === 4 &&
+    new Set(CR.BANDS.map((b) => b.pattern)).size === 4 && CR.BANDS.every((b) => b.marker && b.label));
+  eq('band(0) is low', CR.band(0).id, 'low');
+  eq('band(0.3) is watch', CR.band(0.3).id, 'watch');
+  eq('band(0.5) is elevated', CR.band(0.5).id, 'elevated');
+  eq('band(0.9) is critical', CR.band(0.9).id, 'critical');
+
+  // Deterministic intensity within [0,1].
+  const a = CR.intensity('bb-blacksea', 'composite', 0.5, { severityBase: 0.9, commodityMatch: 1, shock: 0.6 });
+  const b = CR.intensity('bb-blacksea', 'composite', 0.5, { severityBase: 0.9, commodityMatch: 1, shock: 0.6 });
+  ok('intensity is deterministic', a === b);
+  ok('intensity within [0,1]', a >= 0 && a <= 1);
+  ok('envelope stays in [0,1] and rises over time', CR.envelope(0) >= 0 && CR.envelope(1) <= 1 && CR.envelope(0.8) > CR.envelope(0.1));
+
+  const s = CR.series('bb-cerrado', 'drought', 12, (t) => ({ severityBase: 0.5, commodityMatch: 1, shock: t }));
+  eq('series length is steps+1', s.length, 13);
+  ok('series values all in [0,1]', s.every((v) => v >= 0 && v <= 1));
+
+  const regions = [
+    { id: 'bb-blacksea', name: 'Black Sea', seed: 'bb-blacksea', severityBase: 0.95, commodityMatch: 1 },
+    { id: 'bb-france', name: 'France', seed: 'bb-france', severityBase: 0.2, commodityMatch: 1 },
+    { id: 'ex-egypt', name: 'Egypt', seed: 'ex-egypt', severityBase: 0.7, commodityMatch: 1 },
+  ];
+  const ranked = CR.rankRegions('composite', 0.6, regions, { shock: 0.7 });
+  eq('rankRegions returns all regions', ranked.length, 3);
+  ok('rankRegions sorted by modeled intensity (desc)', ranked[0].value >= ranked[1].value && ranked[1].value >= ranked[2].value);
+  ok('each ranked row carries band + pattern + marker', ranked.every((r) => r.band && r.pattern && r.marker));
+  const summary = CR.summaryText('composite', 0.6, ranked);
+  ok('accessible summary names the proxy nature + a marker glyph', /modeled proxy/i.test(summary) && summary.indexOf(ranked[0].marker) !== -1);
+}
+
+function testSimPhases() {
+  section('theater: cinematic phased playback + causal ledger');
+  const SIM = loadTheaterModules().SIM_ENGINE;
+  ok('8 named playback phases', SIM.PHASES.length === 8);
+  eq('phase order matches the cinematic arc',
+    SIM.PHASES.map((p) => p.id).join(','),
+    'trigger,chokepoint,rerouting,price,breadbasket,humanitarian,response,stabilization');
+
+  const res = SIM.runSim({ preset: 'blacksea-blockade' });
+  const phases = SIM.computePhases(res);
+  eq('computePhases yields 8 segments', phases.length, 8);
+  eq('first phase starts at day 0', phases[0].startDay, 0);
+  ok('phase start days are monotonic non-decreasing', phases.every((p, i) => i === 0 || p.startDay >= phases[i - 1].startDay));
+  ok('phase start days within horizon', phases.every((p) => p.startDay >= 0 && p.startDay <= res.horizon));
+  eq('last phase ends at the horizon', phases[7].endDay, res.horizon);
+
+  eq('phaseForDay(0) is trigger', SIM.phaseForDay(0, phases).id, 'trigger');
+  eq('phaseForDay(horizon) is stabilization', SIM.phaseForDay(res.horizon, phases).id, 'stabilization');
+
+  const ledger = SIM.phaseLedger(res);
+  eq('ledger has one entry per phase', ledger.length, 8);
+  ok('every ledger entry explains what/why/evidence/next', ledger.every((e) => e.changed && e.why && e.evidence && e.nextDecision));
+  ok('every ledger entry discloses the modeled assumption', ledger.every((e) => /not a measured/i.test(e.assumption)));
+  ok('ledger confidence stays within modeled bounds', ledger.every((e) => e.confidence == null || (e.confidence >= 30 && e.confidence <= 90)));
+  ok('ledger is deterministic', JSON.stringify(SIM.phaseLedger(res)) === JSON.stringify(ledger));
+}
+
 /* ============================ theater globe (renderer/telemetry/motion) ======= */
 // The globe upgrade's decision logic lives in the DOM-free assets/theater-globe.js
 // so it is testable exactly like the other theater modules. We assert renderer
@@ -630,6 +734,55 @@ function testTheaterGlobe() {
   ok('preserves existing controls (zoom/home/toggle/compass)',
     ['data-testid="th-zoom-in"', 'data-testid="th-home"', 'data-testid="th-toggle"', 'data-testid="th-compass"'].every((k) => tsrc.indexOf(k) !== -1));
   ok('preserves canvas fallback data table', tsrc.indexOf('data-testid="theater-fallback"') !== -1);
+}
+
+function testGibsWiring() {
+  section('map: NASA GIBS satellite-context DOM wiring (assets/app.js source)');
+  const src = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+  ok('consumes the GIBS helper', src.indexOf('window.GIBS') !== -1);
+  ok('mounts a satellite-context control in Map mode', src.indexOf('data-testid="sat-control"') !== -1);
+  ok('exposes an on/off toggle', src.indexOf('data-testid="sat-toggle"') !== -1);
+  ok('exposes an imagery-layer selector', src.indexOf('data-testid="sat-layer"') !== -1);
+  ok('exposes an observation-date selector', src.indexOf('data-testid="sat-date"') !== -1);
+  ok('exposes an opacity control', src.indexOf('data-testid="sat-opacity"') !== -1);
+  ok('renders NASA attribution + source link', src.indexOf('data-testid="sat-cite"') !== -1 && /G\.ATTRIBUTION|GIBS\.ATTRIBUTION/.test(src) && /SOURCE_URL/.test(src));
+  ok('labels imagery as 2D-only / daily / not live', /2D only|not live/.test(src) && src.indexOf('data-testid="sat-label"') !== -1);
+  ok('uses the GIBS Leaflet tile template', src.indexOf('tileUrlTemplate') !== -1 && src.indexOf('L.tileLayer') !== -1);
+  ok('gracefully falls back to basemap on tile error', src.indexOf("'tileerror'") !== -1 || src.indexOf('tileerror') !== -1);
+  const satBlock = src.slice(src.indexOf('NASA GIBS satellite context'), src.indexOf('function drawMarkers'));
+  ok('carries NO api key / secret in imagery wiring', satBlock.length > 100 && !/(api_?key|token|secret)=/i.test(satBlock));
+}
+
+function testTheaterCinematicWiring() {
+  section('theater: cinematic playback + crop-risk + ledger DOM wiring (source)');
+  const src = readFileSync(join(ROOT, 'assets', 'theater.js'), 'utf8');
+  // Phase timeline + readout driven by the pure SIM phase model.
+  ok('computes phases + ledger from SIM_ENGINE', src.indexOf('SIM.computePhases') !== -1 && src.indexOf('SIM.phaseLedger') !== -1);
+  ok('renders a phase timeline', src.indexOf('data-testid="sim-phasebar"') !== -1 && src.indexOf('pb-seg-') !== -1);
+  ok('renders a live phase readout', src.indexOf('data-testid="sim-phase"') !== -1 && src.indexOf('phaseForDay') !== -1);
+  // Causal ledger rail with what/why/evidence/assumption/next.
+  ok('renders a causal ledger rail', src.indexOf('data-testid="sim-ledger"') !== -1 && src.indexOf('data-testid="ledger-entry"') !== -1);
+  ok('ledger surfaces why + evidence + next decision', ['Why:', 'Evidence:', 'Next decision:'].every((k) => src.indexOf(k) !== -1));
+  ok('selecting a phase/ledger entry flies to a node', src.indexOf('flyToPhase') !== -1);
+  // Animated crop-risk overlay: layer select, legend (non-colour channels), ranking, a11y summary.
+  ok('consumes CROP_RISK', src.indexOf('window.CROP_RISK') !== -1);
+  ok('renders crop-risk layer selector', src.indexOf('data-testid="crop-layer"') !== -1);
+  ok('renders crop-risk legend with pattern + marker (not colour alone)', src.indexOf('data-testid="crop-legend"') !== -1 && src.indexOf('data-pattern="') !== -1 && src.indexOf('.marker') !== -1);
+  ok('renders region ranking linked to fly-to', src.indexOf('data-testid="crop-rank"') !== -1 && src.indexOf('data-testid="cr-row"') !== -1);
+  ok('renders accessible crop-risk summary via summaryText', src.indexOf('data-testid="crop-summary"') !== -1 && src.indexOf('CR.summaryText') !== -1);
+  ok('crop-risk phase fraction feeds the envelope', src.indexOf('phaseT()') !== -1);
+  // ATOM deterministic mission card + strategic brief.
+  ok('generates a deterministic ATOM mission brief', src.indexOf('data-testid="mission-brief"') !== -1 && src.indexOf('briefText') !== -1);
+  ok('mission brief is explicitly modeled (not a forecast)', /modeled proxies for scenario exploration/.test(src));
+  ok('offers create-mission + ask-ATOM actions', src.indexOf('data-testid="mission-card-btn"') !== -1 && src.indexOf('data-testid="mission-atom-btn"') !== -1);
+  // Visibility pause + no runaway timers + reduced-motion safe.
+  ok('pauses playback when tab/page hidden', src.indexOf('visibilitychange') !== -1 && src.indexOf('document.hidden') !== -1 && src.indexOf('onVisibility') !== -1);
+  ok('guards the play timer against running while hidden', /document\.hidden[\s\S]*pause\(\)/.test(src));
+  ok('reduced-motion uses a calmer single-day cadence', /REDUCED\s*\?\s*1\s*:\s*2/.test(src));
+  // Keyboard transport + ARIA live announcements.
+  ok('adds keyboard transport (space/arrows/home)', /k === ' '|Spacebar/.test(src) && src.indexOf('togglePlay()') !== -1);
+  ok('announces phase changes to the SR live region', /theaterSr[\s\S]*phase/.test(src));
+  ok('transport controls carry tooltips', src.indexOf('title="Play / pause (Space)"') !== -1);
 }
 
 /* ============================ ingestion pipeline ============================ */
@@ -1516,7 +1669,12 @@ async function testAccounts() {
     testTheaterFilters();
     testSimEngine();
     testTheaterActions();
+    testGibs();
+    testCropRisk();
+    testSimPhases();
     testTheaterGlobe();
+    testGibsWiring();
+    testTheaterCinematicWiring();
     testSeverity();
     testNormalize();
     testDedupe();

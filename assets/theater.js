@@ -30,7 +30,10 @@
     selected: null,
     // sim
     simParams: null, sim: null, day: 0, playing: false, speed: 1,
+    // cinematic playback
+    phases: [], ledger: [], phaseId: null, cropLayer: 'composite',
   };
+  var CR = window.CROP_RISK;
 
   var canvas, ctx, W = 0, H = 0, DPR = 1, raf = null, animTo = null, dragging = false, lastPt = null, hoverNode = null;
   var simTimer = null, listeners = [], mounted = false;
@@ -590,8 +593,12 @@
       '<div class="sim-presets" id="simPresets"></div>' +
       '<div class="sim-params" id="simParams"></div>' +
       '<div class="sim-transport" id="simTransport"></div>' +
+      '<div class="sim-phasebar" id="simPhaseBar" data-testid="sim-phasebar"></div>' +
       '<div class="sim-kpis" id="simKpis" data-testid="sim-kpis"></div>' +
+      '<div class="sim-crop" id="simCropRisk" data-testid="sim-croprisk"></div>' +
       '<div class="sim-lower"><div class="sim-interv" id="simInterv"></div><div class="sim-log" id="simLog" data-testid="sim-log"></div></div>' +
+      '<div class="sim-ledger" id="simLedger" data-testid="sim-ledger"></div>' +
+      '<div class="sim-mission" id="simMission" data-testid="sim-mission"></div>' +
       '<div class="sim-modelcard" id="simModelCard"></div>' +
       '</div>';
   }
@@ -635,29 +642,48 @@
   }
   function buildTransport() {
     var host = $('#simTransport');
+    host.setAttribute('role', 'group');
+    host.setAttribute('aria-label', 'Playback controls — space to play/pause, arrow keys to step');
+    host.tabIndex = 0;
     host.innerHTML =
-      '<button class="mtool" id="simPlay" data-testid="sim-play" aria-label="Play/pause">▶</button>' +
-      '<button class="mtool" id="simStepB" data-testid="sim-step-back" aria-label="Step back">⏴</button>' +
-      '<button class="mtool" id="simStepF" data-testid="sim-step-fwd" aria-label="Step forward">⏵</button>' +
-      '<button class="mtool" id="simRestart" data-testid="sim-restart" aria-label="Restart">⟲</button>' +
+      '<button class="mtool" id="simPlay" data-testid="sim-play" aria-label="Play/pause" title="Play / pause (Space)">▶</button>' +
+      '<button class="mtool" id="simStepB" data-testid="sim-step-back" aria-label="Step back" title="Step back one day (←)">⏴</button>' +
+      '<button class="mtool" id="simStepF" data-testid="sim-step-fwd" aria-label="Step forward" title="Step forward one day (→)">⏵</button>' +
+      '<button class="mtool" id="simRestart" data-testid="sim-restart" aria-label="Restart" title="Restart to day 0 (Home)">⟲</button>' +
       '<input type="range" id="simScrub" min="0" max="180" value="0" data-testid="sim-scrub" aria-label="Timeline day">' +
       '<span class="sim-day" id="simDay" data-testid="sim-day">Day 0</span>' +
-      '<select id="simSpeed" data-testid="sim-speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>' +
+      '<span class="sim-phase" id="simPhase" data-testid="sim-phase">—</span>' +
+      '<select id="simSpeed" data-testid="sim-speed" aria-label="Playback speed" title="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>' +
       '<button class="btn sm" id="simSaveBtn" data-testid="sim-save">' + icon('save') + ' Save scenario</button>';
     on($('#simPlay'), 'click', togglePlay);
-    on($('#simStepB'), 'click', function () { setDay(st.day - 1); });
-    on($('#simStepF'), 'click', function () { setDay(st.day + 1); });
+    on($('#simStepB'), 'click', function () { pause(); setDay(st.day - 1); });
+    on($('#simStepF'), 'click', function () { pause(); setDay(st.day + 1); });
     on($('#simRestart'), 'click', function () { pause(); setDay(0); });
     on($('#simScrub'), 'input', function () { pause(); setDay(+$('#simScrub').value); });
     on($('#simSpeed'), 'change', function () { st.speed = +$('#simSpeed').value; if (st.playing) { pause(); play(); } });
     on($('#simSaveBtn'), 'click', saveScenario);
+    // Keyboard transport: space toggles, arrows step, Home restarts. Ignore when
+    // focus is in the speed select so native option navigation still works.
+    on(host, 'keydown', function (e) {
+      if (e.target && e.target.id === 'simSpeed') return;
+      var k = e.key;
+      if (k === ' ' || k === 'Spacebar') { e.preventDefault(); togglePlay(); }
+      else if (k === 'ArrowLeft') { e.preventDefault(); pause(); setDay(st.day - 1); }
+      else if (k === 'ArrowRight') { e.preventDefault(); pause(); setDay(st.day + 1); }
+      else if (k === 'Home') { e.preventDefault(); pause(); setDay(0); }
+    });
   }
   function runScenario() {
     if (!st.simParams) return;
     st.sim = SIM.runSim(st.simParams);
     if (st.day > st.sim.horizon) st.day = st.sim.horizon;
+    st.phases = SIM.computePhases ? SIM.computePhases(st.sim) : [];
+    st.ledger = SIM.phaseLedger ? SIM.phaseLedger(st.sim) : [];
+    st.phaseId = null;
     var scr = $('#simScrub'); if (scr) scr.max = st.sim.horizon;
     renderKpis(); renderLog(); renderModelCard();
+    renderPhaseBar(); renderLedger(); renderCropRisk(); renderMission();
+    updatePhaseState();
     syncUrl();
     pushSnapshot();
   }
@@ -694,12 +720,197 @@
     var scr = $('#simScrub'); if (scr) scr.value = st.day;
     var dl = $('#simDay'); if (dl) dl.textContent = 'Day ' + st.day;
     renderKpis(); highlightLog();
-    var sr = $('#theaterSr'); if (sr) sr.textContent = 'Simulation day ' + st.day + '. Route capacity ' + frame().routeCapacity + '%.';
+    updatePhaseState();
+    updateCropRanking();
+    updateMissionBrief();
+    var f = frame();
+    var sr = $('#theaterSr');
+    if (sr) {
+      var ph = SIM.phaseForDay ? SIM.phaseForDay(st.day, st.phases) : null;
+      sr.textContent = 'Simulation day ' + st.day + (ph ? ', phase: ' + ph.label : '') +
+        '. Route capacity ' + f.routeCapacity + '%.';
+    }
+  }
+
+  /* phase (0..1) fraction across the scenario horizon, for crop-risk envelope. */
+  function phaseT() { return st.sim && st.sim.horizon ? st.day / st.sim.horizon : 0; }
+
+  /* ---- cinematic phase timeline + readout ---- */
+  function renderPhaseBar() {
+    var host = $('#simPhaseBar'); if (!host || !st.sim) return;
+    var H = st.sim.horizon || 1;
+    host.innerHTML = '<div class="pb-track" role="img" aria-label="Scenario phase timeline">' +
+      st.phases.map(function (p) {
+        var left = Math.round((p.startDay / H) * 100);
+        var w = Math.max(2, Math.round(((p.endDay - p.startDay) / H) * 100));
+        return '<button class="pb-seg" data-idx="' + p.index + '" data-testid="pb-seg-' + p.id + '" ' +
+          'style="left:' + left + '%;width:' + w + '%" title="' + esc(p.label + ' · day ' + p.startDay + '–' + p.endDay) + '" ' +
+          'aria-label="Jump to ' + esc(p.label) + ', day ' + p.startDay + '"><span class="pb-lab">' + esc(p.label) + '</span></button>';
+      }).join('') + '</div>';
+    $$('.pb-seg', host).forEach(function (b) {
+      on(b, 'click', function () {
+        var p = st.phases[+b.getAttribute('data-idx')]; if (!p) return;
+        pause(); setDay(p.startDay); flyToPhase(p);
+      });
+    });
+  }
+  // Fly the globe to the node most relevant to a phase (scenario initiator or
+  // the current top modeled crop-risk region), so selecting a phase moves the view.
+  function flyToPhase(p) {
+    var target = null;
+    if (p && (p.id === 'trigger' || p.id === 'chokepoint') && st.simParams) target = D.nodeById(st.simParams.initiator);
+    if (!target) { var top = topRiskRegion(); if (top) target = D.nodeById(top.id); }
+    if (target) flyTo(target.lat, target.lng, Math.max(st.zoom, 1.8));
+  }
+  function updatePhaseState() {
+    if (!st.sim) return;
+    var ph = SIM.phaseForDay ? SIM.phaseForDay(st.day, st.phases) : null;
+    var lab = $('#simPhase');
+    if (lab && ph) lab.textContent = 'Phase ' + (ph.index + 1) + '/8 · ' + ph.label;
+    $$('#simPhaseBar .pb-seg').forEach(function (b) { b.classList.toggle('active', ph && +b.getAttribute('data-idx') === ph.index); });
+    $$('#simLedger .lg-entry').forEach(function (e) { e.classList.toggle('active', ph && +e.getAttribute('data-idx') === ph.index); });
+    st.phaseId = ph ? ph.id : null;
   }
   function highlightLog() { $$('#simLog .log-row').forEach(function (r) { var d = +(r.querySelector('.log-day').textContent.slice(1)); r.classList.toggle('reached', d <= st.day); }); }
-  function play() { if (!st.sim) return; st.playing = true; var pb = $('#simPlay'); if (pb) pb.textContent = '❚❚'; var iv = Math.max(40, 160 / st.speed); simTimer = setInterval(function () { if (st.day >= st.sim.horizon) { pause(); return; } setDay(st.day + 2); }, iv); }
-  function pause() { st.playing = false; var pb = $('#simPlay'); if (pb) pb.textContent = '▶'; if (simTimer) { clearInterval(simTimer); simTimer = null; } }
+  function play() {
+    if (!st.sim) return;
+    if (typeof document !== 'undefined' && document.hidden) return; // never start while hidden
+    st.playing = true; var pb = $('#simPlay'); if (pb) { pb.textContent = '❚❚'; pb.setAttribute('aria-pressed', 'true'); }
+    // Reduced motion advances one day per tick at a calm cadence; full motion
+    // steps two days for a smoother cinematic sweep. Both are self-terminating.
+    var stepDays = REDUCED ? 1 : 2;
+    var iv = REDUCED ? Math.max(120, 320 / st.speed) : Math.max(40, 160 / st.speed);
+    if (simTimer) { clearInterval(simTimer); simTimer = null; }
+    simTimer = setInterval(function () {
+      if (typeof document !== 'undefined' && document.hidden) { pause(); return; } // guard runaway when hidden
+      if (st.day >= st.sim.horizon) { pause(); return; }
+      setDay(st.day + stepDays);
+    }, iv);
+  }
+  function pause() { st.playing = false; var pb = $('#simPlay'); if (pb) { pb.textContent = '▶'; pb.setAttribute('aria-pressed', 'false'); } if (simTimer) { clearInterval(simTimer); simTimer = null; } }
   function togglePlay() { if (st.playing) pause(); else { if (st.day >= st.sim.horizon) setDay(0); play(); } }
+  // Pause playback + rAF whenever the tab/page is hidden; resume rAF (not sim) on return.
+  function onVisibility() { if (typeof document !== 'undefined' && document.hidden) { pause(); if (raf) { cancelAnimationFrame(raf); raf = null; } } else if (mounted) { kick(); } }
+
+  /* ---- animated crop-risk overlay: legend + region ranking + a11y summary ---- */
+  // Regions are the sourced production/exposure/chokepoint nodes; severityBase is
+  // the observed structural severity and commodityMatch reflects scenario overlap.
+  function riskRegions() {
+    var coms = (st.simParams && st.simParams.commodities) || [];
+    var max = D.SEVERITY_ORDER.critical || 4;
+    return D.NODES.filter(function (n) { return n.kind === 'breadbasket' || n.kind === 'exposed' || n.kind === 'chokepoint'; })
+      .map(function (n) {
+        var sb = (D.SEVERITY_ORDER[n.severity] || 0) / max;
+        var match = (n.commodities || []).some(function (c) { return coms.indexOf(c) !== -1; }) ? 1 : 0.45;
+        return { id: n.id, name: n.name, seed: n.id, severityBase: sb, commodityMatch: match, lat: n.lat, lng: n.lng };
+      });
+  }
+  function rankedRisk() {
+    if (!CR) return [];
+    var shock = st.sim ? (frame() ? (1 - frame().routeCapacity / 100) : undefined) : undefined;
+    return CR.rankRegions(st.cropLayer, phaseT(), riskRegions(), { shock: shock });
+  }
+  function topRiskRegion() { var r = rankedRisk(); return r.length ? r[0] : null; }
+  function renderCropRisk() {
+    var host = $('#simCropRisk'); if (!host) return;
+    if (!CR) { host.innerHTML = '<p class="muted">Crop-risk layer unavailable.</p>'; return; }
+    var lg = CR.legend(st.cropLayer);
+    host.innerHTML =
+      '<div class="crop-head"><div class="fdim-h">Animated crop-risk <span class="fdim-or">modeled proxy</span></div>' +
+      '<label class="crop-sel-lab"><span class="sr-only">Crop-risk layer</span>' +
+      '<select id="cropLayerSel" class="select" data-testid="crop-layer" aria-label="Crop-risk layer">' +
+      CR.LAYERS.map(function (l) { return '<option value="' + l.id + '"' + (l.id === st.cropLayer ? ' selected' : '') + '>' + esc(l.label) + '</option>'; }).join('') +
+      '</select></label></div>' +
+      '<div class="crop-legend" data-testid="crop-legend">' + lg.bands.map(function (b) {
+        return '<span class="cl-band"><span class="cl-sw" data-pattern="' + b.pattern + '" style="background:' + b.color + '"></span>' +
+          '<span class="cl-mk" aria-hidden="true">' + b.marker + '</span>' + esc(b.label) + '</span>';
+      }).join('') + '</div>' +
+      '<p class="crop-method">' + esc((CR.LAYER_BY_ID[st.cropLayer] || {}).methodology || '') + '</p>' +
+      '<div class="crop-rank" id="cropRank" data-testid="crop-rank"></div>' +
+      '<p class="crop-summary" id="cropSummary" data-testid="crop-summary" role="status" aria-live="polite"></p>';
+    on($('#cropLayerSel'), 'change', function (e) { st.cropLayer = e.target.value; renderCropRisk(); });
+    updateCropRanking();
+  }
+  function updateCropRanking() {
+    if (!CR) return;
+    var host = $('#cropRank'); if (!host) return;
+    var ranked = rankedRisk().slice(0, 6);
+    host.innerHTML = ranked.map(function (r) {
+      var pct = Math.round(r.value * 100);
+      return '<button class="cr-row cr-' + r.band + '" data-id="' + esc(r.id) + '" data-testid="cr-row" ' +
+        'title="Fly to ' + esc(r.name) + '"><span class="cr-mk" aria-hidden="true">' + r.marker + '</span>' +
+        '<span class="cr-name">' + esc(r.name) + '</span>' +
+        '<span class="cr-bar"><span class="cr-fill" data-pattern="' + r.pattern + '" style="width:' + pct + '%;background:' + r.color + '"></span></span>' +
+        '<span class="cr-val">' + pct + '% <em>' + esc(r.bandLabel) + '</em></span></button>';
+    }).join('');
+    $$('.cr-row', host).forEach(function (b) {
+      on(b, 'click', function () { var n = D.nodeById(b.getAttribute('data-id')); if (n) { flyTo(n.lat, n.lng, Math.max(st.zoom, 1.8)); openNode(n); } });
+    });
+    var sum = $('#cropSummary'); if (sum) sum.textContent = CR.summaryText(st.cropLayer, phaseT(), ranked);
+  }
+
+  /* ---- causal ledger / event rail ---- */
+  function renderLedger() {
+    var host = $('#simLedger'); if (!host) return;
+    if (!st.ledger || !st.ledger.length) { host.innerHTML = ''; return; }
+    host.innerHTML = '<div class="fdim-h">Causal ledger <span class="fdim-or">what changed · why · evidence</span></div>' +
+      st.ledger.map(function (e) {
+        return '<button class="lg-entry" data-idx="' + e.index + '" data-testid="ledger-entry" ' +
+          'title="Day ' + e.startDay + ' — jump to ' + esc(e.label) + '">' +
+          '<div class="lg-e-h"><span class="lg-e-day">D' + e.startDay + '</span><span class="lg-e-ph">' + esc(e.label) + '</span>' +
+          (e.confidence != null ? '<span class="lg-e-conf" title="Modeled confidence">conf ' + e.confidence + '%</span>' : '') + '</div>' +
+          '<div class="lg-e-changed">' + esc(e.changed) + '</div>' +
+          '<div class="lg-e-why"><b>Why:</b> ' + esc(e.why) + '</div>' +
+          '<div class="lg-e-ev"><b>Evidence:</b> ' + esc(e.evidence) + '</div>' +
+          '<div class="lg-e-assume">' + esc(e.assumption) + (e.lagDays != null ? ' · lag ~' + e.lagDays + 'd' : '') + '</div>' +
+          '<div class="lg-e-next"><b>Next decision:</b> ' + esc(e.nextDecision) + '</div>' +
+          '</button>';
+      }).join('');
+    $$('.lg-entry', host).forEach(function (b) {
+      on(b, 'click', function () {
+        var e = st.ledger[+b.getAttribute('data-idx')]; if (!e) return;
+        pause(); setDay(e.startDay);
+        var p = st.phases[e.index]; if (p) flyToPhase(p);
+      });
+    });
+  }
+
+  /* ---- ATOM deterministic mission card + strategic brief prompt ---- */
+  function briefText() {
+    var ph = SIM.phaseForDay ? SIM.phaseForDay(st.day, st.phases) : null;
+    var top = topRiskRegion();
+    var f = frame();
+    var preset = SIM.PRESET_BY_ID[st.simParams.preset];
+    var lines = [];
+    lines.push((preset ? preset.label : 'Food War scenario') + ' — day ' + st.day + (ph ? ', phase: ' + ph.label : ''));
+    if (f) lines.push('Modeled KPIs: route capacity ' + f.routeCapacity + '%, price pressure ' + f.pricePressure + ', humanitarian caseload ' + f.humanitarianCaseload + 'M (confidence ' + f.confidence + '%).');
+    if (top) lines.push('Highest modeled ' + (CR.LAYER_BY_ID[st.cropLayer] || {}).label + ' risk: ' + top.name + ' (' + Math.round(top.value * 100) + '%, ' + top.bandLabel + ' band).');
+    lines.push('All simulation outputs are modeled proxies for scenario exploration — not a forecast or measured observation.');
+    return lines.join('\n');
+  }
+  function renderMission() {
+    var host = $('#simMission'); if (!host) return;
+    host.innerHTML =
+      '<div class="fdim-h">ATOM mission brief <span class="fdim-or">from current phase</span></div>' +
+      '<pre class="mission-brief" id="missionBrief" data-testid="mission-brief"></pre>' +
+      '<div class="btn-row">' +
+      '<button class="btn primary sm" id="missionCardBtn" data-testid="mission-card-btn">' + icon('flag') + ' Create mission card</button>' +
+      '<button class="btn sm" id="missionAtomBtn" data-testid="mission-atom-btn">' + icon('sparkles') + ' Ask ATOM for strategic brief</button>' +
+      '</div>';
+    updateMissionBrief();
+    on($('#missionCardBtn'), 'click', function () {
+      var ph = SIM.phaseForDay ? SIM.phaseForDay(st.day, st.phases) : null;
+      var top = topRiskRegion();
+      var title = 'Mitigate ' + (ph ? ph.label.toLowerCase() : 'food-war') + ' risk' + (top ? ' — ' + top.name : '');
+      if (window.AGRI_COLLAB && window.AGRI_COLLAB.openMissionComposer) window.AGRI_COLLAB.openMissionComposer({ title: title, objective: briefText() });
+      else { A.activateMode('command'); flash('Sign in to save a team mission — brief copied to clipboard.'); if (navigator.clipboard) try { navigator.clipboard.writeText(briefText()); } catch (e) {} }
+    });
+    on($('#missionAtomBtn'), 'click', function () {
+      A.openAtom('Give me a strategic brief for this modeled Food War state. ' + briefText() + ' Provide 3 prioritized actions with confidence and cite sources.');
+    });
+    A.refreshIcons();
+  }
+  function updateMissionBrief() { var b = $('#missionBrief'); if (b) b.textContent = briefText(); }
 
   /* snapshot bridge for Save Scenario via collab */
   function pushSnapshot() {
@@ -792,9 +1003,11 @@
     buildSimDeck();
     // insert transport controls right after params
     var deck = $('.th-sim'); var tr = $('#simTransport'); if (tr) buildTransport();
+    setDay(st.day); // sync phase readout / crop ranking / mission brief to current day
     refreshFilterUI();
     if (canDraw) { resize(); kick(); }
     on(window, 'resize', resize);
+    on(document, 'visibilitychange', onVisibility);
     A.refreshIcons();
 
     // apply any pending URL state captured at boot

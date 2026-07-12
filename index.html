@@ -472,6 +472,16 @@ button.card{color:var(--text);font-family:inherit;}
 .layer-btn .d{width:8px;height:8px;border-radius:50%;background:var(--sev-neutral);}
 .layer-btn.active{background:var(--surface-3);color:var(--text);border-color:var(--border-strong);}
 .map-marker{border-radius:50%;border:2px solid rgba(255,255,255,.7);box-shadow:0 0 0 2px rgba(0,0,0,.4);}
+.sat-control{background:var(--surface);border:1px solid var(--border-strong);border-radius:10px;padding:10px 12px;margin:12px 0;}
+.sat-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.sat-tag{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-dim);background:var(--surface-3);border:1px solid var(--border);border-radius:20px;padding:3px 9px;}
+.sat-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 14px;margin-top:12px;}
+.sat-field{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--text-dim);}
+.sat-field>span{font-family:var(--mono);letter-spacing:.03em;}
+.sat-field b{color:var(--text);font-weight:600;}
+.sat-cite{grid-column:1/-1;margin:2px 0 0;font-size:11px;line-height:1.5;color:var(--text-dim);font-family:var(--mono);}
+.sat-cite a{color:var(--accent);}
+.sat-cite .warn{color:var(--sev-high,#e07a2c);}
 .leaflet-popup-content-wrapper{background:var(--surface-2);color:var(--text);border-radius:8px;border:1px solid var(--border-strong);}
 .leaflet-popup-tip{background:var(--surface-2);}
 .leaflet-popup-content{margin:12px 14px;font-size:13px;}
@@ -1147,17 +1157,74 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .log-dot.critical{background:var(--sev-critical);}.log-dot.high{background:var(--sev-high);}
 .log-dot.moderate{background:var(--sev-moderate);}.log-dot.stable{background:var(--sev-stable);}
 .sim-modelcard{display:flex;gap:8px;align-items:flex-start;margin-top:12px;padding:10px 12px;border:1px dashed var(--border);border-radius:var(--radius);font-size:11.5px;color:var(--muted);line-height:1.5;}
+.sim-phase{font:600 11px/1 var(--mono);color:var(--text);background:var(--surface-3,var(--bg-2));border:1px solid var(--border);border-radius:20px;padding:5px 10px;white-space:nowrap;}
+/* Cinematic phase timeline */
+.sim-phasebar{margin:6px 0 12px;}
+.pb-track{position:relative;height:30px;border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden;}
+.pb-seg{position:absolute;top:0;bottom:0;border:0;border-right:1px solid var(--bg);background:transparent;color:var(--text-dim);font:600 9px/1 var(--mono);letter-spacing:.02em;cursor:pointer;padding:0 4px;overflow:hidden;display:flex;align-items:center;transition:background .15s;}
+.pb-seg:nth-child(odd){background:rgba(255,255,255,.03);}
+.pb-seg:hover{background:rgba(127,174,67,.18);color:var(--text);}
+.pb-seg.active{background:var(--sev-high,#e07a2c);color:#0d0a06;}
+.pb-lab{text-transform:uppercase;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;}
+/* Animated crop-risk overlay */
+.sim-crop{border:1px solid var(--border);border-radius:var(--radius);padding:11px 12px;background:var(--surface);margin:12px 0;}
+.crop-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
+.crop-sel-lab .select{background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:5px 8px;min-height:34px;font-size:12px;}
+.crop-legend{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0;font-size:11.5px;color:var(--text-dim);}
+.cl-band{display:inline-flex;align-items:center;gap:6px;}
+.cl-sw{width:14px;height:14px;border-radius:3px;display:inline-block;border:1px solid rgba(0,0,0,.3);}
+.cl-sw[data-pattern=dots]{background-image:radial-gradient(rgba(0,0,0,.55) 1.2px,transparent 1.2px);background-size:5px 5px;}
+.cl-sw[data-pattern=hatch]{background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.4) 0 2px,transparent 2px 4px);}
+.cl-sw[data-pattern=cross]{background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.45) 0 2px,transparent 2px 4px),repeating-linear-gradient(-45deg,rgba(0,0,0,.45) 0 2px,transparent 2px 4px);}
+.cl-mk{font-family:var(--mono);font-size:11px;color:var(--text);}
+.crop-method{font-size:11px;color:var(--muted);line-height:1.5;margin:2px 0 10px;}
+.crop-rank{display:flex;flex-direction:column;gap:5px;}
+.cr-row{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:var(--bg-2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;cursor:pointer;color:var(--text-dim);}
+.cr-row:hover{border-color:var(--border-strong);color:var(--text);}
+.cr-mk{font-family:var(--mono);width:14px;flex:0 0 auto;text-align:center;}
+.cr-name{flex:0 0 34%;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cr-bar{flex:1;height:8px;background:rgba(255,255,255,.06);border-radius:5px;overflow:hidden;}
+.cr-fill{display:block;height:100%;border-radius:5px;}
+.cr-fill[data-pattern=dots]{background-image:radial-gradient(rgba(0,0,0,.45) 1px,transparent 1px);background-size:5px 5px;}
+.cr-fill[data-pattern=hatch]{background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.35) 0 2px,transparent 2px 4px);}
+.cr-fill[data-pattern=cross]{background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.4) 0 2px,transparent 2px 4px),repeating-linear-gradient(-45deg,rgba(0,0,0,.4) 0 2px,transparent 2px 4px);}
+.cr-val{font:600 10.5px/1 var(--mono);color:var(--text-dim);min-width:74px;text-align:right;}
+.cr-val em{font-style:normal;color:var(--muted);}
+.crop-summary{font-size:11.5px;color:var(--text-dim);line-height:1.5;margin:10px 0 0;font-family:var(--mono);}
+/* Causal ledger rail */
+.sim-ledger{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin:14px 0;}
+.sim-ledger .fdim-h{grid-column:1/-1;}
+.lg-entry{text-align:left;border:1px solid var(--border);border-left:3px solid var(--border-strong);border-radius:8px;background:var(--surface);padding:9px 11px;cursor:pointer;color:var(--text-dim);display:flex;flex-direction:column;gap:3px;}
+.lg-entry:hover{border-color:var(--border-strong);}
+.lg-entry.active{border-left-color:var(--sev-high,#e07a2c);background:var(--surface-2,var(--surface));}
+.lg-e-h{display:flex;align-items:center;gap:7px;}
+.lg-e-day{font:700 10px/1 var(--mono);color:var(--muted);}
+.lg-e-ph{font:600 11.5px/1.2 var(--ui);color:var(--text);flex:1;}
+.lg-e-conf{font:600 9.5px/1 var(--mono);color:var(--muted);border:1px solid var(--border);border-radius:10px;padding:2px 6px;}
+.lg-e-changed{font-size:12px;color:var(--text);}
+.lg-e-why,.lg-e-ev,.lg-e-next{font-size:11px;line-height:1.45;}
+.lg-e-why b,.lg-e-ev b,.lg-e-next b{color:var(--muted);font-weight:600;}
+.lg-e-assume{font-size:10.5px;color:var(--muted);font-style:italic;line-height:1.4;}
+/* ATOM mission brief */
+.sim-mission{border:1px solid var(--border);border-radius:var(--radius);padding:11px 12px;background:var(--surface);margin:12px 0;}
+.mission-brief{white-space:pre-wrap;font:12px/1.55 var(--mono);color:var(--text-dim);background:var(--bg-2);border:1px solid var(--border);border-radius:7px;padding:10px 12px;margin:8px 0 10px;max-height:220px;overflow:auto;}
 @media (max-width:900px){
   .th-stage{grid-template-columns:1fr;}
   .th-side{max-height:260px;}
   .sim-lower{grid-template-columns:1fr;}
+  .sim-ledger{grid-template-columns:1fr;}
+  /* Compact playback deck as a sticky bottom sheet on small viewports */
+  .sim-transport{position:sticky;bottom:0;z-index:5;box-shadow:0 -4px 14px rgba(0,0,0,.4);}
+  .pb-lab{display:none;}
 }
 @media (max-width:420px){
   .th-filters{gap:8px;}
   .sim-presets{grid-template-columns:1fr;}
   .th-toolbar{top:8px;right:8px;}
   .mtool{width:40px;height:40px;min-height:40px;}
+  .cr-name{flex:0 0 28%;}
 }
+@media (prefers-reduced-motion:reduce){ .pb-seg,.cr-row,.lg-entry{transition:none;} }
 @media (prefers-reduced-motion:reduce){ .mode-panel.active{animation:none;} }
 
 /* Transparency disclosure — Known gaps / model limits */
@@ -1306,6 +1373,8 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 <script src="assets/theater-filters.js"></script>
 <script src="assets/theater-actions.js"></script>
 <script src="assets/theater-globe.js"></script>
+<script src="assets/gibs.js"></script>
+<script src="assets/crop-risk.js"></script>
 <!-- ============ APP ============ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
   integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>

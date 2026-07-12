@@ -243,14 +243,126 @@
     };
   }
 
+  /* ---------------- cinematic phased playback ----------------
+     Eight deterministic phases mapped onto the day-0..180 timeline so the
+     Theater can drive an explainable, phase-marked playback (not a video).
+     Phase boundaries are derived from the modeled curve + parameters and are
+     forced monotonic non-decreasing, so markers never cross. */
+  var PHASES = [
+    { id: 'trigger', label: 'Trigger', hint: 'Shock initiated at the initiator node.' },
+    { id: 'chokepoint', label: 'Chokepoint disruption', hint: 'Throughput at the corridor degrades.' },
+    { id: 'rerouting', label: 'Route rerouting', hint: 'Substitution routes absorb diverted volume.' },
+    { id: 'price', label: 'Price / input propagation', hint: 'Price pressure and input costs propagate.' },
+    { id: 'breadbasket', label: 'Breadbasket stress', hint: 'Production-zone exposure widens.' },
+    { id: 'humanitarian', label: 'Humanitarian escalation', hint: 'Caseload rises in import-exposed regions.' },
+    { id: 'response', label: 'Response / intervention', hint: 'Reserves, corridors and reroutes take effect.' },
+    { id: 'stabilization', label: 'Stabilization / aftershock', hint: 'Shock eases; residual aftershocks persist.' },
+  ];
+  var PHASE_ORDER = PHASES.map(function (p) { return p.id; });
+
+  function firstDay(timeline, pred, dflt) {
+    for (var i = 0; i < timeline.length; i++) { if (pred(timeline[i])) return timeline[i].day; }
+    return dflt;
+  }
+
+  // Ordered phase segments {index,id,label,hint,startDay,endDay} for a run.
+  function computePhases(result) {
+    var tl = result.timeline, p = result.params, H = result.horizon;
+    var peakHuman = (result.summary && result.summary.peakHumanitarian) || 0;
+    var raw = {
+      trigger: 0,
+      chokepoint: firstDay(tl, function (k) { return k.shock >= 15; }, 2),
+      rerouting: firstDay(tl, function (k) { return k.routeCapacity <= 75; }, Math.round(H * 0.12)),
+      price: firstDay(tl, function (k) { return k.pricePressure >= 130; }, Math.round(H * 0.2)),
+      breadbasket: firstDay(tl, function (k) { return k.routeCapacity <= 50; }, Math.round(H * 0.3)),
+      humanitarian: firstDay(tl, function (k) { return peakHuman > 0 && k.humanitarianCaseload >= peakHuman * 0.3; }, Math.round(H * 0.45)),
+      response: Math.min(H, p.duration),
+      stabilization: Math.min(H, p.duration + p.responseLag * 2),
+    };
+    var prev = 0, out = [];
+    PHASE_ORDER.forEach(function (id, i) {
+      var start = Math.max(0, Math.min(H, raw[id] != null ? raw[id] : prev));
+      if (i > 0 && start <= prev) start = Math.min(H, prev + 1); // strictly after prior phase
+      prev = start;
+      out.push({ index: i, id: id, label: PHASES[i].label, hint: PHASES[i].hint, startDay: start, endDay: H });
+    });
+    out.forEach(function (ph, i) { if (i < out.length - 1) ph.endDay = out[i + 1].startDay; });
+    return out;
+  }
+
+  function phaseForDay(day, phases) {
+    var cur = phases[0];
+    for (var i = 0; i < phases.length; i++) { if (day >= phases[i].startDay) cur = phases[i]; }
+    return cur;
+  }
+
+  var LEDGER_EVIDENCE = {
+    trigger: 'Initiator node structure (Chatham House chokepoint geography).',
+    chokepoint: 'Chatham House corridor share + alternatives.',
+    rerouting: 'Route-substitution parameter over the trade-arc network.',
+    price: 'FAO Food Price Index dynamics (modeled response).',
+    breadbasket: 'FAO crop-calendar production-zone geography.',
+    humanitarian: 'FEWS NET import-exposure structure.',
+    response: 'Intervention modifiers (reserves / corridors / reroute).',
+    stabilization: 'Recovery ramp after shock duration + response lag.',
+  };
+  var LEDGER_NEXT = {
+    trigger: 'Confirm corridor status; pre-position reroute capacity.',
+    chokepoint: 'Decide whether to activate substitution routes.',
+    rerouting: 'Weigh relaxing export controls to ease price pressure.',
+    price: 'Consider strategic-reserve release for exposed importers.',
+    breadbasket: 'Target input support to at-risk production zones.',
+    humanitarian: 'Stand up protected humanitarian corridors.',
+    response: 'Monitor delta vs baseline; sustain or taper interventions.',
+    stabilization: 'Plan aftershock watch + reserve replenishment.',
+  };
+  function ledgerChanged(id, k) {
+    if (!k) return 'Scenario state advancing.';
+    switch (id) {
+      case 'trigger': return 'Scenario initialized; shock onset ' + k.shock + '%.';
+      case 'chokepoint': return 'Route capacity ' + k.routeCapacity + '% as corridor degrades.';
+      case 'rerouting': return 'Capacity ' + k.routeCapacity + '%; substitution routes engaged.';
+      case 'price': return 'Price pressure index ' + k.pricePressure + '.';
+      case 'breadbasket': return 'Affected nodes ' + k.affectedNodes + '; exposed pop ' + k.exposedPop + 'M.';
+      case 'humanitarian': return 'Humanitarian caseload ' + k.humanitarianCaseload + 'M (modeled).';
+      case 'response': return 'Reserve buffer ' + k.reserveBuffer + 'd; interventions applied.';
+      case 'stabilization': return 'Capacity recovering to ' + k.routeCapacity + '%.';
+      default: return 'State advancing.';
+    }
+  }
+
+  /* Synchronized causal ledger: one explainable entry per phase carrying what
+     changed, why, evidence inputs, the modeled assumption, confidence, lag, and
+     the next decision point. Deterministic; drives the Theater event rail. */
+  function phaseLedger(result) {
+    var phases = computePhases(result), tl = result.timeline, p = result.params, H = result.horizon;
+    return phases.map(function (ph) {
+      var k = tl[Math.max(0, Math.min(H, ph.startDay))];
+      return {
+        index: ph.index, id: ph.id, label: ph.label, startDay: ph.startDay, endDay: ph.endDay,
+        changed: ledgerChanged(ph.id, k),
+        why: ph.hint,
+        evidence: LEDGER_EVIDENCE[ph.id] || '',
+        assumption: 'Modeled proxy from scenario parameters — not a measured observation.',
+        confidence: k ? k.confidence : null,
+        lagDays: p.responseLag * 3,
+        nextDecision: LEDGER_NEXT[ph.id] || '',
+      };
+    });
+  }
+
   var API = {
     HORIZON: HORIZON,
     PRESETS: PRESETS,
     PRESET_BY_ID: PRESET_BY_ID,
     INTERVENTIONS: INTERVENTIONS,
     INTERVENTION_BY_ID: INTERVENTION_BY_ID,
+    PHASES: PHASES,
     normalizeParams: normalizeParams,
     runSim: runSim,
+    computePhases: computePhases,
+    phaseForDay: phaseForDay,
+    phaseLedger: phaseLedger,
     clamp: clamp,
   };
   root.SIM_ENGINE = API;
