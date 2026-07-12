@@ -426,6 +426,20 @@ main#workspace::before{
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:13px;}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:15px;display:flex;flex-direction:column;gap:9px;transition:border-color .18s,transform .18s;}
 .card:hover{border-color:var(--border-strong);}
+/* Card variant rendered as a <button> (ATOM strategic prompts, intel feed cards):
+   buttons do NOT inherit the page text color, so without this they fall back to
+   the UA default black — invisible on dark loam. Pin the semantic foreground in
+   both themes. Token-based, so light parchment stays dark-soil legible too. */
+button.card{color:var(--text);font-family:inherit;}
+/* ATOM prompt cards — premium agricultural treatment (crop-green spar-cue icon,
+   muted arrow, green hover/focus edge + lift), no neon. */
+#panel-atom .cards .card{transition:border-color .18s,transform .18s,box-shadow .18s;}
+#panel-atom .cards .card h4{color:var(--text);}
+#panel-atom .cards .card .ch .ic:first-child{color:var(--accent);}
+#panel-atom .cards .card .ch .ic:last-child{color:var(--muted);}
+#panel-atom .cards .card:hover{border-color:hsl(var(--accent-primary) / 0.55);transform:translateY(-2px);box-shadow:0 0 18px -8px hsl(var(--accent-primary) / 0.5);}
+#panel-atom .cards .card:hover .ch .ic:last-child{color:var(--accent);}
+#panel-atom .cards .card:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 .card .ch{display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .card .src-line{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--muted);flex-wrap:wrap;}
 .card h4{font-size:14.5px;line-height:1.3;}

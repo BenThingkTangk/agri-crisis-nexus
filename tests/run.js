@@ -1119,6 +1119,23 @@ function testDesignSystem() {
   ok('gate carries an agricultural-intelligence operational status cue', html.indexOf('class="gate-status"') !== -1 && html.indexOf('Global Agricultural Watch') !== -1 && html.indexOf('11 open-source feeds') !== -1);
   ok('gate status cue makes no fabricated live/real-time data claim', !/gate-status[\s\S]*?(live data|real-?time|updated \d|last updated)/i.test(html.slice(html.indexOf('class="gate-status"'), html.indexOf('class="gate-status"') + 400)));
 
+  section('design-system: ATOM prompt-card legibility (no UA-black leak)');
+  // The ATOM strategic prompt cards are <button class="card">; buttons don't
+  // inherit the page color, so without an explicit token they render UA-black on
+  // dark loam (the settled-QA blocker). Guard the explicit token + real contrast.
+  const darkBlock = (html.match(/\[data-theme="dark"\]\{[\s\S]*?\n\}/) || [''])[0];
+  const dtok = (name) => { const m = darkBlock.match(new RegExp('--' + name + ':\\s*([0-9]+) ([0-9.]+)% ([0-9.]+)%')); return m ? { h:+m[1], s:+m[2], l:+m[3] } : null; };
+  const dFg = dtok('foreground'), dSurf = dtok('surface-c');
+  ok('button-variant card pins explicit semantic foreground (no black leak)', /button\.card\{color:var\(--text\)/.test(html));
+  ok('ATOM prompt card text pinned to foreground token', /#panel-atom \.cards \.card h4\{color:var\(--text\)/.test(html));
+  ok('ATOM prompt card icon uses crop-green accent cue', /#panel-atom \.cards \.card \.ch \.ic:first-child\{color:var\(--accent\)/.test(html));
+  ok('ATOM prompt card arrow uses muted (not black), greens on hover', /#panel-atom \.cards \.card \.ch \.ic:last-child\{color:var\(--muted\)/.test(html) && /#panel-atom \.cards \.card:hover \.ch \.ic:last-child\{color:var\(--accent\)/.test(html));
+  ok('ATOM card focus state stays visible (accent outline)', /#panel-atom \.cards \.card:focus-visible\{outline:2px solid var\(--accent\)/.test(html));
+  ok('dark ATOM card foreground is light bone, not near-black (L ≥ 80)', !!dFg && dFg.l >= 80);
+  ok('dark ATOM prompt text vs card surface ≥ 7:1 (AA+)', contrast(dFg, dSurf) >= 7);
+  ok('light ATOM prompt text vs card surface ≥ 7:1 (AA+)', contrast(Lfg, Lsurf) >= 7);
+  ok('ATOM prompt cards are button.card in JS render', /ATOM_SUGGEST\.map\([\s\S]*?<button class="card"/.test(app));
+
   section('design-system: app shell + a11y');
   ok('skip-to-content link present and first', /<a href="#workspace" class="skip-link"/.test(html));
   ok('header scroll-progress element present', html.indexOf('id="scrollProgress"') !== -1);
