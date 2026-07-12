@@ -33,7 +33,7 @@
     // cinematic playback
     phases: [], ledger: [], phaseId: null, cropLayer: 'composite',
     // 2D satellite context (NASA GIBS) + crop-risk map overlay
-    sat: { on: false, layerId: (window.GIBS ? window.GIBS.LAYERS[0].id : 'modis-terra'), date: null, opacity: 0.9, loading: false, failed: false, status: '' },
+    sat: { on: false, layerId: (window.GIBS ? window.GIBS.defaultVisualLayerId() : 'viirs-noaa20'), date: null, opacity: 0.9, loading: false, failed: false, status: '' },
     cropOnMap: true, cropMapOpacity: 0.75,
   };
   var CR = window.CROP_RISK;
@@ -690,7 +690,9 @@
     if (!st.sat.on) { s.textContent = 'Off — vector basemap.'; s.className = 'th-sat-status'; return; }
     if (st.sat.loading) { s.textContent = 'Loading NASA GIBS imagery…'; s.className = 'th-sat-status loading'; return; }
     if (st.sat.failed) { s.innerHTML = '<span class="warn">Imagery unavailable (network/CORS) — vector basemap kept. Try an earlier date.</span>'; s.className = 'th-sat-status fail'; return; }
-    s.textContent = G.contextLabel(st.sat.layerId, st.sat.date); s.className = 'th-sat-status ok';
+    var lyr = G.LAYER_BY_ID[st.sat.layerId];
+    var note = (lyr && lyr.swathGaps) ? ' · note: MODIS shows daily orbit-gap seams near the equator — switch to VIIRS for a gap-free image.' : '';
+    s.textContent = G.contextLabel(st.sat.layerId, st.sat.date) + note; s.className = 'th-sat-status ok';
   }
   // Load one whole-world GIBS image; drawImage never reads pixels, so we omit
   // crossOrigin to avoid needless CORS load failures. onerror → designed fallback.

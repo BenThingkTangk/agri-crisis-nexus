@@ -890,6 +890,14 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   .brand .div{display:none;}
   .btn-atom span.lbl{display:none;}
   .btn-atom{padding:9px 12px;}
+  /* Identity label is variable-width (account name / "Sign in") and was the only
+     header child that could push the flex row past the viewport (body.scrollWidth
+     > 100vw). Collapse it to the icon here — same pattern as .btn-atom's label —
+     keeping the 44px target + aria-label. Brand can shrink/ellipsize as a guard so
+     no header child bleeds past the root at any width. */
+  .identity-btn .lbl{display:none;}
+  .brand{min-width:0;}
+  .brand .name{overflow:hidden;text-overflow:ellipsis;}
   #openCmdk{display:none;}
   #map{height:52vh;}
 }

@@ -33,22 +33,39 @@
 
   // Corrected-reflectance true-colour layers verified for EPSG:3857
   // (GoogleMapsCompatible). All are daily with ~1 day latency and need no key.
+  //
+  // `swathGaps` flags layers whose single-day WHOLE-GLOBE mosaic shows black
+  // triangular gores between orbit passes near the equator: the ~2330 km MODIS
+  // swath does not fully overlap day-to-day, so a global GetMap has real black
+  // wedges in the data (a data artifact, not a render bug). VIIRS's wider
+  // ~3060 km swath is gap-free daily, so it is the preferred whole-globe underlay.
+  // NOAA-20 is used over SNPP because SNPP near-real-time is frequently
+  // unpopulated (an all-black frame), while NOAA-20 is the current operational,
+  // fully-populated corrected-reflectance feed.
   var LAYERS = [
     { id: 'modis-terra', wmtsId: 'MODIS_Terra_CorrectedReflectance_TrueColor',
       label: 'MODIS Terra · true colour', tileMatrixSet: 'GoogleMapsCompatible_Level9',
-      format: 'jpg', maxNativeZoom: 9, cadence: 'daily', latencyDays: 1,
-      description: 'MODIS/Terra corrected-reflectance true colour (morning overpass).' },
+      format: 'jpg', maxNativeZoom: 9, cadence: 'daily', latencyDays: 1, swathGaps: true,
+      description: 'MODIS/Terra corrected-reflectance true colour (morning overpass; daily orbit gaps near the equator).' },
     { id: 'modis-aqua', wmtsId: 'MODIS_Aqua_CorrectedReflectance_TrueColor',
       label: 'MODIS Aqua · true colour', tileMatrixSet: 'GoogleMapsCompatible_Level9',
-      format: 'jpg', maxNativeZoom: 9, cadence: 'daily', latencyDays: 1,
-      description: 'MODIS/Aqua corrected-reflectance true colour (afternoon overpass).' },
-    { id: 'viirs-snpp', wmtsId: 'VIIRS_SNPP_CorrectedReflectance_TrueColor',
-      label: 'VIIRS SNPP · true colour', tileMatrixSet: 'GoogleMapsCompatible_Level9',
-      format: 'jpg', maxNativeZoom: 9, cadence: 'daily', latencyDays: 1,
-      description: 'VIIRS/SNPP corrected-reflectance true colour (higher-resolution daily).' }
+      format: 'jpg', maxNativeZoom: 9, cadence: 'daily', latencyDays: 1, swathGaps: true,
+      description: 'MODIS/Aqua corrected-reflectance true colour (afternoon overpass; daily orbit gaps near the equator).' },
+    { id: 'viirs-noaa20', wmtsId: 'VIIRS_NOAA20_CorrectedReflectance_TrueColor',
+      label: 'VIIRS NOAA-20 · true colour', tileMatrixSet: 'GoogleMapsCompatible_Level9',
+      format: 'jpg', maxNativeZoom: 9, cadence: 'daily', latencyDays: 1, swathGaps: false,
+      description: 'VIIRS/NOAA-20 corrected-reflectance true colour — gap-free daily global coverage (preferred whole-globe view).' }
   ];
   var LAYER_BY_ID = {};
   LAYERS.forEach(function (l) { LAYER_BY_ID[l.id] = l; });
+
+  // Preferred whole-globe visual underlay: the first layer with no daily orbit
+  // gores (VIIRS), so the flat 2D map defaults to one clean continuous image
+  // rather than a MODIS mosaic streaked with black triangular seams.
+  function defaultVisualLayerId() {
+    for (var i = 0; i < LAYERS.length; i++) if (!LAYERS[i].swathGaps) return LAYERS[i].id;
+    return LAYERS[0].id;
+  }
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   // UTC ISO date (YYYY-MM-DD) — GIBS TIME dimension is UTC calendar day.
@@ -122,6 +139,7 @@
     LIVE: LIVE,
     LAYERS: LAYERS,
     LAYER_BY_ID: LAYER_BY_ID,
+    defaultVisualLayerId: defaultVisualLayerId,
     isoDate: isoDate,
     defaultDate: defaultDate,
     availableDates: availableDates,

@@ -593,6 +593,14 @@ function testGibs() {
   const fresh = GIBS.freshnessLabel('modis-terra', '2026-07-11');
   ok('freshness label states daily + observed date + not live',
     /daily/i.test(fresh) && fresh.indexOf('2026-07-11') !== -1 && /not live/i.test(fresh));
+
+  // A whole-globe daily MODIS mosaic has real black orbit-gap gores; the preferred
+  // visual underlay must be a gap-free (VIIRS) layer so the flat map renders clean.
+  ok('MODIS layers are flagged as having daily swath gaps', GIBS.LAYER_BY_ID['modis-terra'].swathGaps === true && GIBS.LAYER_BY_ID['modis-aqua'].swathGaps === true);
+  ok('ships a gap-free VIIRS layer', GIBS.LAYERS.some((l) => l.swathGaps === false && /VIIRS/i.test(l.wmtsId)));
+  const vis = GIBS.defaultVisualLayerId();
+  ok('defaultVisualLayerId picks a gap-free layer', GIBS.LAYER_BY_ID[vis].swathGaps === false);
+  ok('default visual layer is not a gappy MODIS layer', vis.indexOf('modis') === -1);
 }
 
 function testCropRisk() {
@@ -836,7 +844,26 @@ function testTheaterSatelliteWiring() {
   // Satellite overlay CSS: compact, 44px targets, mobile bottom-sheet, no overflow.
   ok('satellite overlay is positioned + compact', /\.th-sat\{[^}]*position:absolute/.test(css));
   ok('satellite toggle meets 44px touch target', /\.th-sat-toggle\{[^}]*min-height:44px/.test(css));
-  ok('satellite control collapses on small viewports', /@media \(max-width:420px\)[\s\S]*\.th-sat\{/.test(css));
+  ok('satellite overlay collapses on small viewports', /@media \(max-width:420px\)[\s\S]*\.th-sat\{/.test(css));
+
+  // Regression: the imagery must composite as ONE clean rectangular destination,
+  // never clipped into globe segments/arcs (that + MODIS gaps read as black wedges).
+  const d2d = src.slice(src.indexOf('function draw2DMap'), src.indexOf('function drawLand'));
+  ok('2D imagery draws a rectangular destination (drawImage w x h)', /drawImage\(satImg, ox, top, mw, mh\)/.test(d2d));
+  ok('2D imagery branch does NOT clip to a globe disc/arc', d2d.indexOf('usingImagery') !== -1 && !/arc\(/.test(d2d.slice(d2d.indexOf('if (usingImagery'), d2d.indexOf('} else'))));
+  ok('2D imagery branch performs no path clipping', !/\.clip\(\)/.test(d2d.slice(d2d.indexOf('if (usingImagery'), d2d.indexOf('} else'))));
+  // Default underlay is the gap-free VIIRS layer, not a gap-streaked MODIS mosaic.
+  ok('Theater 2D defaults to the gap-free visual layer', src.indexOf('G.defaultVisualLayerId()') !== -1 || src.indexOf('window.GIBS.defaultVisualLayerId()') !== -1);
+  ok('warns when a MODIS (gappy) layer is selected', src.indexOf('swathGaps') !== -1);
+
+  // Regression: mobile header cannot bleed past the root (body.scrollWidth==viewport).
+  // The variable-width identity label collapses at <=1024 (like the ATOM label), and
+  // the brand can shrink — so no header child pushes the flex row past the viewport.
+  const mq = css.slice(css.indexOf('@media (max-width:1024px)'), css.indexOf('@media (min-width:1025px)'));
+  ok('identity label is hidden at <=1024 (no variable-width header bleed)', /\.identity-btn \.lbl\{display:none;?\}/.test(mq));
+  ok('ATOM label is also hidden at <=1024', /\.btn-atom span\.lbl\{display:none;?\}/.test(mq));
+  ok('brand can shrink to avoid header overflow', /\.brand\{min-width:0;?\}/.test(mq) && /\.brand \.name\{[^}]*text-overflow:ellipsis/.test(mq));
+  ok('root clips residual x-overflow at the viewport', /html\{overflow-x:clip;?\}/.test(css));
 }
 
 /* ============================ ingestion pipeline ============================ */
