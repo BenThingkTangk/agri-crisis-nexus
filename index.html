@@ -776,8 +776,14 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   .mode-head h2{font-size:23px;}
   .mode-panel{padding:18px 16px 90px;}
 }
-@media (max-width:760px){
-  :root{--header-h:64px;}  /* design-system mobile nav height */
+/* Tablet + mobile use the off-canvas drawer. Threshold raised from 760 to 1024:
+   at 768 the in-header desktop tab strip collapsed (brand + topbar-right consumed
+   the whole row, so the flexible nav shrank to 0 width and its 8 tabs were clipped
+   and unreachable with no hamburger). Below 1025px the hamburger + off-canvas
+   drawer is the navigation. Desktop tabs (>=1025) are made to fit by the compact
+   chrome block below. */
+@media (max-width:1024px){
+  :root{--header-h:64px;}  /* design-system mobile/tablet nav height */
   /* Mobile mode drawer. Anchored to the left edge (left:0) and slid off-screen
      with a single negative transform; the open rule cancels the transform to
      0 so the whole 268–300px panel and every tab sit on-screen.
@@ -812,6 +818,21 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
   .btn-atom{padding:9px 12px;}
   #openCmdk{display:none;}
   #map{height:52vh;}
+}
+/* Compact desktop chrome (1025–1600px). The in-header horizontal tab strip needs
+   ~804px for all 8 mode tabs; at 1280 the full-chrome header (brand tagline, clock,
+   button text labels) leaves too little room and tabs would scroll off-screen.
+   Trim non-essential chrome to icons so all 8 tabs stay within the viewport and
+   fully usable here. The hamburger stays hidden (>1024); full chrome returns above
+   1600 where there is room. Buttons keep their icons + aria-labels, so trimming the
+   visible text does not reduce operability. */
+@media (min-width:1025px) and (max-width:1600px){
+  .brand .div{display:none;}
+  .clock{display:none;}
+  #openCmdk .lbl{display:none;}
+  .btn-atom span.lbl{display:none;}
+  .btn-atom{padding:8px 11px;}
+  .identity-btn .lbl{display:none;}
 }
 @media (max-width:760px){
   .posture .live-pill{margin-left:0;}

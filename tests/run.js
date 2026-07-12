@@ -1159,6 +1159,33 @@ function testDesignSystem() {
   // Open panels are viewport-capped (vw) so the open state fits without overflow.
   ok('ATOM panel width capped to viewport (vw)', /#atom\{[^}]*width:min\([^)]*vw\)/.test(html));
   ok('detail drawer width capped to viewport (vw)', /\.drawer\{[^}]*width:min\([^)]*vw\)/.test(html));
+
+  section('design-system: tablet/mobile nav breakpoint (no clipped-tab dead zone)');
+  // The off-canvas drawer block is the one whose media query opens with the
+  // 64px header override; capture its max-width threshold. At <=760 the desktop
+  // tab strip collapsed at 768 (flexible nav shrank to 0 width, 8 tabs clipped
+  // and unreachable, hamburger hidden) — a dead zone. The threshold must cover
+  // tablet widths (>=1024, so 768 gets the drawer) yet stay below 1280 so the
+  // 1280 desktop still shows the horizontal tab strip.
+  const drawerBp = Number((html.match(/@media \(max-width:(\d+)px\)\{\s*:root\{--header-h:64px/) || [])[1]);
+  ok('drawer breakpoint parsed', Number.isFinite(drawerBp));
+  ok('drawer breakpoint covers 768 tablet (>=1024)', drawerBp >= 1024);
+  ok('drawer breakpoint stays below 1280 (desktop keeps its tab strip)', drawerBp < 1280);
+  ok('768 is inside the drawer range (hamburger pattern, not clipped tabs)', 768 <= drawerBp);
+  ok('1280 is outside the drawer range (desktop nav)', 1280 > drawerBp);
+  // Hamburger toggle exists within the drawer breakpoint and is hidden by default.
+  ok('hamburger shown within drawer breakpoint', /\.hamburger\{display:inline-flex/.test(html));
+  ok('hamburger hidden by default (desktop)', /\.hamburger\{display:none/.test(html));
+  // Compact desktop chrome so all 8 in-header tabs fit within the viewport at the
+  // tested desktop widths (1280 & 1600). Without trimming non-essential chrome the
+  // ~804px tab strip scrolls off-screen at 1280 — this prevents that recurrence.
+  const compactMq = html.match(/@media \(min-width:1025px\) and \(max-width:1600px\)\{[\s\S]*?\n\}/);
+  const compact = compactMq ? compactMq[0] : '';
+  ok('compact desktop chrome block present (1025–1600)', !!compactMq);
+  ok('compact desktop hides clock to free tab space', /\.clock\{display:none/.test(compact));
+  ok('compact desktop hides ATOM button label (icon retained)', /\.btn-atom span\.lbl\{display:none/.test(compact));
+  ok('compact desktop hides brand tagline to free tab space', /\.brand \.div\{display:none/.test(compact));
+  ok('compact desktop hides command-palette label', /#openCmdk \.lbl\{display:none/.test(compact));
 }
 
 /* ===================== account auth (env-backed) ===================== */
