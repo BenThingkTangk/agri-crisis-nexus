@@ -1100,6 +1100,36 @@ function testDesignSystem() {
 
   section('design-system: mobile touch targets');
   ok('44px touch targets on mobile controls', /min-height:44px;min-width:44px;/.test(html));
+
+  section('design-system: mobile drawer geometry + stacking');
+  // Open rule cancels the slide transform so the panel sits fully on-screen.
+  ok('open drawer cancels transform to translateX(0)', /nav#modes\.open\{[^}]*transform:translateX\(0\)/.test(html));
+  ok('closed drawer slid off-screen by single transform', /nav#modes\{[^}]*transform:translateX\(-100%\)/.test(html));
+  ok('drawer anchored at left:0 (no negative positional offset)', /nav#modes\{[^}]*left:0/.test(html));
+  // Stacking: drawer must sit above the sticky header so tabs are tappable.
+  const headerZ = Number((html.match(/header#topbar\{[^}]*z-index:(\d+)/) || [])[1]);
+  const drawerZ = Number((html.match(/nav#modes\{[^}]*z-index:(\d+)/) || [])[1]);
+  const scrimZ = Number((html.match(/\.nav-scrim\{[^}]*z-index:(\d+)/) || [])[1]);
+  ok('header z-index parsed', Number.isFinite(headerZ));
+  ok('drawer z-index above header (no header interception)', drawerZ > headerZ);
+  ok('scrim z-index below drawer, above header', scrimZ > headerZ && scrimZ < drawerZ);
+  // Closed drawer must not expose focusable/clickable off-screen tabs.
+  ok('closed drawer is visibility:hidden', /nav#modes\{[^}]*visibility:hidden/.test(html));
+  ok('open drawer is visibility:visible', /nav#modes\.open\{[^}]*visibility:visible/.test(html));
+  // No horizontal document overflow from the drawer.
+  ok('drawer capped at viewport width', /nav#modes\{[^}]*max-width:100vw/.test(html));
+
+  section('design-system: accessible drawer toggle behavior');
+  // aria-expanded is driven from the same boolean that toggles the open class.
+  ok('hamburger toggles open class + aria-expanded together',
+    /const open=\$\('#modes'\)\.classList\.toggle\('open'\)/.test(app) &&
+    /ham\.setAttribute\('aria-expanded',open\?'true':'false'\)/.test(app));
+  ok('closeMobileNav clears open + resets aria-expanded=false',
+    /function closeMobileNav\(\)\{[^}]*classList\.remove\('open'\)[^}]*aria-expanded'?,'?false/.test(app) ||
+    /function closeMobileNav\(\)\{[\s\S]*?remove\('open'\)[\s\S]*?setAttribute\('aria-expanded','false'\)/.test(app));
+  ok('Escape closes the mobile drawer', /e\.key==='Escape'[\s\S]*?closeMobileNav\(\)/.test(app));
+  ok('selecting a mode closes the drawer', /activateMode\(m\.id\); closeMobileNav\(\)/.test(app));
+  ok('scrim tap closes the drawer', /\$\('#navScrim'\)\.addEventListener\('click',closeMobileNav\)/.test(app));
 }
 
 /* ===================== account auth (env-backed) ===================== */
