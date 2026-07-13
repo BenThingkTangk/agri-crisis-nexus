@@ -21,6 +21,7 @@ const MODES = [
   {id:'map', label:'Map', icon:'globe'},
   {id:'theater', label:'Theater', icon:'radar'},
   {id:'intel', label:'Intel', icon:'newspaper'},
+  {id:'watch', label:'Watch', icon:'shield-alert'},
   {id:'strategy', label:'Strategy', icon:'target'},
   {id:'simulate', label:'War Room', icon:'swords'},
   {id:'resources', label:'Data', icon:'database'},
@@ -59,6 +60,7 @@ function boot(){
   startIntel();
   refreshIcons();
   if(window.AGRI_COLLAB) window.AGRI_COLLAB.init();
+  if(window.AGRI_WATCH) window.AGRI_WATCH.init();
 }
 /* If the URL carries shareable theater state, stash it and open the Theater. */
 function bootStartMode(){
@@ -145,13 +147,22 @@ function activateMode(id){
   if(id==='strategy') setTimeout(drawStrategyChart,60);
   // theater: pause its rAF loop when not visible; resume on entry
   if(window.THEATER&&window.THEATER.setActive){ if(id==='theater') setTimeout(()=>window.THEATER.setActive(true),60); else window.THEATER.setActive(false); }
+  if(id==='watch' && window.AGRI_WATCH && typeof window.AGRI_WATCH.onActivate==='function') setTimeout(window.AGRI_WATCH.onActivate,60);
 }
 
 function renderMode(id){
   const p=$('#panel-'+id);
-  ({command:renderCommand,map:renderMap,theater:renderTheater,intel:renderIntel,strategy:renderStrategy,
+  ({command:renderCommand,map:renderMap,theater:renderTheater,intel:renderIntel,watch:renderWatch,strategy:renderStrategy,
     simulate:renderSimulate,resources:renderResources,atom:renderAtomMode}[id])(p);
   refreshIcons();
+}
+
+/* The Watch / early-warning surface is delivered by the enhancement layer
+   (assets/watch.js) so the base bundle keeps working when it is absent. */
+function renderWatch(p){
+  if(window.AGRI_WATCH && typeof window.AGRI_WATCH.render==='function'){ window.AGRI_WATCH.render(p); return; }
+  p.innerHTML=`<div class="panel"><div class="panel-h"><h4>${icon('shield-alert')} Early-warning watch</h4></div>`+
+    `<p style="font-size:13px;color:var(--text-dim);margin:6px 0 0">The watch engine is unavailable in this build.</p></div>`;
 }
 
 /* ================= CLOCK ================= */

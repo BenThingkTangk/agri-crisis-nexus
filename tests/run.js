@@ -46,6 +46,15 @@ import {
   agRelevanceScore, classifyEvent, deriveAlertsDetailed, alertRelevance,
   AG_PROMOTE_THRESHOLD, AG_MODEL_THRESHOLD,
 } from '../api/_intel.js';
+import {
+  haversineKm, pointInBbox, pointInPolygon, pointInGeofence,
+  GEOFENCE_LIMITS, validateGeometry, CATALOG_DISCLAIMER, WATCH_CATALOG, catalogSeedRows,
+  WATCH_BANDS, WATCH_BAND_RANK, watchBand, ZONE_DIMENSIONS, ZONE_STALE_HOURS, scoreZone,
+  inQuietHours, policyMatchesSnapshot, notificationDedupeKey, shouldNotify,
+  NOTIFICATION_STATES, notificationStateCanTransition, notificationActionToState,
+  INTEGRATION_KINDS, validateWebhookUrl, signWebhookPayload, notificationIdempotencyKey,
+  buildWebhookPayload, formatChannelMessage, MAX_DELIVERY_ATTEMPTS, nextRetryDelayMs,
+} from '../api/_intel.js';
 import { scryptSync, randomBytes, createHmac } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2904,6 +2913,342 @@ function testCanonicalWorkspaceContract() {
 }
 
 /* ============================ run ============================ */
+/* ============================ Phase IV: geometry ============================ */
+function testPhase4Geometry() {
+  section('phase4: geometry (bbox / polygon / point-in-geofence)');
+
+  // haversine sanity — ~111km per degree of latitude near equator.
+  const d = haversineKm({ lat: 0, lon: 0 }, { lat: 1, lon: 0 });
+  ok('haversine ~111km per lat degree', Math.abs(d - 111) < 3);
+  eq('haversine identity is 0', Math.round(haversineKm({ lat: 5, lon: 5 }, { lat: 5, lon: 5 })), 0);
+
+  const bbox = [-104, 36, -80, 49]; // U.S. Corn Belt
+  ok('pointInBbox inside', pointInBbox({ lat: 41, lon: -93 }, bbox));
+  ok('pointInBbox outside (lat)', !pointInBbox({ lat: 60, lon: -93 }, bbox));
+  ok('pointInBbox outside (lon)', !pointInBbox({ lat: 41, lon: 10 }, bbox));
+
+  const square = [[0, 0], [0, 10], [10, 10], [10, 0]]; // [lon,lat] ring
+  ok('pointInPolygon inside', pointInPolygon({ lat: 5, lon: 5 }, square));
+  ok('pointInPolygon outside', !pointInPolygon({ lat: 15, lon: 5 }, square));
+  ok('pointInPolygon rejects <3 vertices', !pointInPolygon({ lat: 1, lon: 1 }, [[0, 0], [1, 1]]));
+
+  ok('pointInGeofence bbox', pointInGeofence({ lat: 41, lon: -93 }, { type: 'bbox', bbox }));
+  ok('pointInGeofence point within radius', pointInGeofence({ lat: 30.5, lon: 32.4 }, { type: 'point', center: [32.35, 30.5], radiusKm: 120 }));
+  ok('pointInGeofence point outside radius', !pointInGeofence({ lat: 10, lon: 32.35 }, { type: 'point', center: [32.35, 30.5], radiusKm: 120 }));
+  ok('pointInGeofence rejects bad geometry', !pointInGeofence({ lat: 1, lon: 1 }, { type: 'nonsense' }));
+
+  // validateGeometry
+  ok('validateGeometry accepts bbox', validateGeometry({ type: 'bbox', bbox }).ok);
+  ok('validateGeometry accepts polygon', validateGeometry({ type: 'polygon', coordinates: square }).ok);
+  ok('validateGeometry accepts point+radius', validateGeometry({ type: 'point', center: [10, 10], radiusKm: 50 }).ok);
+  eq('validateGeometry rejects bad radius', validateGeometry({ type: 'point', center: [10, 10], radiusKm: 0 }).error, 'bad_radius');
+  eq('validateGeometry rejects oversized radius', validateGeometry({ type: 'point', center: [10, 10], radiusKm: 999999 }).error, 'bad_radius');
+  eq('validateGeometry rejects too many polygon points',
+    validateGeometry({ type: 'polygon', coordinates: Array.from({ length: GEOFENCE_LIMITS.maxPolygonPoints + 1 }, () => [1, 1]) }).error, 'too_many_points');
+  eq('validateGeometry rejects out-of-range bbox', validateGeometry({ type: 'bbox', bbox: [0, 0, 200, 0] }).error, 'bbox_out_of_range');
+  eq('validateGeometry rejects unknown type', validateGeometry({ type: 'circle' }).error, 'bad_geometry_type');
+  eq('validateGeometry rejects missing geometry', validateGeometry(null).error, 'geometry_required');
+
+  // catalog
+  eq('catalog has 11 zones', WATCH_CATALOG.length, 11);
+  ok('catalog disclaimer is product-defined, not official', /not an official/i.test(CATALOG_DISCLAIMER) && !/government (boundary|definition)/i.test(CATALOG_DISCLAIMER.replace(/not an official government or legal boundary/i, '')));
+  const rows = catalogSeedRows();
+  eq('catalogSeedRows count matches', rows.length, 11);
+  ok('every seed row is source=catalog', rows.every((r) => r.source === 'catalog'));
+  ok('every seed row is flagged productDefined', rows.every((r) => r.metadata && r.metadata.productDefined === true));
+  ok('every seed row carries the disclaimer', rows.every((r) => r.metadata && r.metadata.disclaimer === CATALOG_DISCLAIMER));
+  ok('every seed row has valid geometry', rows.every((r) => validateGeometry(r.geometry).ok));
+}
+
+/* ============================ Phase IV: scoring ============================ */
+function testPhase4Scoring() {
+  section('phase4: zone scoring — determinism, provenance, freshness');
+
+  const now = Date.UTC(2026, 0, 15, 12, 0, 0);
+  const cornBelt = { id: 'z1', name: 'U.S. Corn Belt', kind: 'breadbasket', region: 'North America', crops: ['maize', 'soy'], geometry: { type: 'bbox', bbox: [-104, 36, -80, 49] } };
+  const droughtEvent = {
+    lat: 41, lon: -93, severity: 'critical', source: 'FEWS',
+    title: 'Severe drought devastates maize harvest', category: 'CROP', summary: 'grain yield collapse',
+    published: new Date(now - 3600 * 1000).toISOString(), url: 'https://example.org/a',
+  };
+
+  const a = scoreZone(cornBelt, { events: [droughtEvent], now });
+  const b = scoreZone(cornBelt, { events: [droughtEvent], now });
+  eq('scoreZone is deterministic', JSON.stringify(a), JSON.stringify(b));
+  ok('score is 0-100 integer', Number.isInteger(a.score) && a.score >= 0 && a.score <= 100);
+  ok('band matches watchBand(score)', a.band === watchBand(a.score));
+  ok('observed provenance populated from live event', a.provenance.observed.length === 1);
+  ok('modeled provenance empty without scenario', a.provenance.modeled.length === 0);
+  ok('analyst provenance empty without analyst inputs', a.provenance.analyst.length === 0);
+  ok('crop/weather dimension elevated by drought', a.dimensions.crop_weather > 0);
+  ok('evidence references the source event', a.evidence.length === 1 && a.evidence[0].source === 'FEWS');
+  ok('fresh event is not stale', a.stale === false);
+  ok('freshness reported in hours', a.freshnessHours != null && a.freshnessHours < 2);
+  ok('assumptions flag scenario-not-prediction', a.assumptions.some((s) => /not a deterministic prediction/i.test(s)));
+
+  // Provenance separation: scenario => modeled only; analyst => analyst only.
+  const modeledOnly = scoreZone(cornBelt, { events: [], scenario: { threat: 'drought', intensity: 80 }, now });
+  ok('scenario populates modeled provenance', modeledOnly.provenance.modeled.length === 1);
+  ok('scenario alone leaves observed empty', modeledOnly.provenance.observed.length === 0);
+  ok('no-signal snapshot is marked stale', modeledOnly.stale === true);
+  ok('no-signal confidence is capped low', modeledOnly.confidence <= 0.35);
+
+  const analystOnly = scoreZone(cornBelt, { events: [], analystInputs: [{ dimension: 'market_supply', score: 90, note: 'export ban rumor' }], now });
+  ok('analyst input populates analyst provenance', analystOnly.provenance.analyst.length === 1);
+  ok('analyst input raises its dimension', analystOnly.dimensions.market_supply > 0);
+  ok('analyst alone leaves observed empty', analystOnly.provenance.observed.length === 0);
+
+  // Chokepoint weighting: logistics event on a chokepoint scores higher than the
+  // same event on a breadbasket.
+  const suez = { id: 'z2', name: 'Suez Canal', kind: 'chokepoint', region: 'Middle East', crops: [], geometry: { type: 'point', center: [32.35, 30.5], radiusKm: 120 } };
+  const blockade = { lat: 30.5, lon: 32.35, severity: 'high', source: 'GDACS', title: 'Suez Canal blockade halts shipping vessels', category: 'LOGISTICS', summary: 'strait congestion', published: new Date(now - 3600 * 1000).toISOString() };
+  const suezSnap = scoreZone(suez, { events: [blockade], now });
+  ok('chokepoint logistics dimension elevated', suezSnap.dimensions.logistics_chokepoint > 0);
+
+  // Trend vs previous.
+  const rising = scoreZone(cornBelt, { events: [droughtEvent], now, previous: { score: 0 } });
+  ok('trend rises vs lower previous', rising.trend === 'rising' && rising.delta > 0);
+  const falling = scoreZone(cornBelt, { events: [droughtEvent], now, previous: { score: 100 } });
+  ok('trend falls vs higher previous', falling.trend === 'falling' && falling.delta < 0);
+
+  // Stale via age beyond window.
+  const oldEvent = Object.assign({}, droughtEvent, { published: new Date(now - (ZONE_STALE_HOURS + 24) * 3600 * 1000).toISOString() });
+  ok('signal older than window is stale', scoreZone(cornBelt, { events: [oldEvent], now }).stale === true);
+
+  // Bands
+  eq('watchBand 80 critical', watchBand(80), 'critical');
+  eq('watchBand 60 high', watchBand(60), 'high');
+  eq('watchBand 40 elevated', watchBand(40), 'elevated');
+  eq('watchBand 20 guarded', watchBand(20), 'guarded');
+  eq('watchBand 0 calm', watchBand(0), 'calm');
+  ok('WATCH_BANDS canonical order', WATCH_BANDS.join(',') === 'calm,guarded,elevated,high,critical');
+}
+
+/* ============================ Phase IV: policies / dedupe ============================ */
+function testPhase4Policies() {
+  section('phase4: policy matching, quiet hours, cooldown, dedupe');
+
+  const snapHigh = { band: 'high', dimensions: { crop_weather: 55, conflict_security: 10, logistics_chokepoint: 0, market_supply: 0 } };
+  const snapGuarded = { band: 'guarded', dimensions: { crop_weather: 10 } };
+  const base = { enabled: true, min_band: 'elevated', geofence_ids: [], threats: [], cooldown_minutes: 360, repeat: false };
+
+  ok('policy matches when band >= min_band', policyMatchesSnapshot(base, snapHigh, { zoneId: 'z1' }));
+  ok('policy skips when band < min_band', !policyMatchesSnapshot(base, snapGuarded, { zoneId: 'z1' }));
+  ok('disabled policy never matches', !policyMatchesSnapshot(Object.assign({}, base, { enabled: false }), snapHigh, { zoneId: 'z1' }));
+
+  const scoped = Object.assign({}, base, { geofence_ids: ['zX'] });
+  ok('zone-scoped policy skips other zones', !policyMatchesSnapshot(scoped, snapHigh, { zoneId: 'z1' }));
+  ok('zone-scoped policy matches selected zone', policyMatchesSnapshot(Object.assign({}, base, { geofence_ids: ['z1'] }), snapHigh, { zoneId: 'z1' }));
+
+  const threatPol = Object.assign({}, base, { threats: ['crop_weather'] });
+  ok('threat-dimension policy matches when dim>=40', policyMatchesSnapshot(threatPol, snapHigh, { zoneId: 'z1' }));
+  ok('threat-dimension policy skips when dim<40', !policyMatchesSnapshot(Object.assign({}, base, { threats: ['market_supply'] }), snapHigh, { zoneId: 'z1' }));
+
+  // Quiet hours (UTC-based with tz offset)
+  const noonUtc = Date.UTC(2026, 0, 15, 12, 0, 0);
+  ok('inside quiet window suppresses', inQuietHours({ start: 8, end: 18 }, noonUtc));
+  ok('outside quiet window does not', !inQuietHours({ start: 20, end: 23 }, noonUtc));
+  ok('wrap-midnight quiet window', inQuietHours({ start: 22, end: 6 }, Date.UTC(2026, 0, 15, 2, 0, 0)));
+  ok('empty quiet hours never suppress', !inQuietHours({}, noonUtc));
+
+  // shouldNotify decision tree
+  const now = noonUtc;
+  eq('shouldNotify match', shouldNotify(base, snapHigh, { zoneId: 'z1', lastNotifiedAt: null, now }).reason, 'match');
+  eq('shouldNotify no_match on low band', shouldNotify(base, snapGuarded, { zoneId: 'z1', now }).reason, 'no_match');
+  eq('shouldNotify quiet_hours', shouldNotify(Object.assign({}, base, { quiet_hours: { start: 8, end: 18 } }), snapHigh, { zoneId: 'z1', now }).reason, 'quiet_hours');
+  eq('shouldNotify cooldown', shouldNotify(base, snapHigh, { zoneId: 'z1', lastNotifiedAt: new Date(now - 60 * 60000).toISOString(), now }).reason, 'cooldown');
+  eq('shouldNotify already_notified past cooldown w/o repeat',
+    shouldNotify(base, snapHigh, { zoneId: 'z1', lastNotifiedAt: new Date(now - 600 * 60000).toISOString(), now }).reason, 'already_notified');
+  eq('shouldNotify repeat past cooldown notifies',
+    shouldNotify(Object.assign({}, base, { repeat: true }), snapHigh, { zoneId: 'z1', lastNotifiedAt: new Date(now - 600 * 60000).toISOString(), now }).reason, 'match');
+
+  // Dedupe key stability
+  const k1 = notificationDedupeKey({ policyId: 'p', zoneId: 'z', band: 'high', now });
+  const k2 = notificationDedupeKey({ policyId: 'p', zoneId: 'z', band: 'high', now: now + 1000 });
+  eq('dedupe key stable within window bucket', k1, k2);
+  ok('dedupe key differs across band', k1 !== notificationDedupeKey({ policyId: 'p', zoneId: 'z', band: 'critical', now }));
+  ok('dedupe key differs across zone', k1 !== notificationDedupeKey({ policyId: 'p', zoneId: 'z2', band: 'high', now }));
+}
+
+/* ============================ Phase IV: notification state machine ============================ */
+function testPhase4NotificationState() {
+  section('phase4: notification state machine');
+  ok('states canonical', NOTIFICATION_STATES.join(',') === 'unread,read,acknowledged');
+  ok('unread -> read', notificationStateCanTransition('unread', 'read'));
+  ok('unread -> acknowledged', notificationStateCanTransition('unread', 'acknowledged'));
+  ok('read -> acknowledged', notificationStateCanTransition('read', 'acknowledged'));
+  ok('read -> unread', notificationStateCanTransition('read', 'unread'));
+  ok('acknowledged -> read', notificationStateCanTransition('acknowledged', 'read'));
+  ok('acknowledged -> unread rejected', !notificationStateCanTransition('acknowledged', 'unread'));
+  ok('unknown target rejected', !notificationStateCanTransition('unread', 'archived'));
+  eq('action read -> read', notificationActionToState('read'), 'read');
+  eq('action acknowledge -> acknowledged', notificationActionToState('acknowledge'), 'acknowledged');
+  eq('unknown action -> null', notificationActionToState('nope'), null);
+}
+
+/* ============================ Phase IV: integrations (SSRF/sign/idempotency) ============================ */
+function testPhase4Integrations() {
+  section('phase4: integrations — SSRF guard, signing, idempotency, payload');
+
+  ok('kinds are webhook/slack/teams/email', INTEGRATION_KINDS.join(',') === 'webhook,slack,teams,email');
+
+  // SSRF guard
+  ok('https slack URL accepted', validateWebhookUrl('https://hooks.slack.com/services/T/B/x').ok);
+  eq('http rejected', validateWebhookUrl('http://hooks.slack.com/x').error, 'https_required');
+  eq('localhost blocked', validateWebhookUrl('https://localhost/x').error, 'blocked_host');
+  eq('.internal blocked', validateWebhookUrl('https://foo.internal/x').error, 'blocked_host');
+  eq('cloud metadata IP blocked', validateWebhookUrl('https://169.254.169.254/latest/meta-data').error, 'blocked_host');
+  eq('private 10.x blocked', validateWebhookUrl('https://10.0.0.5/x').error, 'blocked_host');
+  eq('private 192.168 blocked', validateWebhookUrl('https://192.168.1.1/x').error, 'blocked_host');
+  eq('loopback 127.x blocked', validateWebhookUrl('https://127.0.0.1/x').error, 'blocked_host');
+  eq('CGNAT 100.64 blocked', validateWebhookUrl('https://100.64.0.1/x').error, 'blocked_host');
+  eq('IPv6 loopback blocked', validateWebhookUrl('https://[::1]/x').error, 'blocked_host');
+  eq('non-443 port blocked', validateWebhookUrl('https://hooks.slack.com:8443/x').error, 'blocked_port');
+  eq('garbage url invalid', validateWebhookUrl('not a url').error, 'invalid_url');
+
+  // HMAC signing
+  const sig = signWebhookPayload('{"a":1}', 'secret');
+  ok('signature is 64-char hex', /^[0-9a-f]{64}$/.test(sig));
+  eq('signing is deterministic', sig, signWebhookPayload('{"a":1}', 'secret'));
+  ok('signature changes with secret', sig !== signWebhookPayload('{"a":1}', 'other'));
+  ok('signature changes with body', sig !== signWebhookPayload('{"a":2}', 'secret'));
+
+  // Idempotency keys
+  const ik = notificationIdempotencyKey({ notificationId: 'n1', channelId: 'c1', attempt: 1 });
+  eq('idempotency key stable', ik, notificationIdempotencyKey({ notificationId: 'n1', channelId: 'c1', attempt: 1 }));
+  ok('idempotency key differs by attempt', ik !== notificationIdempotencyKey({ notificationId: 'n1', channelId: 'c1', attempt: 2 }));
+
+  // Canonical payload never carries secrets and includes required fields
+  const payload = buildWebhookPayload({
+    id: 'n1', band: 'high', score: 72, dedupe_key: 'dk', mission_id: 'm1',
+    payload: { zone: { id: 'z1', name: 'Corn Belt' }, provenance: { observed: [], modeled: [], analyst: [] }, evidence: [{ title: 'x' }], deepLink: '/#watch' },
+  }, { now: Date.UTC(2026, 0, 15) });
+  eq('payload severity from band', payload.severity, 'high');
+  eq('payload carries score', payload.score, 72);
+  eq('payload zone name', payload.zone.name, 'Corn Belt');
+  eq('payload idempotency = dedupe key', payload.idempotencyKey, 'dk');
+  ok('payload has timestamp', typeof payload.timestamp === 'string');
+  ok('payload has mission link', payload.mission && payload.mission.id === 'm1');
+  ok('payload never contains a secret field', JSON.stringify(payload).toLowerCase().indexOf('secret') === -1);
+
+  // Channel message formatting
+  ok('slack message is text summary', typeof formatChannelMessage('slack', payload).text === 'string');
+  ok('teams message is text summary', typeof formatChannelMessage('teams', payload).text === 'string');
+  ok('generic webhook gets full payload', formatChannelMessage('webhook', payload).idempotencyKey === 'dk');
+
+  // Retry backoff
+  eq('MAX_DELIVERY_ATTEMPTS is 5', MAX_DELIVERY_ATTEMPTS, 5);
+  eq('backoff attempt 1 = base', nextRetryDelayMs(1), 30000);
+  eq('backoff attempt 2 doubles', nextRetryDelayMs(2), 60000);
+  eq('backoff attempt 3 quadruples', nextRetryDelayMs(3), 120000);
+  ok('backoff is capped', nextRetryDelayMs(99) <= 3600000);
+}
+
+/* ============================ Phase IV: migration 003 contract ============================ */
+function testPhase4Migration() {
+  section('phase4: migration 003 schema + non-destructive contract');
+  const sql = readFileSync(join(ROOT, 'migrations', '003_phase4.sql'), 'utf8');
+  const low = sql.toLowerCase();
+
+  ['geofences', 'zone_scores', 'alert_policies', 'notifications', 'integration_channels', 'delivery_log']
+    .forEach((t) => ok('003 creates table ' + t, low.includes('create table if not exists ' + t)));
+
+  ok('003 is idempotent (if not exists guards)', (low.match(/if not exists/g) || []).length >= 6);
+  ok('003 tenant-scopes via team_id', low.includes('team_id'));
+  ok('003 dedupe uniqueness on notifications', /unique\s*\(\s*team_id\s*,\s*dedupe_key\s*\)/.test(low));
+  ok('003 channel uniqueness team+kind+name', /unique\s*\(\s*team_id\s*,\s*kind\s*,\s*name\s*\)/.test(low));
+  ok('003 geofence slug uniqueness', /unique\s*\(\s*team_id\s*,\s*slug\s*\)/.test(low));
+  ok('003 has notification state column', low.includes('notification_state') || /state\s+/.test(low));
+  ok('003 has delivery status/attempts/retry', low.includes('delivery_state') && low.includes('delivery_attempts') && low.includes('next_retry_at'));
+  ok('003 stores secret_ref (env NAME), not a credential column', low.includes('secret_ref') && !/password|token\s+text/.test(low));
+
+  // Non-destructive
+  ok('003 no DROP TABLE', !/drop\s+table/i.test(sql));
+  ok('003 no DROP COLUMN', !/drop\s+column/i.test(sql));
+  ok('003 no TRUNCATE', !/truncate/i.test(sql));
+  ok('003 no DELETE FROM', !/delete\s+from/i.test(sql));
+
+  // Bootstrap will pick 003 up automatically (sorted, ledgered).
+  const migNames = readdirSync(join(ROOT, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
+  ok('003_phase4.sql sorts after 002', migNames.indexOf('003_phase4.sql') === migNames.length - 1);
+}
+
+/* ============================ Phase IV: endpoint + no-secret contract ============================ */
+function testPhase4EndpointContract() {
+  section('phase4: endpoint wiring, RBAC, no-secret contract');
+
+  const secrets = ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN'];
+  for (const f of ['api/geofences.js', 'api/policies.js', 'api/notifications.js', 'api/integrations.js']) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    ok(`${f} imports ensureSchema`, /from '\.\/_bootstrap\.js'/.test(src) && src.includes('ensureSchema'));
+    ok(`${f} awaits schema before auth`, src.indexOf('ensureReady(res)') < src.indexOf('requireAnyAuth(req'));
+    ok(`${f} requires an authenticated context`, src.includes('requireAnyAuth'));
+    ok(`${f} enforces a team scope`, src.includes('ctx.teamId'));
+    ok(`${f} logs a safe diagnostic`, src.includes('schema_bootstrap_failed') || src.includes('server_error'));
+    ok(`${f} audits mutations`, src.includes('audit('));
+    secrets.forEach((k) => ok(`${f} never references ${k}`, !src.includes(k)));
+  }
+
+  // RBAC: geofence/policy writes require analyst; integration config requires owner.
+  const geo = readFileSync(join(ROOT, 'api', 'geofences.js'), 'utf8');
+  ok('geofences create requires analyst', /requireWrite\(req, res, ctx, 'analyst'\)/.test(geo));
+  const pol = readFileSync(join(ROOT, 'api', 'policies.js'), 'utf8');
+  ok('policies save requires analyst', /requireWrite\(req, res, ctx, 'analyst'\)/.test(pol));
+  const integ = readFileSync(join(ROOT, 'api', 'integrations.js'), 'utf8');
+  ok('integration config requires owner', /requireWrite\(req, res, ctx, 'owner'\)/.test(integ));
+
+  // No-secret contract: integrations resolves env var by NAME and never returns
+  // the value. The owner view exposes only the env var NAME (secretRef = ref).
+  ok('integrations reads env only by referenced NAME', /process\.env\[ref\]/.test(integ));
+  ok('integrations owner view exposes env NAME only, not value', /view\.secretRef = cfg\.ref/.test(integ));
+  ok('integrations never serializes the resolved rawUrl into a response', !/rawUrl:/.test(integ));
+  ok('integrations enforces UPPER_SNAKE env-name shape', /\[A-Z\]\[A-Z0-9_\]/.test(integ));
+  ok('integrations dry-run is the default (no accidental live send)', /body\.live !== true/.test(integ));
+  ok('integrations email adapter is honest (no fake send)', integ.includes('adapter_only') && integ.includes('email_provider_unavailable'));
+  ok('integrations live delivery is SSRF-guarded + time-bounded', integ.includes('validateWebhookUrl') && integ.includes('AbortController'));
+
+  // Evaluation is an explicit action, not a claimed background scheduler.
+  const notif = readFileSync(join(ROOT, 'api', 'notifications.js'), 'utf8');
+  ok('evaluate requires analyst', /requireWrite\(req, res, ctx, 'analyst'\)/.test(notif));
+  ok('evaluate dedupes via ON CONFLICT DO NOTHING', /on conflict \(team_id, dedupe_key\) do nothing/i.test(notif));
+  ok('notifications do NOT self-perform external fan-out', /External fan-out is NOT performed/i.test(notif) || !/deliverOnce/.test(notif));
+}
+
+/* ============================ Phase IV: frontend wiring ============================ */
+function testPhase4Frontend() {
+  section('phase4: Watch frontend wiring + hygiene');
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const app = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+  const watch = readFileSync(join(ROOT, 'assets', 'watch.js'), 'utf8');
+
+  ok('index includes assets/watch.js', html.includes('assets/watch.js'));
+  ok('index has #panel-watch tabpanel', /id="panel-watch"/.test(html) && /data-mode="watch"/.test(html));
+  ok('app registers a Watch mode', /id:'watch'/.test(app));
+  ok('app dispatches renderWatch', /watch:renderWatch/.test(app));
+  ok('app boots the watch layer', /AGRI_WATCH.*init|AGRI_WATCH\)\s*window\.AGRI_WATCH\.init/.test(app) || app.includes('window.AGRI_WATCH.init()'));
+  ok('watch exposes AGRI_WATCH with init/render/onActivate', /window\.AGRI_WATCH = \{ init: init, render: render, onActivate: onActivate \}/.test(watch));
+
+  // Enhancement-layer discipline (like collab.js): no client persistence, no secrets.
+  ok('watch is an enhancement over AGRI_APP', /var A = window\.AGRI_APP;\s*\n\s*if \(!A\) return;/.test(watch));
+  ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie']
+    .forEach((s) => ok('watch never uses ' + s, !watch.includes(s)));
+  ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN']
+    .forEach((k) => ok('watch never references ' + k, !watch.includes(k)));
+
+  // Stable test ids for QA hooks.
+  ['watch-map', 'watch-zone', 'watch-drill', 'watch-filters', 'watch-evaluate', 'watch-ack', 'watch-convert', 'watch-policy-form', 'watch-channel-form', 'watch-test-dry']
+    .forEach((tid) => ok('watch exposes data-testid ' + tid, watch.includes("'" + tid + "'") || watch.includes('"' + tid + '"') || watch.includes(tid)));
+  ok('watch builds per-tab data-testid (watch-tab-*)', watch.includes('watch-tab-'));
+
+  // Honesty: labels this as early-warning/scenario intelligence, not prediction.
+  ok('watch labels scenario intelligence, not prediction', /not a deterministic forecast|early-warning scenario intelligence/i.test(watch));
+  ok('watch surfaces the product-defined disclaimer, not official boundaries', watch.includes('not official government boundaries') || watch.includes('disclaimer'));
+
+  // Branding + no forbidden sibling brands anywhere in the new frontend.
+  ['clinixAI', 'antimatterai', 'rrg.bio', 'thingktangk', 'HumanOS']
+    .forEach((b) => ok('watch has no forbidden brand ' + b, watch.toLowerCase().indexOf(b.toLowerCase()) === -1));
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -2923,6 +3268,14 @@ function testCanonicalWorkspaceContract() {
     await testPhase3AccountAuth();
     testPhase3AuthWiringSource();
     testPhase4CorrectionContract();
+    testPhase4Geometry();
+    testPhase4Scoring();
+    testPhase4Policies();
+    testPhase4NotificationState();
+    testPhase4Integrations();
+    testPhase4Migration();
+    testPhase4EndpointContract();
+    testPhase4Frontend();
     await testCanonicalWorkspaceProvisioning();
     testCanonicalWorkspaceContract();
     testTheaterData();
