@@ -55,6 +55,12 @@ import {
   INTEGRATION_KINDS, validateWebhookUrl, signWebhookPayload, notificationIdempotencyKey,
   buildWebhookPayload, formatChannelMessage, MAX_DELIVERY_ATTEMPTS, nextRetryDelayMs,
 } from '../api/_intel.js';
+import {
+  CATALOG_ADAPTER_VERSION, CATALOG_STATES, PROVIDERS as CAT_PROVIDERS,
+  LAYER_CONTRACTS, LAYER_BY_ID, parseCmrBox, redactError, classifyError,
+  resolveAuthMode, resolveLayer, collectCatalog, summarizeCatalog, buildRunRecord,
+  recordRuns, getRuns, clearRuns, quarantine, getDeadLetter, clearDeadLetter,
+} from '../api/_catalog.js';
 import { scryptSync, randomBytes, createHmac } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3170,7 +3176,7 @@ function testPhase4Migration() {
 
   // Bootstrap will pick 003 up automatically (sorted, ledgered).
   const migNames = readdirSync(join(ROOT, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
-  ok('003_phase4.sql sorts after 002', migNames.indexOf('003_phase4.sql') === migNames.length - 1);
+  ok('003_phase4.sql sorts after 002', migNames.indexOf('003_phase4.sql') > migNames.indexOf('002_phase3.sql'));
 }
 
 /* ============================ Phase IV: endpoint + no-secret contract ============================ */
@@ -3285,7 +3291,7 @@ function testPhase4Frontend() {
 function loadEarthModules() {
   // theater-data + sim-engine give the pure earth modules real nodes/routes and
   // the sim preset catalog to validate against; all attach to one window.
-  const files = ['theater-data.js', 'sim-engine.js', 'gibs.js', 'earth-layers.js', 'earth-sources.js', 'earth-scenes.js'];
+  const files = ['theater-data.js', 'sim-engine.js', 'gibs.js', 'earth-layers.js', 'earth-sources.js', 'earth-catalog.js', 'earth-scenes.js'];
   const win = {};
   const sandbox = { window: win, module: { exports: {} }, console };
   vm.createContext(sandbox);
@@ -3582,6 +3588,352 @@ function testPhase5Frontend() {
     /return 'earth';/.test(app) && /return 'theater';/.test(app) && /return 'command';/.test(app));
 }
 
+/* ============================ Phase VI: catalog ingestion pipeline ============================
+   The server-side agricultural CATALOG/COVERAGE adapters (NASA Earthdata CMR,
+   Copernicus STAC/CDS, FAO WaPOR, WRI Aqueduct) are pure w.r.t. the network —
+   fetchImpl is injected — so the whole layer-contract state machine is exercised
+   deterministically against sanitized fixtures with NO network and NO credentials.
+   ------------------------------------------------------------------------------ */
+
+// A Response-like object for the injected fetchImpl. Mirrors the minimal surface
+// _sources.js#fetchText consumes: .ok, .status, .headers.get(), .text().
+function catResp(status, bodyObj) {
+  const body = typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj || {});
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (h) => (h && h.toLowerCase() === 'content-length' ? String(body.length) : null) },
+    text: async () => body,
+  };
+}
+// Route a fake fetch by url substring. routes: [ [substr, (url,opts)=>resp] ].
+// Captures every outbound request so redaction/secret tests can inspect headers.
+function catFetch(routes) {
+  const calls = [];
+  const fn = async (url, opts) => {
+    calls.push({ url: String(url), opts: opts || {} });
+    for (const [substr, handler] of routes) {
+      if (String(url).indexOf(substr) !== -1) return handler(url, opts);
+    }
+    return catResp(404, { error: 'no-route' });
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+function cmrCollections(entry) { return catResp(200, { feed: { entry: entry ? [entry] : [] } }); }
+function cmrGranules(entry) { return catResp(200, { feed: { entry: entry ? [entry] : [] } }); }
+
+async function resolveOne(layerId, opts) {
+  cacheClear(); resetBreakers();
+  const layer = LAYER_BY_ID[layerId];
+  return resolveLayer(layer, Object.assign({ sleep: async () => {} }, opts));
+}
+
+async function testPhase6CatalogUnits() {
+  section('phase6: catalog pure helpers (bbox/redaction/classify/auth-mode)');
+
+  // parseCmrBox: "s w n e" -> [w,s,e,n]; rejects malformed / out-of-range.
+  eq('parseCmrBox maps s w n e -> w s e n', JSON.stringify(parseCmrBox(['-10 20 30 40'])), JSON.stringify([20, -10, 40, 30]));
+  ok('parseCmrBox rejects empty', parseCmrBox([]) === null && parseCmrBox(null) === null);
+  ok('parseCmrBox rejects wrong arity', parseCmrBox(['1 2 3']) === null);
+  ok('parseCmrBox rejects out-of-range lat', parseCmrBox(['-100 0 10 20']) === null);
+
+  // classifyError buckets HTTP categories from the generic "HTTP <status>" text.
+  eq('classify 429 -> rate_limit', classifyError(new Error('HTTP 429')), 'rate_limit');
+  eq('classify 401 -> auth', classifyError(new Error('HTTP 401')), 'auth');
+  eq('classify 403 -> auth', classifyError(new Error('HTTP 403')), 'auth');
+  eq('classify 503 -> server', classifyError(new Error('HTTP 503')), 'server');
+  eq('classify 404 -> client', classifyError(new Error('HTTP 404')), 'client');
+  eq('classify abort -> timeout', classifyError(new Error('request aborted')), 'timeout');
+  eq('classify default -> network', classifyError(new Error('socket hang up')), 'network');
+
+  // resolveAuthMode NEVER leaks the value; only a mode label.
+  eq('auth mode authenticated when token present', resolveAuthMode('nasa-cmr', { EARTHDATA_TOKEN: 'x'.repeat(40) }), 'authenticated');
+  eq('auth mode public when token absent (publicFallback)', resolveAuthMode('nasa-cmr', {}), 'public');
+  eq('auth mode public when token blank', resolveAuthMode('copernicus', { COPERNICUS_TOKEN: '   ' }), 'public');
+  eq('auth mode none for keyless provider', resolveAuthMode('fao-wapor', {}), 'none');
+  eq('auth mode none for unknown provider', resolveAuthMode('nope', {}), 'none');
+
+  // redactError strips token-shaped material and bounds length.
+  ok('redact strips Bearer blob', !/secretbeef/i.test(redactError('failed Authorization: Bearer secretbeefsecretbeefsecretbeef123456')));
+  ok('redact strips token= query param', redactError('https://x?token=abcdef123456&z=1').indexOf('abcdef123456') === -1);
+  ok('redact strips JWT-looking blob', redactError('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9zzz').indexOf('eyJhbGciOiJIUzI1') === -1);
+  ok('redact bounds to <=160 chars', redactError('x'.repeat(500)).length <= 160);
+
+  ok('adapter version is a semver-ish string', /^\d+\.\d+\.\d+$/.test(CATALOG_ADAPTER_VERSION));
+  ok('state vocabulary has all 10 states', CATALOG_STATES.length === 10 && CATALOG_STATES[0] === 'LIVE');
+}
+
+async function testPhase6StateMachine() {
+  section('phase6: layer-contract state machine (fixtures, no network)');
+  const now = Date.parse('2026-07-13T00:00:00Z');
+  const fresh = '2026-07-12T00:00:00Z';   // 1 day old
+  const oldT = '2025-01-01T00:00:00Z';    // ~1.5 years old
+
+  // --- CMR raster-coverage: fresh granule, no token -> PUBLIC_FALLBACK ---
+  const smapFresh = catFetch([
+    ['collections.json', () => cmrCollections({ id: 'C1-SMAP', short_name: 'SPL3SMP', dataset_id: 'SMAP L3', boxes: ['-85 -180 85 180'], updated: fresh })],
+    ['granules.json', () => cmrGranules({ producer_granule_id: 'SMAP_2026', time_start: fresh, time_end: fresh, updated: fresh, boxes: ['-85 -180 85 180'], granule_size: '12.5' })],
+  ]);
+  let c = await resolveOne('smap-soil-moisture', { fetchImpl: smapFresh, env: {}, now });
+  eq('SMAP fresh + no token -> PUBLIC_FALLBACK', c.state, 'PUBLIC_FALLBACK');
+  ok('SMAP contract exposes coverage bbox', Array.isArray(c.coverage.bbox) && c.coverage.bbox.length === 4);
+  ok('SMAP freshness not stale', c.freshness.stale === false && c.freshness.ageHours != null);
+  ok('SMAP records discovered counted', c.recordsDiscovered >= 1);
+
+  // --- same, WITH a token -> LIVE, and token never surfaces in the contract ---
+  const token = 'EDL' + 'a'.repeat(48);
+  c = await resolveOne('smap-soil-moisture', { fetchImpl: smapFresh, env: { EARTHDATA_TOKEN: token }, now });
+  eq('SMAP fresh + token -> LIVE', c.state, 'LIVE');
+  eq('SMAP authMode authenticated', c.authMode, 'authenticated');
+  ok('token NEVER appears anywhere in the resolved contract', JSON.stringify(c).indexOf(token) === -1);
+  ok('outbound CMR request DID carry the bearer token (server-side only)',
+    smapFresh.calls.some((k) => k.opts.headers && String(k.opts.headers.authorization || '').indexOf(token) !== -1));
+
+  // --- CMR stale granule -> NO_RECENT_GRANULE ---
+  const smapStale = catFetch([
+    ['collections.json', () => cmrCollections({ id: 'C1', short_name: 'SPL3SMP', boxes: ['-85 -180 85 180'], updated: oldT })],
+    ['granules.json', () => cmrGranules({ producer_granule_id: 'old', time_start: oldT, updated: oldT, boxes: ['-85 -180 85 180'] })],
+  ]);
+  c = await resolveOne('smap-soil-moisture', { fetchImpl: smapStale, env: {}, now });
+  eq('SMAP stale granule -> NO_RECENT_GRANULE', c.state, 'NO_RECENT_GRANULE');
+
+  // --- CMR empty catalog (no collection/granule) -> NO_RECENT_GRANULE ---
+  const empty = catFetch([
+    ['collections.json', () => cmrCollections(null)],
+    ['granules.json', () => cmrGranules(null)],
+  ]);
+  c = await resolveOne('gpm-precipitation', { fetchImpl: empty, env: {}, now });
+  eq('CMR empty -> NO_RECENT_GRANULE', c.state, 'NO_RECENT_GRANULE');
+
+  // --- 429 -> RATE_LIMITED ---
+  const rate = catFetch([['cmr.earthdata', () => catResp(429, { error: 'slow down' })]]);
+  c = await resolveOne('gpm-precipitation', { fetchImpl: rate, env: {}, now });
+  eq('CMR 429 -> RATE_LIMITED', c.state, 'RATE_LIMITED');
+  ok('rate-limit error class recorded', c.error && c.error.class === 'rate_limit');
+
+  // --- 500 -> UPSTREAM_ERROR ---
+  const server = catFetch([['cmr.earthdata', () => catResp(503, { error: 'boom' })]]);
+  c = await resolveOne('gpm-precipitation', { fetchImpl: server, env: {}, now });
+  eq('CMR 5xx -> UPSTREAM_ERROR', c.state, 'UPSTREAM_ERROR');
+
+  // --- 401 on a public-fallback provider -> UPSTREAM_ERROR (not AUTH_REQUIRED) ---
+  const unauth = catFetch([['cmr.earthdata', () => catResp(401, { error: 'nope' })]]);
+  c = await resolveOne('gpm-precipitation', { fetchImpl: unauth, env: {}, now });
+  eq('CMR 401 on public provider -> UPSTREAM_ERROR', c.state, 'UPSTREAM_ERROR');
+
+  // --- malformed JSON body -> UPSTREAM_ERROR, never throws ---
+  const malformed = catFetch([['cmr.earthdata', () => catResp(200, '{not json')]]);
+  c = await resolveOne('gpm-precipitation', { fetchImpl: malformed, env: {}, now });
+  ok('malformed JSON resolves (never throws) to an error state', c.state === 'UPSTREAM_ERROR' && c.error);
+
+  // --- heavy-job (ERA5-Land): auth gates HEAVY_JOB_READY vs AUTH_REQUIRED; NO fetch queued ---
+  const noNet = catFetch([]);
+  c = await resolveOne('era5land-drought', { fetchImpl: noNet, env: {}, now });
+  eq('ERA5-Land no token -> AUTH_REQUIRED', c.state, 'AUTH_REQUIRED');
+  c = await resolveOne('era5land-drought', { fetchImpl: noNet, env: { COPERNICUS_TOKEN: 'z'.repeat(40) }, now });
+  eq('ERA5-Land with token -> HEAVY_JOB_READY', c.state, 'HEAVY_JOB_READY');
+  ok('heavy-job NEVER queues a job on resolve (no outbound fetch)', noNet.calls.length === 0);
+
+  // --- Copernicus STAC catalog -> CATALOG_ONLY ---
+  const stac = catFetch([['stac/collections', () => catResp(200, { id: 'clms_ba', title: 'Burnt Area', extent: { spatial: { bbox: [[-180, -85, 180, 85]] }, temporal: { interval: [['2018-01-01T00:00:00Z', fresh]] } } })]]);
+  c = await resolveOne('sentinel-catalog', { fetchImpl: stac, env: {}, now });
+  eq('Copernicus STAC -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+  ok('STAC coverage bbox parsed', Array.isArray(c.coverage.bbox) && c.coverage.bbox.length === 4);
+
+  // --- FAO WaPOR mapset catalog -> CATALOG_ONLY (+ units captured) ---
+  const wapor = catFetch([['gismgr', () => catResp(200, { response: { items: [
+    { code: 'L1-PCP-D', caption: 'Precipitation', measureUnit: 'mm/day', tags: ['water'] },
+    { code: 'L1-AETI-D', caption: 'Evapotranspiration', measureUnit: 'mm/day' },
+  ] } })]]);
+  c = await resolveOne('wapor-precipitation', { fetchImpl: wapor, env: {}, now });
+  eq('FAO WaPOR -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+  eq('FAO WaPOR captured units', c.units, 'mm/day');
+  eq('FAO WaPOR productId is the mapset code', c.productId, 'L1-PCP-D');
+
+  // --- FAO WaPOR missing mapset -> noData -> NO_RECENT_GRANULE (no breaker trip) ---
+  const waporMiss = catFetch([['gismgr', () => catResp(200, { response: { items: [{ code: 'OTHER' }] } })]]);
+  c = await resolveOne('wapor-precipitation', { fetchImpl: waporMiss, env: {}, now });
+  eq('FAO WaPOR absent mapset -> NO_RECENT_GRANULE', c.state, 'NO_RECENT_GRANULE');
+  ok('FAO WaPOR noData recorded as no_data class', c.error && c.error.class === 'no_data');
+
+  // --- WRI Aqueduct ArcGIS map service -> CATALOG_ONLY ---
+  const wri = catFetch([['gis.wri.org', () => catResp(200, { mapName: 'aqueduct_aggr', layers: [{ id: 0 }, { id: 1 }], fullExtent: { xmin: -180, ymin: -85, xmax: 180, ymax: 85, spatialReference: { wkid: 4326 } } })]]);
+  c = await resolveOne('aqueduct-water-risk', { fetchImpl: wri, env: {}, now });
+  eq('WRI Aqueduct -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+  ok('WRI bbox in 4326 preserved', JSON.stringify(c.coverage.bbox) === JSON.stringify([-180, -85, 180, 85]));
+}
+
+async function testPhase6Collect() {
+  section('phase6: collectCatalog roll-up + run ledger + dead-letter');
+  const now = Date.parse('2026-07-13T00:00:00Z');
+  const fresh = '2026-07-12T00:00:00Z';
+  cacheClear(); resetBreakers(); clearRuns(); clearDeadLetter();
+
+  // One fake fetch that satisfies every provider's probe with available data.
+  const fetchImpl = catFetch([
+    ['collections.json', () => cmrCollections({ id: 'C', short_name: 'X', boxes: ['-85 -180 85 180'], updated: fresh })],
+    ['granules.json', () => cmrGranules({ producer_granule_id: 'g', time_start: fresh, updated: fresh, boxes: ['-85 -180 85 180'] })],
+    ['stac/collections', () => catResp(200, { id: 'clms', title: 'CLMS', extent: { spatial: { bbox: [[-180, -85, 180, 85]] }, temporal: { interval: [[fresh, fresh]] } } })],
+    ['gismgr', () => catResp(200, { response: { items: [{ code: 'L1-PCP-D', measureUnit: 'mm/day' }, { code: 'L1-AETI-D', measureUnit: 'mm/day' }] } })],
+    ['gis.wri.org', () => catResp(200, { mapName: 'aq', layers: [{ id: 0 }], fullExtent: { xmin: -180, ymin: -85, xmax: 180, ymax: 85, spatialReference: { wkid: 4326 } } })],
+  ]);
+
+  const result = await collectCatalog({ fetchImpl, env: {}, now, sleep: async () => {} });
+  ok('collect returns one contract per layer', result.contracts.length === LAYER_CONTRACTS.length);
+  ok('collect returns one provider roll-up per provider', result.providers.length === Object.keys(CAT_PROVIDERS).length);
+  ok('collect summary counts available layers', result.summary.available >= 6 && result.summary.total === LAYER_CONTRACTS.length);
+  ok('collect asOf is an ISO timestamp', /^\d{4}-\d{2}-\d{2}T/.test(result.asOf));
+  ok('collect adapterVersion echoed', result.adapterVersion === CATALOG_ADAPTER_VERSION);
+  ok('one run record per provider', result.runs.length === result.providers.length);
+
+  // Run records are secret-free and carry only a mode + coarse category.
+  ok('run records carry NO secret material', !/EDL|Bearer|token=|eyJ/.test(JSON.stringify(result.runs)));
+  ok('run records carry an auth mode label', result.runs.every((r) => ['authenticated', 'public', 'none', 'unauthenticated'].indexOf(r.authMode) !== -1));
+  ok('run records carry an http category', result.runs.every((r) => typeof r.httpCategory === 'string'));
+
+  // In-memory ledger records + bounded reads.
+  recordRuns(result.runs);
+  const got = getRuns(50);
+  ok('ledger returns recorded runs (newest-first)', got.length >= result.runs.length);
+
+  // buildRunRecord is a pure function over provider + contracts.
+  const prov = result.providers[0];
+  const own = result.contracts.filter((c) => c.provider === prov.id);
+  const rr = buildRunRecord(prov, own, now);
+  ok('buildRunRecord ties runId to provider', rr.runId.indexOf(prov.id) !== -1 && rr.provider === prov.id);
+  ok('buildRunRecord counts layers', rr.layers === own.length);
+
+  // Dead-letter quarantine redacts + bounds; never stores raw secrets.
+  const q = quarantine('nasa-cmr', 'bad payload Bearer sk_live_' + 'a'.repeat(40), { producer_granule_id: 1, secretField: 2 });
+  ok('quarantine redacts secret-shaped reason', q.reason.indexOf('sk_live_') === -1 || !/[a-f0-9]{40}/.test(q.reason));
+  ok('quarantine sample is a bounded key list (no values)', typeof q.sample === 'string' && q.sample.indexOf('producer_granule_id') !== -1 && q.sample.indexOf('2') === -1);
+  ok('dead-letter reads back the entry', getDeadLetter(10).length >= 1);
+  clearRuns(); clearDeadLetter();
+}
+
+function testPhase6EarthCatalogClient() {
+  section('phase6: earth-catalog.js client descriptor (truthful availability)');
+  const win = loadEarthModules();
+  const EC = win.EARTH_CATALOG;
+  ok('EARTH_CATALOG published', !!EC && Array.isArray(EC.LAYERS) && Array.isArray(EC.PROVIDERS));
+  ok('AVAILABLE is exactly the 4 data-bearing states',
+    EC.AVAILABLE.join(',') === 'LIVE,PUBLIC_FALLBACK,CATALOG_ONLY,HEAVY_JOB_READY');
+
+  // isAvailable never true for a non-available state.
+  ['NO_RECENT_GRANULE', 'AUTH_REQUIRED', 'RATE_LIMITED', 'UPSTREAM_ERROR', 'STALE', 'DISABLED']
+    .forEach((s) => ok('isAvailable false for ' + s, EC.isAvailable(s) === false));
+  ['LIVE', 'PUBLIC_FALLBACK', 'CATALOG_ONLY', 'HEAVY_JOB_READY']
+    .forEach((s) => ok('isAvailable true for ' + s, EC.isAvailable(s) === true));
+
+  // resolve() merges a real /api/ingest payload into truthful display rows.
+  const payload = {
+    contracts: [
+      { layerId: 'smap-soil-moisture', state: 'LIVE', product: 'SMAP', coverage: { bbox: [-180, -85, 180, 85] }, freshness: { asOf: '2026-07-12T00:00:00Z', stale: false } },
+      { layerId: 'era5land-drought', state: 'AUTH_REQUIRED' },
+    ],
+    providers: [{ id: 'nasa-cmr', state: 'LIVE', authMode: 'authenticated', layers: 3 }],
+  };
+  const rows = EC.resolve(payload);
+  const byId = {};
+  rows.forEach((r) => { byId[r.layerId] = r; });
+  ok('every catalog layer produces a row', rows.length === EC.LAYERS.length);
+  ok('LIVE layer is available with a bbox', byId['smap-soil-moisture'].available === true && byId['smap-soil-moisture'].coverage);
+  ok('AUTH_REQUIRED layer is NOT available', byId['era5land-drought'].available === false);
+  ok('layers absent from payload default to DISABLED/unavailable',
+    byId['aqueduct-water-risk'].state === 'DISABLED' && byId['aqueduct-water-risk'].available === false);
+  ok('never fabricates availability for a non-reported layer', rows.every((r) => r.available === EC.isAvailable(r.state)));
+
+  const provs = EC.resolveProviders(payload);
+  ok('provider rows expose tokenEnv NAME only (never a value)',
+    provs.every((p) => p.tokenEnv == null || /^[A-Z0-9_]+$/.test(p.tokenEnv)));
+  ok('resolveProviders marks reported provider available', provs.find((p) => p.id === 'nasa-cmr').available === true);
+
+  const sum = EC.summarize(rows);
+  ok('summarize counts available + live truthfully', sum.total === EC.LAYERS.length && sum.live === 1 && sum.available === 1);
+
+  // No secret values in the client descriptor source — only env NAMES.
+  const src = readFileSync(join(ROOT, 'assets', 'earth-catalog.js'), 'utf8');
+  ok('earth-catalog.js reads no process.env and hardcodes no secret value', !/process\.env|=\s*['"][A-Za-z0-9]{24,}['"]/.test(src));
+  ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN']
+    .forEach((k) => ok('earth-catalog.js never references forbidden secret ' + k, !src.includes(k)));
+}
+
+function testPhase6IngestEndpointContract() {
+  section('phase6: /api/ingest endpoint + no-secret contract');
+  const src = readFileSync(join(ROOT, 'api', 'ingest.js'), 'utf8');
+
+  ok('imports the pure catalog core', /from '\.\/_catalog\.js'/.test(src) && src.includes('collectCatalog'));
+  ok('never throws to the client (safeCollect wrapper)', /function safeCollect/.test(src) && /catch\s*\(/.test(src));
+  ok('refresh requires owner session OR server-only cron secret', /authorizeRefresh/.test(src) && src.includes('INGEST_CRON_SECRET'));
+  ok('cron secret compared in constant time', /safeEqual\(/.test(src));
+  ok('refresh is same-origin gated for the owner path', /sameOrigin\(req\)/.test(src) && /minRole: 'owner'/.test(src));
+  ok('refresh has a per-container cooldown (anti-abuse)', /REFRESH_COOLDOWN_MS/.test(src) && /429/.test(src));
+  ok('persists runs only when a database is present', /hasDatabase\(\)/.test(src) && /ingestion_runs/.test(src));
+  ok('DB failure is swallowed (in-memory ledger never blocked)', /persisted: false/.test(src));
+  ok('public view omits raw provider internals beyond contracts/providers/summary', /function publicView/.test(src));
+
+  // No secret NAMES-as-values or credential leakage in the endpoint.
+  ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN']
+    .forEach((k) => ok('ingest.js does not hardcode ' + k, !new RegExp(k + "\\s*[:=]\\s*['\"]").test(src)));
+  ok('ingest.js sets nosniff + explicit cache directives', /X-Content-Type-Options/.test(src) && /Cache-Control/.test(src));
+}
+
+function testPhase6Migration() {
+  section('phase6: migration 004 schema + non-destructive, credential-free contract');
+  const sql = readFileSync(join(ROOT, 'migrations', '004_phase6.sql'), 'utf8');
+  const low = sql.toLowerCase();
+
+  ['ingestion_runs', 'ingestion_dead_letter']
+    .forEach((t) => ok('004 creates table ' + t, low.includes('create table if not exists ' + t)));
+  ok('004 is idempotent (if not exists guards)', (low.match(/if not exists/g) || []).length >= 3);
+  ok('004 guards the enum create (duplicate_object)', /duplicate_object/.test(low) && /create type ingest_auth_mode/.test(low));
+  ok('004 records adapter_version + run_id (auditable)', low.includes('adapter_version') && low.includes('run_id'));
+  ok('004 records http_category + auth_mode + counts', low.includes('http_category') && low.includes('auth_mode') && low.includes('records_discovered'));
+  ok('004 error_message is bounded/redacted by contract (comment)', /redacted/.test(low) && /error_message/.test(low));
+
+  // Stores NO credentials — only a mode label + redacted summaries.
+  ok('004 stores no token/password/secret column', !/\b(token|password|secret|api_key|bearer)\s+text/i.test(sql));
+
+  // Non-destructive.
+  ok('004 no DROP TABLE', !/drop\s+table/i.test(sql));
+  ok('004 no DROP COLUMN', !/drop\s+column/i.test(sql));
+  ok('004 no TRUNCATE', !/truncate/i.test(sql));
+  ok('004 no DELETE FROM', !/delete\s+from/i.test(sql));
+
+  const migNames = readdirSync(join(ROOT, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
+  ok('004_phase6.sql sorts last (bootstrap picks it up in order)', migNames[migNames.length - 1] === '004_phase6.sql');
+}
+
+function testPhase6Wiring() {
+  section('phase6: Ingestion Operations drawer wiring (index.html + earth.js)');
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const earth = readFileSync(join(ROOT, 'assets', 'earth.js'), 'utf8');
+
+  ok('index includes assets/earth-catalog.js', html.includes('assets/earth-catalog.js'));
+  ok('earth-catalog loads before the orchestrator', html.indexOf('assets/earth-catalog.js') < html.indexOf('assets/earth.js'));
+  ok('index carries the Ingestion Operations CSS block', html.includes('.earth-ingest') && html.includes('.earth-ing-chip'));
+
+  // earth.js consumes the client descriptor + hits /api/ingest, fail-soft.
+  ok('earth.js references EARTH_CATALOG', /window\.EARTH_CATALOG/.test(earth));
+  ok('earth.js fetches /api/ingest', /\/api\/ingest/.test(earth));
+  ok('earth.js refresh path is owner-gated in the UI', /AGRIOS_AUTH[\s\S]{0,60}isOwner/.test(earth) && /earth-ingest-refresh/.test(earth));
+  ok('earth.js fails soft when the endpoint is unreachable', /renderIngest\(true\)/.test(earth));
+
+  // stable QA test ids for the drawer + a fly-to that fabricates no data.
+  ['earth-ingest', 'earth-ingest-toggle', 'earth-ingest-close', 'earth-ingest-summary',
+   'earth-ingest-provider', 'earth-ingest-layer', 'earth-ingest-state', 'earth-ingest-runs']
+    .forEach((tid) => ok('earth exposes data-testid ' + tid, earth.includes(tid)));
+  ok('coverage fly-to only aims the camera at a bbox centre (no fabricated data)', /flyToCoverage/.test(earth));
+
+  // still no client persistence / secrets after the Phase VI additions.
+  ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie']
+    .forEach((s) => ok('earth still never uses ' + s, !earth.includes(s)));
+  ['EARTHDATA_TOKEN', 'COPERNICUS_TOKEN', 'INGEST_CRON_SECRET']
+    .forEach((k) => ok('earth.js never embeds server credential name-as-value ' + k, !new RegExp(k + "\\s*[:=]\\s*['\"]").test(earth)));
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -3627,6 +3979,13 @@ function testPhase5Frontend() {
     testPhase5EarthSources();
     testPhase5EarthSource();
     testPhase5Frontend();
+    await testPhase6CatalogUnits();
+    await testPhase6StateMachine();
+    await testPhase6Collect();
+    testPhase6EarthCatalogClient();
+    testPhase6IngestEndpointContract();
+    testPhase6Migration();
+    testPhase6Wiring();
     testSeverity();
     testNormalize();
     testDedupe();

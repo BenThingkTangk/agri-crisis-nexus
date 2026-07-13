@@ -29,7 +29,7 @@
   if (!A) return; // base app must be present — fail soft otherwise
 
   var LY = window.EARTH_LAYERS, SRC = window.EARTH_SOURCES, SC = window.EARTH_SCENES,
-      TD = window.THEATER_DATA, SIM = window.SIM_ENGINE;
+      TD = window.THEATER_DATA, SIM = window.SIM_ENGINE, CAT = window.EARTH_CATALOG;
 
   var esc = A.esc || function (s) { return String(s == null ? '' : s); };
   var icon = A.icon || function () { return ''; };
@@ -59,7 +59,9 @@
     selected: null,       // selected feature properties
     scene: null,
     sim: null, day: 0, playing: false, speed: 1,
-    sources: []           // resolved EARTH_SOURCES view
+    sources: [],          // resolved EARTH_SOURCES view
+    ingest: null,         // last /api/ingest payload (catalog/coverage providers)
+    ingestBusy: false     // refresh in flight (debounce the manual refresh button)
   };
   var globe = null, simTimer = null, listeners = [], booted = false;
 
@@ -440,12 +442,14 @@
             '<div class="earth-globe-controls">' +
               '<button id="earthHome" class="earth-gbtn" data-testid="earth-home" aria-label="Reset view">' + icon('home') + '</button>' +
               '<button id="earthPaletteBtn" class="earth-gbtn" data-testid="earth-palette-btn" aria-label="Command palette (Ctrl or Cmd + K)">' + icon('command') + '</button>' +
+              '<button id="earthIngestBtn" class="earth-gbtn" data-testid="earth-ingest-toggle" aria-label="Ingestion operations">' + icon('database') + '</button>' +
             '</div>' +
             '<div class="earth-render-status" id="earthRenderStatus" data-testid="earth-render-status"></div>' +
           '</div>' +
           '<div class="earth-presets" data-testid="earth-presets" role="group" aria-label="Scene presets">' + presetsHtml() + '</div>' +
         '</div>' +
         '<aside class="earth-right" data-testid="earth-inspector" aria-label="Intelligence inspector"><div id="earthInspector" class="earth-inspector">' + inspectorEmpty() + '</div></aside>' +
+        ingestDrawerHtml() +
       '</div>' +
       '<div class="earth-timeline" data-testid="earth-timeline">' +
         '<div class="earth-tl-head"><span class="earth-tl-title">Timeline &amp; Food-War simulation</span>' +
@@ -649,6 +653,149 @@
     }).join('');
   }
 
+  /* ================= Phase VI — Ingestion Operations =================
+     Truthful catalog/coverage health for the heavy agricultural providers
+     (NASA Earthdata, Copernicus, FAO WaPOR, WRI Aqueduct) surfaced by
+     /api/ingest. Renders only genuinely-available data; everything else shows
+     its exact state + explanation. No secrets are ever displayed — provider
+     rows show the ENV NAME needed, never a value. */
+  function ingestDrawerHtml() {
+    return '' +
+      '<div class="earth-ingest" id="earthIngest" data-testid="earth-ingest" hidden aria-label="Ingestion operations">' +
+        '<div class="earth-ingest-head">' +
+          '<span class="earth-ingest-title">' + icon('database') + ' Ingestion Operations</span>' +
+          '<span class="earth-ingest-sub">Server-side catalog &amp; coverage — NASA Earthdata · Copernicus · FAO WaPOR · WRI Aqueduct</span>' +
+          '<button id="earthIngestClose" class="earth-tl-btn" data-testid="earth-ingest-close" aria-label="Close ingestion operations">' + icon('x') + '</button>' +
+        '</div>' +
+        '<div class="earth-ingest-body" id="earthIngestBody">' + ingestLoadingHtml() + '</div>' +
+      '</div>';
+  }
+  function ingestLoadingHtml() {
+    return '<div class="earth-ingest-empty">Loading provider catalog health…</div>';
+  }
+
+  function fetchIngest(force) {
+    var headers = { accept: 'application/json' };
+    var opts = force
+      ? { method: 'POST', headers: headers }
+      : { method: 'GET', headers: headers };
+    var url = '/api/ingest' + (force ? '?action=refresh' : '');
+    return fetch(url, opts).then(function (r) { return r.json(); }).then(function (j) {
+      st.ingest = j || null;
+      renderIngest();
+      return j;
+    }, function () {
+      // Fail-soft: keep any prior payload; render an honest offline note.
+      renderIngest(true);
+      return null;
+    });
+  }
+
+  function isOwner() {
+    try { return !!(window.AGRIOS_AUTH && window.AGRIOS_AUTH.isOwner && window.AGRIOS_AUTH.isOwner()); }
+    catch (e) { return false; }
+  }
+
+  function renderIngest(offline) {
+    var body = $('#earthIngestBody'); if (!body || !CAT) return;
+    var payload = st.ingest || {};
+    var providers = CAT.resolveProviders(payload);
+    var layers = CAT.resolve(payload);
+    var runs = (payload.runs && payload.runs.length) ? payload.runs : [];
+    var sum = CAT.summarize(layers);
+
+    var head = '<div class="earth-ingest-summary" data-testid="earth-ingest-summary">' +
+      '<span>' + sum.available + '/' + sum.total + ' layers available</span>' +
+      '<span>' + sum.live + ' live</span>' +
+      (payload.asOf ? '<span>as of ' + esc(String(payload.asOf).replace('T', ' ').slice(0, 16)) + ' UTC</span>' : '') +
+      (offline ? '<span class="earth-ingest-off">offline — showing last known</span>' : '') +
+      (isOwner() ? '<button id="earthIngestRefresh" class="earth-tl-btn" data-testid="earth-ingest-refresh"' + (st.ingestBusy ? ' disabled' : '') + '>' + (st.ingestBusy ? 'Refreshing…' : 'Refresh providers') + '</button>' : '') +
+      '</div>';
+
+    var provCards = providers.map(function (p) {
+      var auth = p.authMode ? ('<span class="earth-ing-auth">auth: ' + esc(p.authMode) + '</span>') : '';
+      var need = (p.tokenEnv && p.authMode !== 'authenticated')
+        ? '<span class="earth-ing-need">env: ' + esc(p.tokenEnv) + '</span>' : '';
+      var rows = layers.filter(function (l) { return l.provider === p.id; }).map(ingestLayerRow).join('');
+      return '<div class="earth-ing-provider" data-testid="earth-ingest-provider" data-provider="' + esc(p.id) + '">' +
+          '<div class="earth-ing-phead">' +
+            stateChip(p.state, p.stateLabel, p.tone) +
+            '<a class="earth-ing-pname" href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.name) + '</a>' +
+            auth + need +
+          '</div>' +
+          '<div class="earth-ing-pnote">' + esc(p.note) + '</div>' +
+          '<div class="earth-ing-layers">' + rows + '</div>' +
+        '</div>';
+    }).join('');
+
+    var runsHtml = runs.length
+      ? '<div class="earth-ingest-runs" data-testid="earth-ingest-runs"><div class="earth-ing-runs-h">Recent ingestion runs</div>' +
+          runs.slice(0, 12).map(function (r) {
+            return '<div class="earth-ing-run">' +
+              stateChip(r.state, (CAT.stateInfo(r.state) || {}).label || r.state, (CAT.stateInfo(r.state) || {}).tone) +
+              '<span class="earth-ing-run-p">' + esc(r.provider) + '</span>' +
+              '<span class="earth-ing-run-m">' + esc(String(r.records_discovered != null ? r.records_discovered : (r.recordsDiscovered || 0))) + ' rec · ' + esc(String(r.http_category || r.httpCategory || 'ok')) + '</span>' +
+              '<span class="earth-ing-run-t">' + esc(String(r.completed_at || r.completedAt || '').replace('T', ' ').slice(0, 16)) + '</span>' +
+            '</div>';
+          }).join('') +
+        '</div>'
+      : '';
+
+    body.innerHTML = head + '<div class="earth-ingest-providers">' + provCards + '</div>' + runsHtml;
+
+    var rb = $('#earthIngestRefresh');
+    if (rb) on(rb, 'click', function () {
+      if (st.ingestBusy) return;
+      st.ingestBusy = true; renderIngest();
+      fetchIngest(true).then(function () { st.ingestBusy = false; renderIngest(); }, function () { st.ingestBusy = false; renderIngest(); });
+    });
+    $$('.earth-ing-layer[data-bbox]', body).forEach(function (row) {
+      on(row, 'click', function () { flyToCoverage(row.getAttribute('data-bbox')); });
+    });
+    A.refreshIcons();
+  }
+
+  function ingestLayerRow(l) {
+    var cov = l.coverage && l.coverage.bbox ? l.coverage.bbox : null;
+    var bboxAttr = cov ? ' data-bbox="' + cov.join(',') + '"' : '';
+    var fresh = l.freshness && l.freshness.asOf
+      ? '<span class="earth-ing-fresh' + (l.freshness.stale ? ' is-stale' : '') + '">' + esc(String(l.freshness.asOf).slice(0, 10)) + (l.freshness.ageHours != null ? ' · ' + Math.round(l.freshness.ageHours) + 'h' : '') + '</span>'
+      : '';
+    var units = l.units ? '<span class="earth-ing-units">' + esc(l.units) + '</span>' : '';
+    var recs = l.available ? '<span class="earth-ing-recs">' + esc(String(l.granule && l.granule.id ? l.granule.id : (l.productId || ''))) + '</span>' : '';
+    var err = l.error ? '<details class="earth-ing-err"><summary>error: ' + esc(l.error.class || 'error') + '</summary><span>' + esc(l.error.message || '') + '</span></details>' : '';
+    return '<div class="earth-ing-layer' + (cov ? ' has-bbox' : '') + '" data-testid="earth-ingest-layer" data-layer="' + esc(l.layerId) + '"' + bboxAttr + ' title="' + esc(l.hint) + '">' +
+        stateChip(l.state, l.stateLabel, l.tone) +
+        '<span class="earth-ing-lname">' + esc(l.product) + '</span>' +
+        units + fresh + recs + err +
+      '</div>';
+  }
+
+  function stateChip(state, label, tone) {
+    return '<span class="earth-ing-chip tone-' + esc(tone || 'off') + '" data-testid="earth-ingest-state" data-state="' + esc(state) + '">' + esc(label || state) + '</span>';
+  }
+
+  // Fly the globe/map to a coverage bbox center (aims the camera only; renders
+  // no fabricated data). Works for MapLibre and the Leaflet fallback.
+  function flyToCoverage(bboxStr) {
+    var b = String(bboxStr || '').split(',').map(Number);
+    if (b.length !== 4 || b.some(function (n) { return !isFinite(n); })) return;
+    var lng = (b[0] + b[2]) / 2, lat = (b[1] + b[3]) / 2;
+    var m = window.__EARTH_MAP__;
+    try {
+      if (m && m.flyTo) m.flyTo({ center: [lng, lat], zoom: Math.max(1.4, m.getZoom ? m.getZoom() : 1.4) });
+      else if (globe && globe.flyTo) globe.flyTo(lat, lng);
+    } catch (e) {}
+  }
+
+  function openIngest() {
+    var d = $('#earthIngest'); if (!d) return;
+    d.hidden = false;
+    if (!st.ingest) { renderIngest(); fetchIngest(false); }
+    else renderIngest();
+  }
+  function closeIngest() { var d = $('#earthIngest'); if (d) d.hidden = true; }
+
   /* ================= command palette ================= */
   function paletteItems() {
     var items = [];
@@ -770,6 +917,8 @@
 
     $$('.earth-preset').forEach(function (b) { on(b, 'click', function () { applyScene(b.getAttribute('data-scene')); }); });
     on($('#earthHome'), 'click', function () { if (globe) globe.home(); });
+    on($('#earthIngestBtn'), 'click', openIngest);
+    on($('#earthIngestClose'), 'click', closeIngest);
     on($('#earthPaletteBtn'), 'click', openPalette);
     on($('#earthScenarioSel'), 'change', function (e) { runScenario(e.target.value); });
     on($('#earthSimPlay'), 'click', togglePlay);
@@ -783,7 +932,7 @@
       if (!active) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); openPalette(); }
       else if (e.key === '/' && document.activeElement && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); openPalette(); }
-      else if (e.key === 'Escape') closePalette();
+      else if (e.key === 'Escape') { closePalette(); closeIngest(); }
     });
     on(window, 'resize', function () { if (globe) globe.resize(); });
   }
