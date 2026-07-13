@@ -17,6 +17,7 @@ function refreshIcons(){ if(window.lucide) try{ lucide.createIcons(); }catch(e){
 
 /* ---------------- MODES ---------------- */
 const MODES = [
+  {id:'earth', label:'Earth Theater', icon:'orbit'},
   {id:'command', label:'Command', icon:'layout-dashboard'},
   {id:'map', label:'Map', icon:'globe'},
   {id:'theater', label:'Theater', icon:'radar'},
@@ -61,6 +62,7 @@ function boot(){
   refreshIcons();
   if(window.AGRI_COLLAB) window.AGRI_COLLAB.init();
   if(window.AGRI_WATCH) window.AGRI_WATCH.init();
+  if(window.AGRI_EARTH && typeof window.AGRI_EARTH.init==='function') window.AGRI_EARTH.init();
 }
 /* If the URL carries shareable theater state, stash it and open the Theater. */
 function bootStartMode(){
@@ -72,6 +74,9 @@ function bootStartMode(){
       if(hasTheater){ window.__THEATER_PENDING__=s; return 'theater'; }
     }
   }catch(e){}
+  // Earth Theater is the flagship post-sign-in surface. Fall back to Command
+  // only if its enhancement module failed to load (never leave a blank panel).
+  if(window.AGRI_EARTH && typeof window.AGRI_EARTH.render==='function') return 'earth';
   return 'command';
 }
 
@@ -148,13 +153,23 @@ function activateMode(id){
   // theater: pause its rAF loop when not visible; resume on entry
   if(window.THEATER&&window.THEATER.setActive){ if(id==='theater') setTimeout(()=>window.THEATER.setActive(true),60); else window.THEATER.setActive(false); }
   if(id==='watch' && window.AGRI_WATCH && typeof window.AGRI_WATCH.onActivate==='function') setTimeout(window.AGRI_WATCH.onActivate,60);
+  if(id==='earth' && window.AGRI_EARTH && typeof window.AGRI_EARTH.onActivate==='function') setTimeout(window.AGRI_EARTH.onActivate,60);
 }
 
 function renderMode(id){
   const p=$('#panel-'+id);
-  ({command:renderCommand,map:renderMap,theater:renderTheater,intel:renderIntel,watch:renderWatch,strategy:renderStrategy,
+  ({earth:renderEarth,command:renderCommand,map:renderMap,theater:renderTheater,intel:renderIntel,watch:renderWatch,strategy:renderStrategy,
     simulate:renderSimulate,resources:renderResources,atom:renderAtomMode}[id])(p);
   refreshIcons();
+}
+
+/* Earth Theater — the flagship planetary surface is delivered by the
+   enhancement layer (assets/earth.js) so the base bundle keeps working when it
+   is absent. Falls back to an honest, non-blank panel. */
+function renderEarth(p){
+  if(window.AGRI_EARTH && typeof window.AGRI_EARTH.render==='function'){ window.AGRI_EARTH.render(p); return; }
+  p.innerHTML=`<div class="panel"><div class="panel-h"><h4>${icon('orbit')} Earth Theater</h4></div>`+
+    `<p style="font-size:13px;color:var(--text-dim);margin:6px 0 0">The planetary surface is unavailable in this build. Use Theater or Command mode.</p></div>`;
 }
 
 /* The Watch / early-warning surface is delivered by the enhancement layer

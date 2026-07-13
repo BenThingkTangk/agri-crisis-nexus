@@ -3275,6 +3275,258 @@ function testPhase4Frontend() {
   ok('rebuild: live attached same container -> reuse', watchMapNeedsRebuild({ hasContainer: true, hasMap: true, sameContainer: true, connected: true }) === false);
 }
 
+/* ============================ PHASE 5 — EARTH THEATER ============================
+   The Earth Theater surface adds four assets: three pure, DOM-free UMD modules
+   (earth-layers / earth-sources / earth-scenes) and one orchestrator (earth.js).
+   The pure modules are exercised in a node:vm sandbox exactly like the theater
+   core; the orchestrator is verified by source contract (enhancement discipline,
+   no client storage/secrets, WebGL→Leaflet fallback, reduced-motion, honesty).
+   ------------------------------------------------------------------------------ */
+function loadEarthModules() {
+  // theater-data + sim-engine give the pure earth modules real nodes/routes and
+  // the sim preset catalog to validate against; all attach to one window.
+  const files = ['theater-data.js', 'sim-engine.js', 'gibs.js', 'earth-layers.js', 'earth-sources.js', 'earth-scenes.js'];
+  const win = {};
+  const sandbox = { window: win, module: { exports: {} }, console };
+  vm.createContext(sandbox);
+  files.forEach((f) => {
+    const src = readFileSync(join(ROOT, 'assets', f), 'utf8');
+    vm.runInContext(src, sandbox, { filename: 'assets/' + f });
+  });
+  return win;
+}
+
+function testPhase5EarthScenes() {
+  section('phase5: earth scenes — validity + referential integrity');
+  const win = loadEarthModules();
+  const SC = win.EARTH_SCENES, LY = win.EARTH_LAYERS, SIM = win.SIM_ENGINE;
+  ok('EARTH_SCENES published', !!SC && Array.isArray(SC.SCENES));
+  ok('at least 4 scenes (brief presets)', SC.SCENES.length >= 4);
+
+  // ids unique + byId/ids helpers
+  const seen = {};
+  let dup = false;
+  SC.SCENES.forEach((s) => { if (seen[s.id]) dup = true; seen[s.id] = true; });
+  ok('scene ids unique', !dup);
+  ok('ids() lists every scene', SC.ids().length === SC.SCENES.length);
+  ok('byId resolves a known scene', !!SC.byId(SC.SCENES[0].id) && SC.byId('nope') === null);
+
+  // brief-named presets are present
+  ['global-food-pressure', 'black-sea-grain', 'horn-of-africa-drought', 'panama-suez-chokepoints']
+    .forEach((id) => ok('scene present: ' + id, !!SC.byId(id)));
+
+  // every scene is complete + camera valid + layer refs exist + sim preset real
+  const catIds = {};
+  LY.CATALOG.forEach((l) => { catIds[l.id] = true; });
+  const simIds = {};
+  (SIM.PRESETS || []).forEach((p) => { simIds[p.id] = true; });
+  let allValid = true, allLayersExist = true, allSim = true, allNarrative = true;
+  SC.SCENES.forEach((s) => {
+    if (!SC.validCamera(s.camera)) allValid = false;
+    if (!Array.isArray(s.layers) || !s.layers.length) allLayersExist = false;
+    s.layers.forEach((lid) => { if (!catIds[lid]) allLayersExist = false; });
+    if (!s.narrative || !s.sourceState || typeof s.filters !== 'object') allNarrative = false;
+    if (s.simPreset && !simIds[s.simPreset]) allSim = false;
+  });
+  ok('every scene has a valid camera (lng/lat/zoom in range)', allValid);
+  ok('every scene references only real catalog layers', allLayersExist);
+  ok('every scene has narrative + sourceState + filters object', allNarrative);
+  ok('every simPreset is a real SIM_ENGINE preset', allSim);
+  ok('validCamera rejects out-of-range', !SC.validCamera({ lng: 400, lat: 0, zoom: 2 }) && !SC.validCamera(null));
+}
+
+function testPhase5EarthLayers() {
+  section('phase5: earth layers — catalog, GeoJSON build, filters, provenance');
+  const win = loadEarthModules();
+  const LY = win.EARTH_LAYERS, TD = win.THEATER_DATA, SIM = win.SIM_ENGINE;
+  ok('EARTH_LAYERS published', !!LY && Array.isArray(LY.CATALOG));
+
+  // catalog integrity
+  const ids = {};
+  let dup = false;
+  LY.CATALOG.forEach((l) => { if (ids[l.id]) dup = true; ids[l.id] = true; });
+  ok('layer ids unique', !dup);
+  ok('layerById resolves + misses cleanly', !!LY.layerById('chokepoints') && LY.layerById('nope') === null);
+  ok('families derived from catalog', LY.FAMILIES.length >= 4 && LY.FAMILIES.indexOf('Live events') !== -1);
+
+  // provenance vocabulary shared + legends never colour-alone
+  ok('provenance vocabulary is the 5-term set',
+    ['observed', 'modeled', 'analyst', 'proposed', 'contested'].every((p) => LY.PROVENANCE.indexOf(p) !== -1));
+  ok('every legend pairs a shape with a label (never colour alone)', LY.legendIsColorSafe() === true);
+  ok('every catalog layer carries a provenance class', LY.CATALOG.every((l) => LY.PROVENANCE.indexOf(l.provenance) !== -1));
+
+  // eventLayerFor domain mapping (deterministic)
+  eq('weather -> events-weather', LY.eventLayerFor({ domain: 'weather' }), 'events-weather');
+  eq('conflict -> events-conflict', LY.eventLayerFor({ domain: 'conflict' }), 'events-conflict');
+  eq('market -> events-market', LY.eventLayerFor({ domain: 'market' }), 'events-market');
+  eq('unknown domain -> events-hazard (safe default)', LY.eventLayerFor({ domain: 'zzz' }), 'events-hazard');
+
+  // provenanceOf derivation
+  eq('observed entity -> observed', LY.provenanceOf({ observed: true }), 'observed');
+  eq('observed:false -> modeled', LY.provenanceOf({ observed: false }), 'modeled');
+  eq('explicit provenance wins', LY.provenanceOf({ provenance: 'analyst' }), 'analyst');
+  eq('fallback applied when unknown', LY.provenanceOf({}, 'modeled'), 'modeled');
+
+  // buildFeatureCollections maps real app data into valid GeoJSON per layer
+  const events = [
+    { domain: 'weather', lat: 5, lon: 40, severity: 'high', confidence: 80, evidence: 'observed', headline: 'Drought', source: 'Open-Meteo' },
+    { domain: 'conflict', lat: 45, lon: 34, severity: 'critical', confidence: 60, headline: 'Blockade', source: 'GDELT' },
+    { category: 'market', lat: 0, lng: 0, severity: 'moderate', headline: 'Price spike' },
+  ];
+  const sim = SIM.runSim({ preset: 'blacksea-blockade' });
+  const geof = [{ id: 'g1', name: 'Watch A', bbox: [30, 40, 40, 50] }];
+  const out = LY.buildFeatureCollections(events, { nodes: TD.NODES, routes: TD.ROUTES }, geof, sim);
+  ok('returns a FeatureCollection per catalog layer', LY.CATALOG.every((l) => out[l.id] && out[l.id].type === 'FeatureCollection' && Array.isArray(out[l.id].features)));
+  ok('weather event lands in events-weather', out['events-weather'].features.some((f) => f.properties.title === 'Drought'));
+  ok('conflict event lands in events-conflict', out['events-conflict'].features.some((f) => f.properties.title === 'Blockade'));
+  ok('event features carry observed provenance + severity', out['events-weather'].features.every((f) => f.properties.provenance === 'observed' && !!f.properties.severity));
+  ok('chokepoints populated from THEATER_DATA', out['chokepoints'].features.length > 0);
+  ok('breadbaskets include a ring polygon (catchment proxy)', out['breadbaskets'].features.some((f) => f.geometry.type === 'Polygon'));
+  ok('routes become LineStrings (modeled corridors)', out['routes'].features.length > 0 && out['routes'].features.every((f) => f.geometry.type === 'LineString' && f.properties.provenance === 'modeled'));
+  ok('geofence becomes a polygon (analyst)', out['geofences'].features.some((f) => f.geometry.type === 'Polygon' && f.properties.provenance === 'analyst'));
+  ok('sim yields propagation arcs + a regional-pressure point', out['sim-propagation'].features.length > 0 && out['regional-pressure'].features.length > 0);
+  ok('every produced feature carries a vocabulary provenance', LY.CATALOG.every((l) => out[l.id].features.every((f) => LY.PROVENANCE.indexOf(f.properties.provenance) !== -1)));
+  ok('build is fail-soft with empty inputs', (function () {
+    const e = LY.buildFeatureCollections([], { nodes: [], routes: [] }, [], null);
+    return LY.CATALOG.every((l) => e[l.id] && e[l.id].features.length === 0);
+  })());
+
+  // filterFeatures — AND across dimensions, OR within a multi-select
+  const fc = {
+    type: 'FeatureCollection', features: [
+      { type: 'Feature', geometry: { type: 'Point', coordinates: [0, 0] }, properties: { severity: 'critical', provenance: 'observed', commodities: ['wheat'], confidence: 90, title: 'Odesa' } },
+      { type: 'Feature', geometry: { type: 'Point', coordinates: [1, 1] }, properties: { severity: 'moderate', provenance: 'modeled', commodities: ['maize'], confidence: 40, title: 'Suez' } },
+      { type: 'Feature', geometry: { type: 'Point', coordinates: [2, 2] }, properties: { severity: 'critical', provenance: 'modeled', commodities: ['fertilizer'], confidence: 55, title: 'Baltic' } },
+    ]
+  };
+  eq('severity filter (OR within)', LY.filterFeatures(fc, { severity: ['critical'] }).features.length, 2);
+  eq('severity AND provenance (AND across)', LY.filterFeatures(fc, { severity: ['critical'], provenance: ['observed'] }).features.length, 1);
+  eq('commodity multi-select (OR within)', LY.filterFeatures(fc, { commodity: ['wheat', 'maize'] }).features.length, 2);
+  eq('confidence floor', LY.filterFeatures(fc, { confidence: 60 }).features.length, 1);
+  eq('region substring on title', LY.filterFeatures(fc, { region: 'sue' }).features.length, 1);
+  eq('empty state constrains nothing', LY.filterFeatures(fc, {}).features.length, 3);
+}
+
+function testPhase5EarthSources() {
+  section('phase5: earth sources — truthful registry (never fake-live)');
+  const win = loadEarthModules();
+  const SRC = win.EARTH_SOURCES;
+  ok('EARTH_SOURCES published', !!SRC && Array.isArray(SRC.REGISTRY));
+  ok('state vocabulary complete', ['connected', 'stale', 'down', 'disabled', 'registry-ready', 'credential-required'].every((s) => SRC.STATES.indexOf(s) !== -1));
+
+  // status mapping
+  eq('ok -> connected', SRC.mapIntelStatus('ok'), 'connected');
+  eq('live -> connected', SRC.mapIntelStatus('live'), 'connected');
+  eq('stale -> stale', SRC.mapIntelStatus('stale'), 'stale');
+  eq('down -> down', SRC.mapIntelStatus('down'), 'down');
+  eq('disabled -> disabled', SRC.mapIntelStatus('disabled'), 'disabled');
+  eq('unknown -> down (fail-safe)', SRC.mapIntelStatus('???'), 'down');
+
+  // resolve against a realistic /api/intel payload: gdacs ok, gdelt down
+  const intel = { asOf: '2026-07-13T00:00:00Z', sources: [
+    { id: 'gdacs', status: 'ok', asOf: '2026-07-13T00:00:00Z', latencyMs: 120 },
+    { id: 'gdelt', status: 'down' },
+    { id: 'openmeteo', status: 'stale' },
+  ] };
+  const resolved = SRC.resolve(intel);
+  ok('one resolved entry per registry source', resolved.length === SRC.REGISTRY.length);
+  const by = {};
+  resolved.forEach((r) => { by[r.id] = r; });
+  ok('connected keyless source is live', by['gdacs'].state === 'connected' && by['gdacs'].live === true);
+  ok('down source is not live', by['gdelt'].state === 'down' && by['gdelt'].live === false);
+  ok('stale source is not live', by['openmeteo'].state === 'stale' && by['openmeteo'].live === false);
+
+  // GIBS is connected context but NEVER live (forceLive:false)
+  ok('GIBS resolves connected-but-not-live', by['gibs'].state === 'connected' && by['gibs'].live === false);
+
+  // credential-required / registry-ready sources are NEVER live
+  const gated = resolved.filter((r) => r.state === 'credential-required' || r.state === 'registry-ready');
+  ok('there ARE credential/registry-gated sources (honest adapter contract)', gated.length > 0);
+  ok('no credential/registry-gated source is ever live', gated.every((r) => r.live === false));
+  ok('cardinal rule: live implies connected + not force-disabled', resolved.every((r) => !r.live || r.state === 'connected'));
+
+  // credential sources expose env NAMES only — and never a real secret name
+  const forbidden = SRC.FORBIDDEN_SECRET_NAMES;
+  ok('forbidden secret name list present', Array.isArray(forbidden) && forbidden.indexOf('DATABASE_URL') !== -1 && forbidden.indexOf('PPLX_KEY') !== -1);
+  ok('no registry entry needs a forbidden secret', SRC.REGISTRY.every((e) => (e.envNames || []).every((n) => forbidden.indexOf(n) === -1)));
+  ok('gated sources surface their needed env NAMES', gated.some((r) => r.needs && r.needs.length > 0));
+
+  // source file must not contain any secret VALUES — only names
+  const srcText = readFileSync(join(ROOT, 'assets', 'earth-sources.js'), 'utf8');
+  ok('earth-sources hardcodes no secret value assignment', !/process\.env|=\s*['"][A-Za-z0-9]{24,}['"]/.test(srcText));
+
+  // summarize counts
+  const sum = SRC.summarize(resolved);
+  ok('summarize counts connected + live', sum.connected >= 1 && sum.live >= 1 && sum.down >= 1);
+}
+
+function testPhase5EarthSource() {
+  section('phase5: earth.js orchestrator — enhancement discipline + honesty');
+  const src = readFileSync(join(ROOT, 'assets', 'earth.js'), 'utf8');
+
+  // enhancement layer over AGRI_APP (mirrors watch.js / collab.js)
+  ok('earth is an enhancement over AGRI_APP', /var A = window\.AGRI_APP;\s*\n\s*if \(!A\) return;/.test(src));
+  ok('exposes AGRI_EARTH with init/render/onActivate', /window\.AGRI_EARTH = \{ init: init, render: render, onActivate: onActivate \}/.test(src));
+
+  // no client persistence, no secrets
+  ['localStorage', 'sessionStorage', 'indexedDB', 'document.cookie']
+    .forEach((s) => ok('earth never uses ' + s, !src.includes(s)));
+  ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN']
+    .forEach((k) => ok('earth never references ' + k, !src.includes(k)));
+
+  // globe with an honest fallback path
+  ok('detects WebGL2 capability', /getContext\('webgl2'\)/.test(src));
+  ok('falls back to a Leaflet flat map sharing the model', /buildLeaflet/.test(src) && /window\.L/.test(src));
+  ok('ultimate data-table fallback when no map', src.includes('earth-table-fallback'));
+  ok('lazy-loads MapLibre from a CDN (not bundled)', /maplibre-gl@/.test(src));
+
+  // reduced-motion + skippable cinematic boot
+  ok('respects reduced motion', /REDUCED/.test(src) && /prefers-reduced-motion/.test(src));
+  ok('cinematic boot is skippable (once per session)', src.includes('earth-boot-skip') && /__EARTH_BOOTED__/.test(src));
+
+  // instrument HUD + evidence vocabulary throughout
+  ['SEASON', 'SUPPLY PULSE', 'HARVEST WINDOW', 'NETWORK PRESSURE'].forEach((h) => ok('HUD readout: ' + h, src.includes(h)));
+  ['OBSERVED', 'MODELED', 'ANALYST', 'PROPOSED', 'CONTESTED'].forEach((v) => ok('evidence label: ' + v, src.includes(v)));
+  ok('labels satellite as daily context, not live', /not live/i.test(src));
+  ok('labels simulation as scenario, not forecast', /not a forecast/i.test(src));
+
+  // stable test ids for QA hooks across the whole shell
+  ['earth-shell', 'earth-tree', 'earth-tree-search', 'earth-layer', 'earth-layer-toggle', 'earth-layer-opacity',
+   'earth-sources', 'earth-source', 'earth-globe', 'earth-home', 'earth-presets', 'earth-preset', 'earth-inspector',
+   'earth-hud', 'earth-timeline', 'earth-scenario-select', 'earth-sim-play', 'earth-sim-reset', 'earth-scrubber',
+   'earth-palette', 'earth-palette-input', 'earth-boot', 'earth-boot-skip', 'earth-actions', 'earth-act-watch',
+   'earth-act-mission', 'earth-act-scenario', 'earth-act-atom']
+    .forEach((tid) => ok('earth exposes data-testid ' + tid, src.includes(tid)));
+
+  // click-feature actions in the inspector
+  ok('inspector offers Watch Area / Convert to Mission / Run Scenario / Ask ATOM',
+    src.includes('Watch Area') && src.includes('Convert to Mission') && src.includes('Run Scenario') && src.includes('Ask ATOM'));
+
+  // branding preserved + no forbidden sibling brands
+  ok('AgriOS · A Nirmata Holdings Company lockup preserved', src.includes('AgriOS · A Nirmata Holdings Company'));
+  ['clinixAI', 'antimatterai', 'rrg.bio', 'thingktangk', 'HumanOS']
+    .forEach((b) => ok('earth has no forbidden brand ' + b, src.toLowerCase().indexOf(b.toLowerCase()) === -1));
+}
+
+function testPhase5Frontend() {
+  section('phase5: Earth Theater frontend wiring');
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const app = readFileSync(join(ROOT, 'assets', 'app.js'), 'utf8');
+
+  ['earth-layers.js', 'earth-sources.js', 'earth-scenes.js', 'earth.js']
+    .forEach((f) => ok('index includes assets/' + f, html.includes('assets/' + f)));
+  ok('index has #panel-earth tabpanel', /id="panel-earth"/.test(html) && /data-mode="earth"/.test(html));
+  ok('index carries the Earth Theater CSS shell', html.includes('.earth-shell') && html.includes('#panel-earth'));
+
+  ok('app registers an Earth Theater mode (first entry)', /id:'earth'/.test(app) && /label:'Earth Theater'/.test(app));
+  ok('app dispatches renderEarth', /earth:renderEarth/.test(app));
+  ok('app has an honest renderEarth delegator/fallback', /function renderEarth\(p\)\{[\s\S]{0,200}AGRI_EARTH/.test(app));
+  ok('app boots the earth layer', /window\.AGRI_EARTH\.init\(\)/.test(app));
+  ok('app remounts earth on activate', /id==='earth' && window\.AGRI_EARTH/.test(app));
+  ok('bootStartMode lands on earth by default (theater deep-link preserved)',
+    /return 'earth';/.test(app) && /return 'theater';/.test(app) && /return 'command';/.test(app));
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -3315,6 +3567,11 @@ function testPhase4Frontend() {
     testGibsWiring();
     testTheaterCinematicWiring();
     testTheaterSatelliteWiring();
+    testPhase5EarthScenes();
+    testPhase5EarthLayers();
+    testPhase5EarthSources();
+    testPhase5EarthSource();
+    testPhase5Frontend();
     testSeverity();
     testNormalize();
     testDedupe();
