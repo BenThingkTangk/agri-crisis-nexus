@@ -3482,16 +3482,42 @@ function testPhase5EarthSource() {
   ok('does not depend on a third-party CDN for MapLibre at runtime', !/unpkg\.com\/maplibre|cdn\.jsdelivr\.net\/npm\/maplibre|maplibre-gl@/.test(src));
   ok('keeps an 8s timeout fallback to Leaflet if the globe engine fails', /MAPLIBRE_TIMEOUT_MS/.test(src));
 
-  // vendored MapLibre assets are present on disk (served same-origin, no CDN)
-  const vjs = join(ROOT, 'assets', 'vendor', 'maplibre-gl-4.7.1.js');
-  const vcss = join(ROOT, 'assets', 'vendor', 'maplibre-gl-4.7.1.css');
-  ok('vendored MapLibre JS exists on disk', existsSync(vjs) && statSync(vjs).size > 100000);
-  ok('vendored MapLibre CSS exists on disk', existsSync(vcss) && statSync(vcss).size > 1000);
+  // vendored MapLibre assets are present on disk (served same-origin, no CDN).
+  // v5 is REQUIRED: v4.x has no globe projection and silently renders flat
+  // Mercator, which read as a flat equirectangular texture in production.
+  const vjs = join(ROOT, 'assets', 'vendor', 'maplibre-gl-5.24.0.js');
+  const vcss = join(ROOT, 'assets', 'vendor', 'maplibre-gl-5.24.0.css');
+  ok('vendored MapLibre v5 JS exists on disk', existsSync(vjs) && statSync(vjs).size > 100000);
+  ok('vendored MapLibre v5 CSS exists on disk', existsSync(vcss) && statSync(vcss).size > 1000);
+  ok('earth.js loads the v5 vendor bundle (globe-capable)', /maplibre-gl-5\.24\.0\.js/.test(src));
+  ok('no stale v4 MapLibre bundle referenced', !/maplibre-gl-4\./.test(src));
   const vjsText = readFileSync(vjs, 'utf8');
   ok('vendored MapLibre JS fetches no external worker/CDN URL at runtime',
     !/unpkg\.com|cdn\.jsdelivr\.net|maplibre-gl@/.test(vjsText));
+  ok('vendored MapLibre v5 actually supports the globe projection', /setProjection/.test(vjsText));
   ok('vendored MapLibre CSS has no external url() references',
     !/url\(\s*['"]?https?:/i.test(readFileSync(vcss, 'utf8')));
+
+  // real spherical globe framing (regression: v4 rendered flat Mercator).
+  ok('sets a real spherical globe projection on the style', /projection:\s*\{\s*type:\s*'globe'\s*\}/.test(src));
+  ok('also calls setProjection(globe) defensively', /setProjection\(\{\s*type:\s*'globe'\s*\}\)/.test(src));
+  ok('opens at a low home zoom so the planet reads as a sphere',
+    /HOME\s*=\s*\{[^}]*zoom:\s*0\.(?:[0-3]\d?|4)\b/.test(src));
+  ok('tightens home zoom on narrow (mobile) viewports', /innerWidth\s*<\s*560[\s\S]{0,60}HOME\.zoom/.test(src));
+  ok('disables world copies so a single globe is framed', /renderWorldCopies:\s*false/.test(src));
+  ok('adds an atmospheric sky/halo for planetary silhouette', /setSky\(/.test(src) && /atmosphere-blend/.test(src));
+
+  // robust feature picking (regression: single-pixel per-layer clicks missed).
+  ok('uses a pixel-tolerance hit box for feature picking', /ML_HIT_R/.test(src) && /pt\.x\s*-\s*ML_HIT_R/.test(src));
+  ok('queries all interactive layers within the tolerance box',
+    /queryRenderedFeatures\(box,\s*\{\s*layers:\s*ids\s*\}\)/.test(src));
+  ok('binds a single tolerance-based click handler (not fragile per-layer)', /bindMlPicking/.test(src));
+  ok('prioritises point over line over polygon on overlap', /pickRank/.test(src) && /point < line < fill/.test(src));
+  ok('shows a pointer cursor when hovering a hittable feature', /cursor\s*=\s*queryAt\(map,\s*e\.point\)\.length/.test(src));
+  ok('polygon hit target uses its fill layer', /l\.id\s*\+\s*'-fill'/.test(src));
+  ok('marker radius scales up with zoom so points stay clickable',
+    /circle-radius'.*interpolate[\s\S]{0,80}zoom/.test(src));
+  ok('Leaflet fallback keeps per-feature click selection', /lyr\.on\('click'/.test(src) && /globe\._click/.test(src));
 
   // re-renders the source panel once the async intel poll resolves, so
   // keyless-live rows leave their registry-ready baseline (not just GIBS).

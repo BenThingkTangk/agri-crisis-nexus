@@ -18,10 +18,10 @@
    neither is available we render an honest data-table shell.
 
    Depends on browser globals: AGRI_APP, EARTH_LAYERS, EARTH_SOURCES,
-   EARTH_SCENES, THEATER_DATA, SIM_ENGINE. MapLibre GL is vendored same-origin
+   EARTH_SCENES, THEATER_DATA, SIM_ENGINE. MapLibre GL v5 is vendored same-origin
    (assets/vendor/) and lazy-loaded on first activation so the flagship globe
-   never depends on a third-party CDN at runtime; Leaflet is already present
-   for the fallback.
+   never depends on a third-party CDN at runtime; v5 gives the real spherical
+   globe projection. Leaflet is already present for the fallback.
    ============================================================ */
 (function () {
   'use strict';
@@ -38,10 +38,11 @@
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
   // Vendored same-origin (assets/vendor/) so the flagship globe never depends
-  // on a third-party CDN at runtime. MapLibre v4 bundles its worker inline
-  // (blob:), so no separate worker asset is fetched.
-  var MAPLIBRE_JS = 'assets/vendor/maplibre-gl-4.7.1.js';
-  var MAPLIBRE_CSS = 'assets/vendor/maplibre-gl-4.7.1.css';
+  // on a third-party CDN at runtime. MapLibre v5 bundles its worker inline
+  // (blob:), so no separate worker asset is fetched. v5 is required for the
+  // real spherical `globe` projection (v4 silently renders flat Mercator).
+  var MAPLIBRE_JS = 'assets/vendor/maplibre-gl-5.24.0.js';
+  var MAPLIBRE_CSS = 'assets/vendor/maplibre-gl-5.24.0.css';
   var MAPLIBRE_TIMEOUT_MS = 8000; // fall back to Leaflet if the globe engine can't load
 
   var SEV_COLOR = { critical: '#d43e28', high: '#e07a2c', moderate: '#e0a52e', stable: '#5fae5a', neutral: '#8a7f6e' };
@@ -142,10 +143,13 @@
       var date = window.GIBS.defaultDate(null, id);
       rasterTiles = window.GIBS.tileUrlTemplate(id, date); // {z}/{y}/{x}
     }
+    // Real spherical globe (MapLibre v5). Set on the style so it applies before
+    // first paint — no flash of flat Mercator.
     var style = {
       version: 8,
+      projection: { type: 'globe' },
       sources: {},
-      layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0a0805' } }]
+      layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#05070d' } }]
     };
     if (rasterTiles) {
       style.sources['gibs'] = { type: 'raster', tiles: [rasterTiles.replace('/{z}/{y}/{x}', '/{z}/{y}/{x}')], tileSize: 256, attribution: (window.GIBS.ATTRIBUTION || 'NASA GIBS') };
@@ -153,14 +157,23 @@
       style.sources['gibs'].scheme = 'xyz';
       style.layers.push({ id: 'gibs', type: 'raster', source: 'gibs', paint: { 'raster-opacity': st.layerOpacity['sat-viirs'] != null ? st.layerOpacity['sat-viirs'] : 0.85 } });
     }
+    // Low initial zoom so the whole planet reads as a sphere (curvature +
+    // atmosphere + space) on first load; presets fly into regions from here.
+    var HOME = { lng: 12, lat: 18, zoom: 0.35 };
+    // Slightly tighter on narrow (mobile) viewports so the disc still fills well.
+    try { if (window.innerWidth && window.innerWidth < 560) HOME.zoom = 0.05; } catch (e) {}
     var map;
     try {
       map = new gl.Map({
-        container: container, style: style, center: [10, 20], zoom: 1.1, pitch: 0,
-        attributionControl: true, maxPixelRatio: dpr, renderWorldCopies: true, dragRotate: false
+        container: container, style: style, center: [HOME.lng, HOME.lat], zoom: HOME.zoom, pitch: 0,
+        attributionControl: true, maxPixelRatio: dpr, renderWorldCopies: false, dragRotate: false,
+        minZoom: 0
       });
     } catch (e) { return null; }
-    try { map.setProjection && map.setProjection({ type: 'globe' }); } catch (e) {}
+    try { if (map.setProjection) map.setProjection({ type: 'globe' }); } catch (e) {}
+    // Debug/QA handle for locating rendered features (aiming synthetic input).
+    // Harmless read-only reference; no persistence, no secrets.
+    try { window.__EARTH_MAP__ = map; } catch (e) {}
     map.addControl(new gl.NavigationControl({ showCompass: true, visualizePitch: false }), 'top-right');
 
     var api = {
@@ -171,14 +184,22 @@
       setLayerOpacity: function (id, op) { setMlOpacity(map, id, op); },
       applyFeatures: function () { updateMlSources(map); },
       flyTo: function (c) { try { map.flyTo({ center: [c.lng, c.lat], zoom: c.zoom, duration: REDUCED ? 0 : 1400 }); } catch (e) {} },
-      home: function () { api.flyTo({ lng: 10, lat: 20, zoom: 1.1 }); },
+      home: function () { api.flyTo(HOME); },
       onClick: function (fn) { api._click = fn; },
       resize: function () { try { map.resize(); } catch (e) {} },
       destroy: function () { try { map.remove(); } catch (e) {} }
     };
     map.on('load', function () {
       api.ready = true;
-      try { if (map.setFog) map.setFog({}); if (map.setSky) map.setSky({}); } catch (e) {}
+      // Space + atmospheric halo that fades as presets zoom into a region,
+      // keeping the planetary silhouette obvious at the home view.
+      try {
+        if (map.setSky) map.setSky({
+          'sky-color': '#0a1a33', 'horizon-color': '#0c2138', 'fog-color': '#05070d',
+          'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.35,
+          'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.9, 3, 0.55, 6, 0]
+        });
+      } catch (e) {}
       addMlGeoJSON(map);
       updateMlSources(map);
       // idle auto-rotate (paused on interaction + reduced motion)
@@ -209,24 +230,57 @@
         if (!map.getLayer(l.id)) map.addLayer({ id: l.id, type: 'circle', source: srcId,
           layout: { visibility: vis },
           paint: {
-            'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, sevRadiusExpr(3), 6, sevRadiusExpr(8)],
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 0, sevRadiusExpr(4), 3, sevRadiusExpr(6), 6, sevRadiusExpr(10)],
             'circle-color': colorExpr(),
             'circle-opacity': op,
             'circle-stroke-color': '#0a0805', 'circle-stroke-width': 1
           } });
       }
     });
-    // click → inspector (delegated across interactive point/line layers)
-    var clickable = LY.CATALOG.filter(function (l) { return l.id !== 'sat-viirs'; })
-      .map(function (l) { return l.geom === 'polygon' ? l.id + '-fill' : l.id; });
-    clickable.forEach(function (lid) {
-      if (!map.getLayer(lid)) return;
-      map.on('click', lid, function (e) {
-        var f = e.features && e.features[0]; if (f && globe && globe._click) globe._click(f.properties || {});
-      });
-      map.on('mouseenter', lid, function () { map.getCanvas().style.cursor = 'pointer'; });
-      map.on('mouseleave', lid, function () { map.getCanvas().style.cursor = ''; });
+    bindMlPicking(map);
+  }
+
+  /* Robust feature picking. The old per-layer `map.on('click', layerId)` binding
+     hit-tested a single pixel against tiny circles / thin lines, so ordinary
+     clicks on visible markers usually missed. Instead we query ALL interactive
+     layers within a pixel tolerance box around the pointer, so points, corridor
+     lines and polygons are all easy to hit by mouse or touch. A priority sort
+     makes an overlapping point beat a line, and a line beat a big pressure
+     polygon. Works identically under the globe projection. */
+  var ML_HIT_R = 9; // px tolerance around the pointer (finger/mouse friendly)
+  function clickableLayerIds(map) {
+    return LY.CATALOG.filter(function (l) { return l.id !== 'sat-viirs'; })
+      .reduce(function (acc, l) {
+        if (l.geom === 'polygon') { if (map.getLayer(l.id + '-fill')) acc.push(l.id + '-fill'); }
+        else if (map.getLayer(l.id)) acc.push(l.id);
+        return acc;
+      }, []);
+  }
+  function pickRank(feat) {
+    var t = feat.layer && feat.layer.type;
+    return t === 'circle' ? 0 : t === 'line' ? 1 : 2; // point < line < fill
+  }
+  function queryAt(map, pt) {
+    var ids = clickableLayerIds(map);
+    if (!ids.length) return [];
+    var box = [[pt.x - ML_HIT_R, pt.y - ML_HIT_R], [pt.x + ML_HIT_R, pt.y + ML_HIT_R]];
+    var feats = [];
+    try { feats = map.queryRenderedFeatures(box, { layers: ids }); } catch (e) { feats = []; }
+    if (!feats.length) { try { feats = map.queryRenderedFeatures(pt, { layers: ids }); } catch (e) {} }
+    return feats || [];
+  }
+  function bindMlPicking(map) {
+    if (map.__earthPick) return; map.__earthPick = true;
+    map.on('mousemove', function (e) {
+      map.getCanvas().style.cursor = queryAt(map, e.point).length ? 'pointer' : '';
     });
+    var pick = function (e) {
+      var feats = queryAt(map, e.point);
+      if (!feats.length) return;
+      feats.sort(function (a, b) { return pickRank(a) - pickRank(b); });
+      if (globe && globe._click) globe._click(feats[0].properties || {});
+    };
+    map.on('click', pick);
   }
   function colorExpr() {
     return ['match', ['coalesce', ['get', 'severity'], 'moderate'],
