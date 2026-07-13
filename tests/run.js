@@ -9,7 +9,7 @@
 //
 //   node tests/run.js   (or: npm test)
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
@@ -3478,7 +3478,24 @@ function testPhase5EarthSource() {
   ok('detects WebGL2 capability', /getContext\('webgl2'\)/.test(src));
   ok('falls back to a Leaflet flat map sharing the model', /buildLeaflet/.test(src) && /window\.L/.test(src));
   ok('ultimate data-table fallback when no map', src.includes('earth-table-fallback'));
-  ok('lazy-loads MapLibre from a CDN (not bundled)', /maplibre-gl@/.test(src));
+  ok('lazy-loads MapLibre from same-origin vendored assets', /assets\/vendor\/maplibre-gl/.test(src));
+  ok('does not depend on a third-party CDN for MapLibre at runtime', !/unpkg\.com\/maplibre|cdn\.jsdelivr\.net\/npm\/maplibre|maplibre-gl@/.test(src));
+  ok('keeps an 8s timeout fallback to Leaflet if the globe engine fails', /MAPLIBRE_TIMEOUT_MS/.test(src));
+
+  // vendored MapLibre assets are present on disk (served same-origin, no CDN)
+  const vjs = join(ROOT, 'assets', 'vendor', 'maplibre-gl-4.7.1.js');
+  const vcss = join(ROOT, 'assets', 'vendor', 'maplibre-gl-4.7.1.css');
+  ok('vendored MapLibre JS exists on disk', existsSync(vjs) && statSync(vjs).size > 100000);
+  ok('vendored MapLibre CSS exists on disk', existsSync(vcss) && statSync(vcss).size > 1000);
+  const vjsText = readFileSync(vjs, 'utf8');
+  ok('vendored MapLibre JS fetches no external worker/CDN URL at runtime',
+    !/unpkg\.com|cdn\.jsdelivr\.net|maplibre-gl@/.test(vjsText));
+  ok('vendored MapLibre CSS has no external url() references',
+    !/url\(\s*['"]?https?:/i.test(readFileSync(vcss, 'utf8')));
+
+  // re-renders the source panel once the async intel poll resolves, so
+  // keyless-live rows leave their registry-ready baseline (not just GIBS).
+  ok('re-renders sources after refreshIntel() resolves', /refreshIntel\(\)[\s\S]{0,220}\.then\(function \(\) \{ renderSources\(\)/.test(src));
 
   // reduced-motion + skippable cinematic boot
   ok('respects reduced motion', /REDUCED/.test(src) && /prefers-reduced-motion/.test(src));

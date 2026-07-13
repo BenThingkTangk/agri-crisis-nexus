@@ -18,8 +18,10 @@
    neither is available we render an honest data-table shell.
 
    Depends on browser globals: AGRI_APP, EARTH_LAYERS, EARTH_SOURCES,
-   EARTH_SCENES, THEATER_DATA, SIM_ENGINE. MapLibre GL is lazy-loaded from a
-   CDN on first activation; Leaflet is already present for the fallback.
+   EARTH_SCENES, THEATER_DATA, SIM_ENGINE. MapLibre GL is vendored same-origin
+   (assets/vendor/) and lazy-loaded on first activation so the flagship globe
+   never depends on a third-party CDN at runtime; Leaflet is already present
+   for the fallback.
    ============================================================ */
 (function () {
   'use strict';
@@ -35,8 +37,11 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
-  var MAPLIBRE_JS = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js';
-  var MAPLIBRE_CSS = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css';
+  // Vendored same-origin (assets/vendor/) so the flagship globe never depends
+  // on a third-party CDN at runtime. MapLibre v4 bundles its worker inline
+  // (blob:), so no separate worker asset is fetched.
+  var MAPLIBRE_JS = 'assets/vendor/maplibre-gl-4.7.1.js';
+  var MAPLIBRE_CSS = 'assets/vendor/maplibre-gl-4.7.1.css';
   var MAPLIBRE_TIMEOUT_MS = 8000; // fall back to Leaflet if the globe engine can't load
 
   var SEV_COLOR = { critical: '#d43e28', high: '#e07a2c', moderate: '#e0a52e', stable: '#5fae5a', neutral: '#8a7f6e' };
@@ -751,8 +756,19 @@
     rebuildCollections();
     mountGlobe();
     A.refreshIcons();
-    // keep the source panel honest as live intel arrives
-    if (A.refreshIntel) { try { A.refreshIntel(); } catch (e) {} }
+    // Keep the source panel honest as live intel arrives. renderSources() above
+    // runs before the first /api/intel poll resolves, so keyless-live sources
+    // would otherwise be stuck at their registry-ready baseline while only the
+    // force-connected GIBS row shows CONNECTED. Re-render once the poll settles
+    // (the promise resolves even on failure) so real per-source health lands.
+    if (A.refreshIntel) {
+      try {
+        var poll = A.refreshIntel();
+        if (poll && typeof poll.then === 'function') {
+          poll.then(function () { renderSources(); updateHud(); }, function () {});
+        }
+      } catch (e) {}
+    }
     if (window.AGRIOS_AUTH && window.AGRIOS_AUTH.onChange) window.AGRIOS_AUTH.onChange(function () { renderSources(); updateHud(); });
   }
 
