@@ -837,6 +837,16 @@ export function watchBand(score) {
 export const ZONE_DIMENSIONS = ['crop_weather', 'conflict_security', 'logistics_chokepoint', 'market_supply'];
 export const ZONE_STALE_HOURS = 72;
 
+// Reference lifecycle rule for the Watch map (mirrored inline in assets/watch.js
+// as mapNeedsRebuild). A panel repaint swaps in a fresh #watchMap node, so the
+// singleton Leaflet instance bound to the old detached node must be rebuilt
+// unless it is still attached to the current container.
+export function watchMapNeedsRebuild({ hasContainer, hasMap, sameContainer, connected } = {}) {
+  if (!hasContainer) return false;      // nothing to mount into yet
+  if (!hasMap) return true;             // first mount
+  return !(sameContainer && connected); // stale/detached instance -> rebuild
+}
+
 const ZONE_DIM_PATTERNS = {
   crop_weather: /(drought|flood|inundat|harvest|planting|crop|grain|cereal|yield|frost|heat ?wave|monsoon|cyclone|hurricane|typhoon|locust|pest|blight|rust|el ni|la ni|rainfall|dry spell|famine)/,
   conflict_security: /(conflict|war|attack|military|missile|strike|shelling|unrest|coup|insurg|sanction|blockade|security|militia|violence)/,

@@ -49,7 +49,7 @@ import {
 import {
   haversineKm, pointInBbox, pointInPolygon, pointInGeofence,
   GEOFENCE_LIMITS, validateGeometry, CATALOG_DISCLAIMER, WATCH_CATALOG, catalogSeedRows,
-  WATCH_BANDS, WATCH_BAND_RANK, watchBand, ZONE_DIMENSIONS, ZONE_STALE_HOURS, scoreZone,
+  WATCH_BANDS, WATCH_BAND_RANK, watchBand, ZONE_DIMENSIONS, ZONE_STALE_HOURS, scoreZone, watchMapNeedsRebuild,
   inQuietHours, policyMatchesSnapshot, notificationDedupeKey, shouldNotify,
   NOTIFICATION_STATES, notificationStateCanTransition, notificationActionToState,
   INTEGRATION_KINDS, validateWebhookUrl, signWebhookPayload, notificationIdempotencyKey,
@@ -3240,6 +3240,24 @@ function testPhase4Frontend() {
     .forEach((tid) => ok('watch exposes data-testid ' + tid, watch.includes("'" + tid + "'") || watch.includes('"' + tid + '"') || watch.includes(tid)));
   ok('watch builds per-tab data-testid (watch-tab-*)', watch.includes('watch-tab-'));
 
+  // Filter selects + policy/integration form controls carry stable test ids.
+  ['watch-filter-crop', 'watch-filter-threat', 'watch-filter-band', 'watch-filter-provenance', 'watch-filter-freshness',
+   'watch-policy-name', 'watch-policy-band', 'watch-policy-cooldown', 'watch-policy-escalation', 'watch-policy-repeat',
+   'watch-channel-kind', 'watch-channel-name', 'watch-channel-secret']
+    .forEach((tid) => ok('watch exposes data-testid ' + tid, watch.includes(tid)));
+
+  // Map lifecycle repair: teardown/rebind/invalidate on every rerender so a
+  // single Leaflet map always mounts in the current container.
+  ok('watch defines destroyMap teardown', /function destroyMap\s*\(/.test(watch));
+  ok('watch tears the map down via map.remove()', /map\.remove\(\)/.test(watch));
+  ok('watch nulls the map + layer refs on teardown', /map\s*=\s*null;\s*zoneLayer\s*=\s*null/.test(watch));
+  ok('paint tears down the stale map before rerender', /function paint\(\)\s*\{[\s\S]{0,400}destroyMap\(\)/.test(watch));
+  ok('initMap no longer early-returns on a truthy singleton', !/if \(map \|\| !window\.L/.test(watch));
+  ok('initMap rebuilds against the current #watchMap container', /getElementById\('watchMap'\)/.test(watch) && /mapNeedsRebuild/.test(watch));
+  ok('initMap detects a detached container (document.body.contains)', /document\.body\.contains\(/.test(watch));
+  ok('initMap still calls invalidateSize', /invalidateSize\(\)/.test(watch));
+  ok('onActivate remounts the Zones map when present', /function onActivate\(\)\s*\{[\s\S]{0,200}getElementById\('watchMap'\)[\s\S]{0,80}initMap\(\)/.test(watch));
+
   // Honesty: labels this as early-warning/scenario intelligence, not prediction.
   ok('watch labels scenario intelligence, not prediction', /not a deterministic forecast|early-warning scenario intelligence/i.test(watch));
   ok('watch surfaces the product-defined disclaimer, not official boundaries', watch.includes('not official government boundaries') || watch.includes('disclaimer'));
@@ -3247,6 +3265,14 @@ function testPhase4Frontend() {
   // Branding + no forbidden sibling brands anywhere in the new frontend.
   ['clinixAI', 'antimatterai', 'rrg.bio', 'thingktangk', 'HumanOS']
     .forEach((b) => ok('watch has no forbidden brand ' + b, watch.toLowerCase().indexOf(b.toLowerCase()) === -1));
+
+  // Pure lifecycle predicate (reference logic mirrored in watch.js).
+  ok('rebuild: no container -> never build', watchMapNeedsRebuild({ hasContainer: false, hasMap: false, sameContainer: false, connected: false }) === false);
+  ok('rebuild: container, no map -> first mount', watchMapNeedsRebuild({ hasContainer: true, hasMap: false, sameContainer: false, connected: false }) === true);
+  ok('rebuild: stale detached instance (tab/mode switch) -> rebuild', watchMapNeedsRebuild({ hasContainer: true, hasMap: true, sameContainer: false, connected: false }) === true);
+  ok('rebuild: instance bound to a different fresh node -> rebuild', watchMapNeedsRebuild({ hasContainer: true, hasMap: true, sameContainer: false, connected: true }) === true);
+  ok('rebuild: same container but detached -> rebuild', watchMapNeedsRebuild({ hasContainer: true, hasMap: true, sameContainer: true, connected: false }) === true);
+  ok('rebuild: live attached same container -> reuse', watchMapNeedsRebuild({ hasContainer: true, hasMap: true, sameContainer: true, connected: true }) === false);
 }
 
 (async function main() {

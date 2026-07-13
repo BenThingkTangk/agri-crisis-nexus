@@ -241,14 +241,44 @@
   /* ---------------- map ---------------- */
   function toLatLng(lonlat) { return [lonlat[1], lonlat[0]]; }
 
-  function initMap() {
-    if (map || !window.L || !$('#watchMap')) return;
-    map = L.map('watchMap', { scrollWheelZoom: false, worldCopyJump: true, minZoom: 1, maxZoom: 7, attributionControl: true }).setView([25, 20], 2);
+  // Every panel rerender replaces #watchMap with a fresh node, orphaning the
+  // Leaflet instance still bound to the detached old node. Decide whether the
+  // singleton must be torn down and rebuilt against the current container.
+  function mapNeedsRebuild(hasContainer, hasMap, sameContainer, connected) {
+    if (!hasContainer) return false;          // nothing to mount into yet
+    if (!hasMap) return true;                 // first mount
+    return !(sameContainer && connected);     // stale instance -> rebuild
+  }
+
+  function destroyMap() {
+    if (map) { try { map.remove(); } catch (_) {} }
+    map = null; zoneLayer = null;
+  }
+
+  function buildMap(el) {
+    map = L.map(el, { scrollWheelZoom: false, worldCopyJump: true, minZoom: 1, maxZoom: 7, attributionControl: true }).setView([25, 20], 2);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 8,
     }).addTo(map);
     zoneLayer = L.layerGroup().addTo(map);
-    setTimeout(function () { if (map) map.invalidateSize(); }, 120);
+    setTimeout(function () { if (map) { try { map.invalidateSize(); } catch (_) {} } }, 120);
+  }
+
+  function initMap() {
+    if (!window.L) return;
+    var el = document.getElementById('watchMap');
+    var container = null;
+    if (map) { try { container = map.getContainer(); } catch (_) { container = null; } }
+    var sameContainer = !!el && container === el;
+    var connected = !!container && document.body.contains(container);
+    if (!mapNeedsRebuild(!!el, !!map, sameContainer, connected)) {
+      // Reuse the live instance: it survived (e.g. hidden then shown on mode switch).
+      if (map) { setTimeout(function () { if (map) { try { map.invalidateSize(); } catch (_) {} } }, 60); drawZones(); }
+      return;
+    }
+    destroyMap();
+    if (!el) return;
+    buildMap(el);
     drawZones();
   }
 
@@ -465,6 +495,10 @@
      ============================================================ */
   function paint() {
     if (!panelEl) return;
+    // Any repaint replaces panelEl.innerHTML, detaching the current #watchMap
+    // node. Drop the orphaned Leaflet instance so paintZonesTab remounts a
+    // single fresh map in the new container instead of skipping it.
+    destroyMap();
     if (state.error === 'auth') {
       panelEl.innerHTML = '<div class="watch-empty" data-testid="watch-auth">' + icon('lock') + '<p>Sign in to view the early-warning watch.</p></div>';
       A.refreshIcons && A.refreshIcons(); return;
@@ -564,11 +598,11 @@
     var opt = function (v, cur) { return '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>'; };
     var f = state.filters;
     return '<div class="watch-filters" data-testid="watch-filters">' +
-      '<select data-f="crop" aria-label="Filter by crop"><option value="">All crops</option>' + cropOptions().map(function (c) { return opt(c, f.crop); }).join('') + '</select>' +
-      '<select data-f="threat" aria-label="Filter by threat"><option value="">All threats</option>' + threatOptions().map(function (t) { return opt(t, f.threat); }).join('') + '</select>' +
-      '<select data-f="band" aria-label="Filter by severity band"><option value="">All bands</option>' + BANDS.map(function (b) { return '<option value="' + b + '"' + (b === f.band ? ' selected' : '') + '>' + BAND_LABEL[b] + '</option>'; }).join('') + '</select>' +
-      '<select data-f="provenance" aria-label="Filter by scored state"><option value="">Scored + unscored</option><option value="scored"' + (f.provenance === 'scored' ? ' selected' : '') + '>Scored only</option><option value="unscored"' + (f.provenance === 'unscored' ? ' selected' : '') + '>Unscored only</option></select>' +
-      '<select data-f="freshness" aria-label="Filter by freshness"><option value="">Any freshness</option><option value="fresh"' + (f.freshness === 'fresh' ? ' selected' : '') + '>Fresh</option><option value="stale"' + (f.freshness === 'stale' ? ' selected' : '') + '>Stale</option></select>' +
+      '<select data-f="crop" data-testid="watch-filter-crop" aria-label="Filter by crop"><option value="">All crops</option>' + cropOptions().map(function (c) { return opt(c, f.crop); }).join('') + '</select>' +
+      '<select data-f="threat" data-testid="watch-filter-threat" aria-label="Filter by threat"><option value="">All threats</option>' + threatOptions().map(function (t) { return opt(t, f.threat); }).join('') + '</select>' +
+      '<select data-f="band" data-testid="watch-filter-band" aria-label="Filter by severity band"><option value="">All bands</option>' + BANDS.map(function (b) { return '<option value="' + b + '"' + (b === f.band ? ' selected' : '') + '>' + BAND_LABEL[b] + '</option>'; }).join('') + '</select>' +
+      '<select data-f="provenance" data-testid="watch-filter-provenance" aria-label="Filter by scored state"><option value="">Scored + unscored</option><option value="scored"' + (f.provenance === 'scored' ? ' selected' : '') + '>Scored only</option><option value="unscored"' + (f.provenance === 'unscored' ? ' selected' : '') + '>Unscored only</option></select>' +
+      '<select data-f="freshness" data-testid="watch-filter-freshness" aria-label="Filter by freshness"><option value="">Any freshness</option><option value="fresh"' + (f.freshness === 'fresh' ? ' selected' : '') + '>Fresh</option><option value="stale"' + (f.freshness === 'stale' ? ' selected' : '') + '>Stale</option></select>' +
       '</div>';
   }
 
@@ -684,11 +718,11 @@
   function policyForm() {
     return '<form id="watchPolicyForm" data-testid="watch-policy-form" style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">' +
       '<h4 style="font:600 13px/1.2 var(--sans,system-ui);margin:0 0 10px">New alert policy</h4>' +
-      '<label class="watch-field"><span>Name</span><input id="pName" required minlength="2" maxlength="120" placeholder="e.g. Black Sea escalation"></label>' +
-      '<label class="watch-field"><span>Minimum band</span><select id="pBand">' + BANDS.map(function (b) { return '<option value="' + b + '"' + (b === 'elevated' ? ' selected' : '') + '>' + BAND_LABEL[b] + '</option>'; }).join('') + '</select></label>' +
-      '<label class="watch-field"><span>Cooldown (minutes)</span><input id="pCooldown" type="number" min="0" max="10080" value="360"></label>' +
-      '<label class="watch-field"><span>Escalation target (optional label)</span><input id="pEsc" maxlength="200" placeholder="channel name / note"></label>' +
-      '<label class="watch-field" style="display:flex;align-items:center;gap:8px"><input id="pRepeat" type="checkbox" style="width:auto"><span style="margin:0">Repeat after cooldown</span></label>' +
+      '<label class="watch-field"><span>Name</span><input id="pName" data-testid="watch-policy-name" required minlength="2" maxlength="120" placeholder="e.g. Black Sea escalation"></label>' +
+      '<label class="watch-field"><span>Minimum band</span><select id="pBand" data-testid="watch-policy-band">' + BANDS.map(function (b) { return '<option value="' + b + '"' + (b === 'elevated' ? ' selected' : '') + '>' + BAND_LABEL[b] + '</option>'; }).join('') + '</select></label>' +
+      '<label class="watch-field"><span>Cooldown (minutes)</span><input id="pCooldown" data-testid="watch-policy-cooldown" type="number" min="0" max="10080" value="360"></label>' +
+      '<label class="watch-field"><span>Escalation target (optional label)</span><input id="pEsc" data-testid="watch-policy-escalation" maxlength="200" placeholder="channel name / note"></label>' +
+      '<label class="watch-field" style="display:flex;align-items:center;gap:8px"><input id="pRepeat" data-testid="watch-policy-repeat" type="checkbox" style="width:auto"><span style="margin:0">Repeat after cooldown</span></label>' +
       '<button class="watch-btn primary" type="submit">' + icon('plus') + ' Create policy</button>' +
       '</form>';
   }
@@ -760,9 +794,9 @@
   function channelForm() {
     return '<form id="watchChannelForm" data-testid="watch-channel-form" style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">' +
       '<h4 style="font:600 13px/1.2 var(--sans,system-ui);margin:0 0 10px">Add integration channel</h4>' +
-      '<label class="watch-field"><span>Kind</span><select id="cKind">' + (state.kinds.length ? state.kinds : ['webhook', 'slack', 'teams', 'email']).map(function (k) { return '<option value="' + k + '">' + k + '</option>'; }).join('') + '</select></label>' +
-      '<label class="watch-field"><span>Name</span><input id="cName" required minlength="2" maxlength="120" placeholder="e.g. Ops Slack"></label>' +
-      '<label class="watch-field"><span>Secret env var NAME (not the value)</span><input id="cSecret" maxlength="120" placeholder="AGRIOS_WEBHOOK_OPS" pattern="[A-Z][A-Z0-9_]{2,119}"></label>' +
+      '<label class="watch-field"><span>Kind</span><select id="cKind" data-testid="watch-channel-kind">' + (state.kinds.length ? state.kinds : ['webhook', 'slack', 'teams', 'email']).map(function (k) { return '<option value="' + k + '">' + k + '</option>'; }).join('') + '</select></label>' +
+      '<label class="watch-field"><span>Name</span><input id="cName" data-testid="watch-channel-name" required minlength="2" maxlength="120" placeholder="e.g. Ops Slack"></label>' +
+      '<label class="watch-field"><span>Secret env var NAME (not the value)</span><input id="cSecret" data-testid="watch-channel-secret" maxlength="120" placeholder="AGRIOS_WEBHOOK_OPS" pattern="[A-Z][A-Z0-9_]{2,119}"></label>' +
       '<button class="watch-btn primary" type="submit">' + icon('plus') + ' Add channel</button>' +
       '</form>';
   }
@@ -786,6 +820,9 @@
   }
 
   function onActivate() {
+    // Returning to Watch: if the Zones map is on screen, reuse or rebuild it
+    // (a mode switch can leave the container present but the instance stale).
+    if (document.getElementById('watchMap')) { initMap(); return; }
     if (map) setTimeout(function () { try { map.invalidateSize(); } catch (_) {} }, 60);
   }
 
