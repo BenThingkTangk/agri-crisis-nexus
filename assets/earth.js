@@ -716,7 +716,7 @@
       var auth = p.authMode ? ('<span class="earth-ing-auth">auth: ' + esc(p.authMode) + '</span>') : '';
       var need = (p.tokenEnv && p.authMode !== 'authenticated')
         ? '<span class="earth-ing-need">env: ' + esc(p.tokenEnv) + '</span>' : '';
-      var rows = layers.filter(function (l) { return l.provider === p.id; }).map(ingestLayerRow).join('');
+      var rows = layers.filter(function (l) { return l.provider === p.id; }).map(function (l) { return ingestLayerRow(l, p.name); }).join('');
       return '<div class="earth-ing-provider" data-testid="earth-ingest-provider" data-provider="' + esc(p.id) + '">' +
           '<div class="earth-ing-phead">' +
             stateChip(p.state, p.stateLabel, p.tone) +
@@ -750,21 +750,30 @@
       fetchIngest(true).then(function () { st.ingestBusy = false; renderIngest(); }, function () { st.ingestBusy = false; renderIngest(); });
     });
     $$('.earth-ing-layer[data-bbox]', body).forEach(function (row) {
-      on(row, 'click', function () { flyToCoverage(row.getAttribute('data-bbox')); });
+      var go = function () { flyToCoverage(row.getAttribute('data-bbox')); };
+      on(row, 'click', go);
+      on(row, 'keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); go(); }
+      });
     });
     A.refreshIcons();
   }
 
-  function ingestLayerRow(l) {
+  function ingestLayerRow(l, provName) {
     var cov = l.coverage && l.coverage.bbox ? l.coverage.bbox : null;
     var bboxAttr = cov ? ' data-bbox="' + cov.join(',') + '"' : '';
+    // Actionable coverage rows are exposed as real buttons in the a11y tree
+    // (role/tabindex/label). Non-actionable rows stay inert divs.
+    var a11yAttr = cov
+      ? ' role="button" tabindex="0" aria-label="' + esc('Fly to ' + (provName ? provName + ' ' : '') + l.product + ' coverage area') + '"'
+      : '';
     var fresh = l.freshness && l.freshness.asOf
       ? '<span class="earth-ing-fresh' + (l.freshness.stale ? ' is-stale' : '') + '">' + esc(String(l.freshness.asOf).slice(0, 10)) + (l.freshness.ageHours != null ? ' · ' + Math.round(l.freshness.ageHours) + 'h' : '') + '</span>'
       : '';
     var units = l.units ? '<span class="earth-ing-units">' + esc(l.units) + '</span>' : '';
     var recs = l.available ? '<span class="earth-ing-recs">' + esc(String(l.granule && l.granule.id ? l.granule.id : (l.productId || ''))) + '</span>' : '';
     var err = l.error ? '<details class="earth-ing-err"><summary>error: ' + esc(l.error.class || 'error') + '</summary><span>' + esc(l.error.message || '') + '</span></details>' : '';
-    return '<div class="earth-ing-layer' + (cov ? ' has-bbox' : '') + '" data-testid="earth-ingest-layer" data-layer="' + esc(l.layerId) + '"' + bboxAttr + ' title="' + esc(l.hint) + '">' +
+    return '<div class="earth-ing-layer' + (cov ? ' has-bbox' : '') + '" data-testid="earth-ingest-layer" data-layer="' + esc(l.layerId) + '"' + bboxAttr + a11yAttr + ' title="' + esc(l.hint) + '">' +
         stateChip(l.state, l.stateLabel, l.tone) +
         '<span class="earth-ing-lname">' + esc(l.product) + '</span>' +
         units + fresh + recs + err +

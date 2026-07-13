@@ -3934,6 +3934,52 @@ function testPhase6Wiring() {
     .forEach((k) => ok('earth.js never embeds server credential name-as-value ' + k, !new RegExp(k + "\\s*[:=]\\s*['\"]").test(earth)));
 }
 
+// Phase VI QA fix: coverage/fly-to rows must be keyboard-operable and exposed in
+// the accessibility tree. These are source-contract checks on the orchestrator
+// (earth.js is a document-bound IIFE, tested here the same way as Phase V);
+// live keyboard behaviour is exercised by the Playwright keyboard-only QA.
+function testPhase6CoverageA11y() {
+  section('phase6: coverage/fly-to row accessibility semantics');
+  const earth = readFileSync(join(ROOT, 'assets', 'earth.js'), 'utf8');
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+
+  // Isolate the row builder so assertions target the intended code.
+  const rowFn = earth.slice(earth.indexOf('function ingestLayerRow'),
+                           earth.indexOf('function stateChip'));
+  ok('ingestLayerRow isolated for inspection', rowFn.length > 0);
+
+  // Semantics: actionable rows are real buttons in the a11y tree.
+  ok('actionable row carries role=button', /role="button"/.test(rowFn));
+  ok('actionable row is focusable with tabindex=0', /tabindex="0"/.test(rowFn));
+  ok('actionable row has an accessible label', /aria-label="/.test(rowFn));
+  ok('label describes the fly-to action', /aria-label="'\s*\+\s*esc\('Fly to '/.test(rowFn));
+  ok('label describes provider + layer product', /provName[\s\S]{0,40}l\.product/.test(rowFn));
+
+  // Actionable-only: the a11y attributes are gated on real coverage, so
+  // non-actionable rows stay inert (no role, not focusable, not in tab order).
+  ok('a11y attributes are coverage-gated', /a11yAttr\s*=\s*cov\s*[\r\n\s]*\?/.test(rowFn));
+  ok('non-actionable rows fall back to empty a11y string', /:\s*'';/.test(rowFn));
+  ok('role/tabindex appear only inside the coverage branch, never unconditionally',
+     rowFn.indexOf('role="button"') > rowFn.indexOf('a11yAttr = cov'));
+  ok('rows are never hidden from a11y tree via tabindex=-1', !/tabindex="-1"/i.test(rowFn));
+  ok('rows never set aria-hidden', !/aria-hidden/.test(rowFn));
+
+  // Keyboard operation: Enter and Space both trigger fly-to, with default
+  // scroll suppressed for Space, delegating to the same handler as click.
+  const bind = earth.slice(earth.indexOf("$$('.earth-ing-layer[data-bbox]'"),
+                           earth.indexOf('function ingestLayerRow'));
+  ok('coverage rows bind a keydown handler', /on\(row,\s*'keydown'/.test(bind));
+  ok('Enter activates fly-to', /e\.key === 'Enter'/.test(bind));
+  ok('Space activates fly-to', /e\.key === ' '|Spacebar/.test(bind));
+  ok('Space/Enter suppress default before flying', /preventDefault\(\)/.test(bind));
+  ok('keyboard + pointer share one fly-to path', /var go = function[\s\S]{0,40}flyToCoverage/.test(bind));
+  ok('click still delegates to the shared handler', /on\(row,\s*'click',\s*go\)/.test(bind));
+
+  // Focus visibility: a distinct, non-color-only focus ring for actionable rows.
+  ok('index.html defines a visible focus state for actionable rows',
+     /\.earth-ing-layer\.has-bbox:focus-visible\s*\{[^}]*outline/.test(html));
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -3986,6 +4032,7 @@ function testPhase6Wiring() {
     testPhase6IngestEndpointContract();
     testPhase6Migration();
     testPhase6Wiring();
+    testPhase6CoverageA11y();
     testSeverity();
     testNormalize();
     testDedupe();
