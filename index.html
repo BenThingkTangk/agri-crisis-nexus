@@ -1369,6 +1369,11 @@ td .sub{font-size:11.5px;color:var(--muted);margin-top:3px;}
 .earth-hud-v{font-size:14px;font-weight:600;color:var(--text);margin-top:3px;font-variant-numeric:tabular-nums;}
 .earth-globe-wrap{flex:1 1 auto;position:relative;min-height:0;isolation:isolate;}
 .earth-globe{position:absolute;inset:0;background:#0a0805;}
+/* Vendor MapLibre CSS loads after this block and sets `.maplibregl-map{position:relative}`
+   at equal specificity, which would win on order and collapse #earthGlobe to height:0.
+   This child-combinator rule (specificity 0,0,2,0) outranks it regardless of load order,
+   so the globe host keeps its absolute fill. Applies to the Leaflet fallback too. */
+.earth-globe-wrap > .earth-globe{position:absolute;inset:0;width:100%;height:100%;}
 .earth-globe .leaflet-container{width:100%;height:100%;background:#0a0805;}
 .earth-globe-controls{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:1001;}
 .earth-gbtn{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;background:hsl(var(--surface-c) / 0.86);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);cursor:pointer;backdrop-filter:blur(4px);}

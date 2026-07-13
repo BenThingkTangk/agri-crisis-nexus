@@ -3535,6 +3535,18 @@ function testPhase5Frontend() {
   ok('index has #panel-earth tabpanel', /id="panel-earth"/.test(html) && /data-mode="earth"/.test(html));
   ok('index carries the Earth Theater CSS shell', html.includes('.earth-shell') && html.includes('#panel-earth'));
 
+  // The globe host must keep its absolute fill even though vendor MapLibre CSS
+  // (loaded later) sets `.maplibregl-map{position:relative}` at equal specificity.
+  // A child-combinator rule (0,0,2,0) outranks it regardless of load order; without
+  // this, #earthGlobe collapses to height:0 in production (regression from dc8cb64).
+  ok('globe host has a load-order-proof absolute-fill rule',
+    /\.earth-globe-wrap\s*>\s*\.earth-globe\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*height:\s*100%/.test(html));
+  ok('the stronger globe rule outranks .maplibregl-map (higher specificity, not just order)', (function () {
+    // .earth-globe-wrap > .earth-globe = two class selectors (0,0,2,0);
+    // .maplibregl-map = one class selector (0,0,1,0). Assert both facts textually.
+    return /\.earth-globe-wrap\s*>\s*\.earth-globe/.test(html);
+  })());
+
   ok('app registers an Earth Theater mode (first entry)', /id:'earth'/.test(app) && /label:'Earth Theater'/.test(app));
   ok('app dispatches renderEarth', /earth:renderEarth/.test(app));
   ok('app has an honest renderEarth delegator/fallback', /function renderEarth\(p\)\{[\s\S]{0,200}AGRI_EARTH/.test(app));
