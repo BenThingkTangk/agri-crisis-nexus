@@ -1742,7 +1742,7 @@ function testDesignSystem() {
   ok('mission cards carry green/gold state edge + severity wash', /\.mission\.sev-critical\{[\s\S]*linear-gradient\(90deg, hsl\(var\(--danger\) \/ 0\.07\)/.test(html));
   ok('map filters use decisive green active state', /\.mx-filters \.fbtn\.active\{background:linear-gradient\(180deg, hsl\(var\(--accent-primary\)/.test(html));
   ok('theater frame has a cinematic vignette (contrast/depth only)', /\.th-canvas-wrap::after\{[\s\S]*box-shadow:inset 0 0 130px/.test(html));
-  ok('gate carries an agricultural-intelligence operational status cue', html.indexOf('class="gate-status"') !== -1 && html.indexOf('Global Agricultural Watch') !== -1 && html.indexOf('11 open-source feeds') !== -1);
+  ok('gate carries an agricultural-intelligence operational status cue', html.indexOf('class="gate-status"') !== -1 && html.indexOf('Global Agricultural Watch') !== -1 && /id="gsFeedCount">\d+ open-source feeds/.test(html));
   ok('gate status cue makes no fabricated live/real-time data claim', !/gate-status[\s\S]*?(live data|real-?time|updated \d|last updated)/i.test(html.slice(html.indexOf('class="gate-status"'), html.indexOf('class="gate-status"') + 400)));
 
   section('design-system: ATOM prompt-card legibility (no UA-black leak)');
@@ -4214,6 +4214,89 @@ function testPhaseVIIDescriptors() {
     !/process\.env|=\s*['"][A-Za-z0-9]{24,}['"]/.test(scSrc) && !/process\.env/.test(ecSrc));
 }
 
+// Phase VII production QA fixes — verified defects from the live deployment.
+async function testPhaseVIIQAFixes() {
+  section('phaseVII-QA: production defect fixes (labels/hungermap/search/close/count)');
+  const earth = readFileSync(join(ROOT, 'assets', 'earth.js'), 'utf8');
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+
+  // (1) Source labels must not claim a missing credential when the adapter is
+  // actually reachable. A connected/live/stale/down source has been called
+  // server-side, so "needs KEY" is only truthful for credential-required/disabled.
+  ok('source label gates the credential hint on state (needsKey)', /var needsKey\b/.test(earth));
+  ok('credential hint only shown for credential-required or disabled',
+    /needsKey[\s\S]{0,160}s\.state === 'credential-required'[\s\S]{0,80}s\.state === 'disabled'/.test(earth));
+  ok('credential hint no longer shown unconditionally from s.needs',
+    !/var extra = s\.needs && s\.needs\.length \? ' · needs '/.test(earth));
+  // Behavioral: a keyed source reported OK by /api/intel resolves live with no
+  // credential requirement, so the UI would render no "needs KEY" hint.
+  const SRC = loadEarthModules().EARTH_SOURCES;
+  const firmsOk = SRC.resolve({ sources: [{ id: 'firms', status: 'ok' }] }).find((r) => r.id === 'firms');
+  ok('FIRMS resolves connected+live when intel reports ok', firmsOk.state === 'connected' && firmsOk.live === true);
+  ok('a connected keyed source is not credential-required', firmsOk.credentialRequired === false);
+
+  // (2) HungerMap adapter: bulk endpoint can hang; must fall back to bounded
+  // per-country nowcasts, and fail truthfully (throw) only when all paths fail.
+  const bulkPayload = { countries: [
+    { properties: { Country: 'Somalia', iso3: 'SOM', fcs: { people: 4200000, prevalence: 0.45 }, centroid_lat: 5.2, centroid_lon: 46.2 } },
+  ] };
+  const bulkOk = catFetch([['adm0data.json', () => catResp(200, bulkPayload)]]);
+  const evBulk = await hungermap({ fetchImpl: bulkOk, sleep: async () => {} });
+  ok('HungerMap uses the bulk endpoint when healthy', evBulk.length === 1 && evBulk[0].geography === 'Somalia');
+
+  // Bulk fails -> bounded per-country fallback aggregates whatever resolves.
+  const countryPayload = (iso3, name, prev) => catResp(200, {
+    statusCode: '200', body: { country: { name: name, iso3: iso3 }, date: '2024-03-17', metrics: { fcs: { people: 1000000, prevalence: prev } } },
+  });
+  const fallbackFetch = catFetch([
+    ['adm0data.json', () => catResp(504, { error: 'gateway timeout' })],
+    ['/foodsecurity/country/SOM', () => countryPayload('SOM', 'Somalia', 0.9)],
+    ['/foodsecurity/country/TCD', () => countryPayload('TCD', 'Chad', 0.3)],
+    ['/foodsecurity/country/', () => catResp(500, { error: 'x' })],
+  ]);
+  const evFb = await hungermap({ fetchImpl: fallbackFetch, sleep: async () => {}, countryIso3: ['SOM', 'TCD'] });
+  ok('HungerMap falls back to per-country nowcasts when bulk fails', evFb.length === 2);
+  ok('HungerMap fallback hits the /v1/foodsecurity/country endpoint',
+    fallbackFetch.calls.some((c) => /\/v1\/foodsecurity\/country\/SOM/.test(c.url)));
+  ok('HungerMap fallback preserves severity from prevalence',
+    (evFb.find((e) => e.geography === 'Somalia') || {}).severity === 'critical');
+
+  // All paths fail -> truthful throw (pipeline reports down/stale; never fabricated).
+  const deadFetch = catFetch([['hungermapdata.org', () => catResp(503, { error: 'down' })]]);
+  let threw = false;
+  try { await hungermap({ fetchImpl: deadFetch, sleep: async () => {}, countryIso3: ['SOM'] }); }
+  catch (e) { threw = true; }
+  ok('HungerMap throws (truthful unavailable) when bulk + fallback both fail', threw);
+
+  // (3) Layer search must truly filter: hide non-matching rows, collapse empty
+  // family groups, and surface a no-match state.
+  ok('search matches against layer name and legend text', /var hay = \(name \+ ' ' \+ legend\)/.test(earth));
+  ok('search collapses family groups with no visible layers', /earth-tree-group[\s\S]{0,220}grp\.style\.display/.test(earth));
+  ok('search shows a truthful no-match state', /earthTreeNoMatch/.test(earth) && /No layers match/.test(earth));
+  ok('no-match note has a stylesheet rule', /\.earth-tree-nomatch\{/.test(html));
+
+  // (4) Ingestion Operations close control: clearly labeled, keyboard-accessible,
+  // reliable close (delegated fallback + Escape), with a11y focus management.
+  ok('close button is a real button with type + aria-label + title',
+    /<button[^>]*type="button"[^>]*id="earthIngestClose"[\s\S]{0,200}aria-label="Close ingestion operations"[\s\S]{0,80}title="Close/.test(earth));
+  ok('ingest drawer is exposed as a dialog', /id="earthIngest"[^>]*role="dialog"/.test(earth));
+  ok('delegated close handler closes even on inner-icon clicks',
+    /earthIngestClose'\)\) \{ e\.preventDefault\(\); closeIngest\(\); \}/.test(earth));
+  ok('closeIngest returns focus to the toggle', /function closeIngest\(\)[\s\S]{0,220}earthIngestBtn[\s\S]{0,60}focus/.test(earth));
+  ok('openIngest moves focus to the close control', /function openIngest\(\)[\s\S]{0,320}earthIngestClose[\s\S]{0,60}focus/.test(earth));
+  ok('Escape still closes the drawer', /Escape[\s\S]{0,80}closeIngest\(\)/.test(earth));
+
+  // (5) Gate feed count is truthful and drift-proof: derived from the registry's
+  // intel-linked feeds, and equal to that count (no longer the stale "11").
+  ok('gate no longer hardcodes the stale "11 open-source feeds"', !html.includes('11 open-source feeds'));
+  ok('gate feed count has a stable id', /id="gsFeedCount"/.test(html));
+  ok('gate feed count is updated dynamically from the source registry',
+    /gsFeedCount[\s\S]{0,400}EARTH_SOURCES[\s\S]{0,120}intelId[\s\S]{0,120}open-source feeds/.test(html));
+  const intelBacked = SRC.REGISTRY.filter((s) => s && s.intelId).length;
+  const shown = (html.match(/id="gsFeedCount">(\d+) open-source feeds/) || [])[1];
+  ok('static gate count matches the intel-linked registry count', Number(shown) === intelBacked);
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -4280,6 +4363,7 @@ function testPhaseVIIDescriptors() {
     await testPhaseVIICatalog();
     testPhaseVIIScenarioSeed();
     testPhaseVIIDescriptors();
+    await testPhaseVIIQAFixes();
     testBrandingSecurity();
     testDesignSystem();
     await testAccounts();

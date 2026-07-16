@@ -20,7 +20,7 @@
 //  10. IMF PortWatch  logistics   keyless
 //  11. USDA NASS      market      keyed (USDA_NASS_API_KEY; degrades when unset)
 
-import { fetchJSON, fetchText, severityFromScale, isFillValue, mapLimit } from './_sources.js';
+import { fetchJSON, fetchText, severityFromScale, isFillValue, mapLimit, withRetry } from './_sources.js';
 
 // A small set of global breadbasket / import-hub reference points used by the
 // point-query weather adapters (Open-Meteo, POWER). Keeping this list short
@@ -675,42 +675,81 @@ export async function faspsd({ fetchImpl, timeoutMs = 8000, env = process.env, n
 // ------------------------------------------------------ WFP HungerMap LIVE ----
 // World Food Programme HungerMap — country-level food-insecurity nowcasts
 // (people with insufficient food consumption). Keyless public JSON, ~6h refresh.
-export async function hungermap({ fetchImpl, timeoutMs = 7000 } = {}) {
-  const url = 'https://api.hungermapdata.org/v2/adm0data.json';
-  const j = await fetchJSON(url, { fetchImpl, timeoutMs });
-  const countries = (j && Array.isArray(j.countries)) ? j.countries
-    : (j && j.body && Array.isArray(j.body.countries)) ? j.body.countries
-    : (Array.isArray(j) ? j : []);
-  const out = [];
-  for (const c of countries) {
-    const props = (c && c.properties) || c || {};
-    const name = props.Country || props.country || props.name || (props.iso3 || 'Country');
-    const fcs = (props.fcs) || (props.metrics && props.metrics.fcs) || null;
-    const people = fcs && (fcs.people != null ? fcs.people : (fcs.people_total != null ? fcs.people_total : null));
-    const prevalence = fcs && (fcs.prevalence != null ? fcs.prevalence
-      : (fcs.ratio && fcs.ratio.ratio != null ? fcs.ratio.ratio : null));
-    const p = (prevalence == null) ? NaN : Number(prevalence);
-    const ppl = (people == null) ? NaN : Number(people);
-    if (!Number.isFinite(p) && !Number.isFinite(ppl)) continue;
-    const pct = Number.isFinite(p) ? (p <= 1 ? p * 100 : p) : null;
-    out.push({
-      rawId: 'hm-' + String(props.iso3 || props.iso || name).toLowerCase().replace(/[^a-z0-9]+/g, ''),
-      domain: 'humanitarian',
-      category: 'Food insecurity (FCS)',
-      title: name + ' — insufficient food consumption' +
-        (Number.isFinite(ppl) ? ' ' + formatBig(ppl) + ' people' : '') +
-        (pct != null ? ' (' + pct.toFixed(0) + '%)' : ''),
-      severity: severityFromScale(pct != null ? pct : 0, [20, 40, 60]),
-      geography: name,
-      lat: Number(props.centroid_lat != null ? props.centroid_lat : (props.lat != null ? props.lat : NaN)) || null,
-      lon: Number(props.centroid_lon != null ? props.centroid_lon : (props.lon != null ? props.lon : NaN)) || null,
-      value: pct != null ? pct : (Number.isFinite(ppl) ? ppl : null),
-      unit: pct != null ? '% insufficient food' : 'people',
-      published: props.date || props.updated || null,
-      sourceUrl: 'https://hungermap.wfp.org/',
-      confidence: 0.75,
-    });
-  }
+//
+// Robustness (defect fix): the bulk `/v2/adm0data.json` endpoint intermittently
+// hangs/aborts from serverless egress. We therefore (1) call it with a bounded
+// retry + a larger byte cap, and (2) fall back to a bounded set of high-risk
+// country nowcasts via `/v1/foodsecurity/country/{iso3}` when the bulk call
+// fails or returns nothing. If BOTH paths fail we throw so the pipeline reports
+// the source as down/stale — we never fabricate food-insecurity data.
+const HUNGERMAP_BULK = 'https://api.hungermapdata.org/v2/adm0data.json';
+const HUNGERMAP_COUNTRY = 'https://api.hungermapdata.org/v1/foodsecurity/country/';
+// Bounded fallback roster — major food-crisis / breadbasket-adjacent countries.
+const HUNGERMAP_FALLBACK_ISO3 = ['SOM', 'AFG', 'YEM', 'SDN', 'SSD', 'ETH', 'COD', 'TCD', 'SYR', 'NGA', 'HTI', 'MLI', 'BFA', 'NER'];
+
+// Build a normalized raw record from loosely-shaped country properties.
+function hmRecord(props) {
+  const name = props.Country || props.country || props.name || (props.iso3 || 'Country');
+  const fcs = props.fcs || (props.metrics && props.metrics.fcs) || null;
+  const people = fcs && (fcs.people != null ? fcs.people : (fcs.people_total != null ? fcs.people_total : null));
+  const prevalence = fcs && (fcs.prevalence != null ? fcs.prevalence
+    : (fcs.ratio && fcs.ratio.ratio != null ? fcs.ratio.ratio : null));
+  const p = (prevalence == null) ? NaN : Number(prevalence);
+  const ppl = (people == null) ? NaN : Number(people);
+  if (!Number.isFinite(p) && !Number.isFinite(ppl)) return null;
+  const pct = Number.isFinite(p) ? (p <= 1 ? p * 100 : p) : null;
+  return {
+    rawId: 'hm-' + String(props.iso3 || props.iso || name).toLowerCase().replace(/[^a-z0-9]+/g, ''),
+    domain: 'humanitarian',
+    category: 'Food insecurity (FCS)',
+    title: name + ' — insufficient food consumption' +
+      (Number.isFinite(ppl) ? ' ' + formatBig(ppl) + ' people' : '') +
+      (pct != null ? ' (' + pct.toFixed(0) + '%)' : ''),
+    severity: severityFromScale(pct != null ? pct : 0, [20, 40, 60]),
+    geography: name,
+    lat: Number(props.centroid_lat != null ? props.centroid_lat : (props.lat != null ? props.lat : NaN)) || null,
+    lon: Number(props.centroid_lon != null ? props.centroid_lon : (props.lon != null ? props.lon : NaN)) || null,
+    value: pct != null ? pct : (Number.isFinite(ppl) ? ppl : null),
+    unit: pct != null ? '% insufficient food' : 'people',
+    published: props.date || props.updated || null,
+    sourceUrl: 'https://hungermap.wfp.org/',
+    confidence: 0.75,
+  };
+}
+
+export async function hungermap({ fetchImpl, timeoutMs = 8000, sleep, countryIso3 = HUNGERMAP_FALLBACK_ISO3 } = {}) {
+  // Primary: one bulk call for every country, with a single bounded retry.
+  try {
+    const j = await withRetry(
+      () => fetchJSON(HUNGERMAP_BULK, { fetchImpl, timeoutMs, maxBytes: 8_000_000 }),
+      { retries: 1, baseDelayMs: 250, sleep }
+    );
+    const countries = (j && Array.isArray(j.countries)) ? j.countries
+      : (j && j.body && Array.isArray(j.body.countries)) ? j.body.countries
+      : (Array.isArray(j) ? j : []);
+    const out = [];
+    for (const c of countries) {
+      const rec = hmRecord((c && c.properties) || c || {});
+      if (rec) out.push(rec);
+    }
+    if (out.length) return out;
+  } catch (e) { /* fall through to bounded per-country fallback */ }
+
+  // Fallback: bounded, concurrency-capped per-country nowcasts. Best-effort —
+  // each country failure is swallowed; we aggregate whatever resolves.
+  const results = await mapLimit(countryIso3, 3, async (iso3) => {
+    try {
+      const j = await fetchJSON(HUNGERMAP_COUNTRY + encodeURIComponent(iso3), { fetchImpl, timeoutMs });
+      const b = (j && j.body) || j || {};
+      const country = b.country || {};
+      return hmRecord({
+        Country: country.name, iso3: country.iso3 || iso3,
+        metrics: b.metrics, date: b.date,
+      });
+    } catch (e) { return null; }
+  });
+  const out = results.filter(Boolean);
+  if (!out.length) throw new Error('HungerMap unavailable (bulk + per-country fallback failed)');
   return out;
 }
 

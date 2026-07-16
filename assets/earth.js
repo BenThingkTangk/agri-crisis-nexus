@@ -645,7 +645,12 @@
     host.innerHTML = st.sources.map(function (s) {
       var cls = 'earth-src-state src-' + s.state;
       var lbl = s.live ? 'LIVE' : s.state.replace('-', ' ').toUpperCase();
-      var extra = s.needs && s.needs.length ? ' · needs ' + esc(s.needs.join(', ')) : '';
+      // Only claim a credential is missing when the adapter is NOT reachable.
+      // A connected/stale/down source has actually been called server-side, so
+      // "needs KEY" would be false — the key is present and working.
+      var needsKey = s.needs && s.needs.length &&
+        (s.state === 'credential-required' || s.state === 'disabled');
+      var extra = needsKey ? ' · needs ' + esc(s.needs.join(', ')) : '';
       return '<div class="earth-src" data-testid="earth-source" title="' + esc(s.description) + '">' +
         '<span class="' + cls + '"></span>' +
         '<span class="earth-src-name">' + esc(s.name) + '</span>' +
@@ -661,11 +666,11 @@
      rows show the ENV NAME needed, never a value. */
   function ingestDrawerHtml() {
     return '' +
-      '<div class="earth-ingest" id="earthIngest" data-testid="earth-ingest" hidden aria-label="Ingestion operations">' +
+      '<div class="earth-ingest" id="earthIngest" data-testid="earth-ingest" hidden role="dialog" aria-label="Ingestion operations">' +
         '<div class="earth-ingest-head">' +
           '<span class="earth-ingest-title">' + icon('database') + ' Ingestion Operations</span>' +
           '<span class="earth-ingest-sub">Server-side catalog &amp; coverage — NASA Earthdata · Copernicus · FAO WaPOR · WRI Aqueduct</span>' +
-          '<button id="earthIngestClose" class="earth-tl-btn" data-testid="earth-ingest-close" aria-label="Close ingestion operations">' + icon('x') + '</button>' +
+          '<button type="button" id="earthIngestClose" class="earth-tl-btn" data-testid="earth-ingest-close" aria-label="Close ingestion operations" title="Close (Esc)">' + icon('x') + '</button>' +
         '</div>' +
         '<div class="earth-ingest-body" id="earthIngestBody">' + ingestLoadingHtml() + '</div>' +
       '</div>';
@@ -802,8 +807,15 @@
     d.hidden = false;
     if (!st.ingest) { renderIngest(); fetchIngest(false); }
     else renderIngest();
+    // Move focus into the drawer so keyboard users land on the close control.
+    var c = $('#earthIngestClose'); if (c && c.focus) { try { c.focus(); } catch (e) {} }
   }
-  function closeIngest() { var d = $('#earthIngest'); if (d) d.hidden = true; }
+  function closeIngest() {
+    var d = $('#earthIngest'); if (!d || d.hidden) return;
+    d.hidden = true;
+    // Return focus to the toggle that opened the drawer (a11y focus management).
+    var t = $('#earthIngestBtn'); if (t && t.focus) { try { t.focus(); } catch (e) {} }
+  }
 
   /* ================= command palette ================= */
   function paletteItems() {
@@ -928,6 +940,13 @@
     on($('#earthHome'), 'click', function () { if (globe) globe.home(); });
     on($('#earthIngestBtn'), 'click', openIngest);
     on($('#earthIngestClose'), 'click', closeIngest);
+    // Robust delegated close: a click anywhere on the close control (including
+    // its inner SVG icon) closes the drawer even if the direct binding is missed
+    // or the target is a child node — guaranteeing the drawer always closes.
+    on($('#earthIngest'), 'click', function (e) {
+      var t = e.target;
+      if (t && t.closest && t.closest('#earthIngestClose')) { e.preventDefault(); closeIngest(); }
+    });
     on($('#earthPaletteBtn'), 'click', openPalette);
     on($('#earthScenarioSel'), 'change', function (e) { runScenario(e.target.value); });
     on($('#earthSimPlay'), 'click', togglePlay);
@@ -946,11 +965,38 @@
     on(window, 'resize', function () { if (globe) globe.resize(); });
   }
   function filterTree(q) {
-    q = String(q || '').toLowerCase();
+    q = String(q || '').trim().toLowerCase();
+    var anyVisible = false;
     $$('#earthTree .earth-layer').forEach(function (row) {
       var name = (row.querySelector('.earth-layer-name') || {}).textContent || '';
-      row.style.display = !q || name.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+      var legend = (row.querySelector('.earth-layer-legend') || {}).textContent || '';
+      var hay = (name + ' ' + legend).toLowerCase();
+      var match = !q || hay.indexOf(q) !== -1;
+      row.style.display = match ? '' : 'none';
+      if (match) anyVisible = true;
     });
+    // Collapse family groups that have no matching layers so the tree truly
+    // filters (headers of unrelated families no longer linger during a search).
+    $$('#earthTree .earth-tree-group').forEach(function (grp) {
+      var visible = $$('.earth-layer', grp).some(function (r) { return r.style.display !== 'none'; });
+      grp.style.display = (!q || visible) ? '' : 'none';
+    });
+    // Truthful empty-state so a no-match search reads as filtered, not broken.
+    var tree = $('#earthTree'); if (!tree) return;
+    var empty = $('#earthTreeNoMatch');
+    if (q && !anyVisible) {
+      if (!empty) {
+        empty = document.createElement('div');
+        empty.id = 'earthTreeNoMatch';
+        empty.className = 'earth-tree-nomatch';
+        empty.setAttribute('role', 'status');
+        tree.appendChild(empty);
+      }
+      empty.textContent = 'No layers match “' + q + '”.';
+      empty.style.display = '';
+    } else if (empty) {
+      empty.style.display = 'none';
+    }
   }
 
   /* ================= public lifecycle ================= */
