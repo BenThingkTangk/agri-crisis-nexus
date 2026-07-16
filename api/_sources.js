@@ -112,6 +112,31 @@ export const SOURCES = {
     homepage: 'https://quickstats.nass.usda.gov/',
     license: 'Public domain (US Gov, USDA NASS Quick Stats)',
   },
+  firms: {
+    id: 'firms', name: 'NASA FIRMS', domain: 'hazard', keyless: false, env: 'FIRMS_MAP_KEY',
+    homepage: 'https://firms.modaps.eosdis.nasa.gov/',
+    license: 'NASA open data (LANCE/FIRMS; attribution requested)',
+  },
+  faspsd: {
+    id: 'faspsd', name: 'USDA FAS PSD', domain: 'market', keyless: false, env: 'USDA_FAS_API_KEY',
+    homepage: 'https://apps.fas.usda.gov/psdonline/',
+    license: 'Public domain (US Gov, USDA FAS PSD Online)',
+  },
+  hungermap: {
+    id: 'hungermap', name: 'WFP HungerMap LIVE', domain: 'humanitarian', keyless: true, env: null,
+    homepage: 'https://hungermap.wfp.org/',
+    license: 'WFP (attribution; see HungerMap terms)',
+  },
+  unhcr: {
+    id: 'unhcr', name: 'UNHCR Refugee Statistics', domain: 'humanitarian', keyless: true, env: null,
+    homepage: 'https://www.unhcr.org/refugee-statistics/',
+    license: 'UNHCR open data (attribution)',
+  },
+  overpass: {
+    id: 'overpass', name: 'OpenStreetMap Overpass', domain: 'logistics', keyless: true, env: null,
+    homepage: 'https://www.openstreetmap.org/',
+    license: 'ODbL 1.0 (© OpenStreetMap contributors)',
+  },
 };
 
 // ---------------------------------------------------------------------------

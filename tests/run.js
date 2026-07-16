@@ -29,7 +29,10 @@ import {
   SOURCES, isFillValue, FILL_SENTINELS,
 } from '../api/_sources.js';
 import { aggregate, clearSnapshots, recordSnapshot, getSnapshots } from '../api/_aggregate.js';
-import { gdacs, usgs, worldbank, power, nass, parseNassValue, ADAPTERS } from '../api/_adapters.js';
+import {
+  gdacs, usgs, worldbank, power, nass, parseNassValue, ADAPTERS,
+  firms, faspsd, hungermap, unhcr, overpass, parseCsv,
+} from '../api/_adapters.js';
 import {
   loadUsers, authenticate, signSession, verifySession, resolveAccount,
   accountRoleAtLeast, bearerToken, revokeToken, clearRevocations,
@@ -60,6 +63,7 @@ import {
   LAYER_CONTRACTS, LAYER_BY_ID, parseCmrBox, redactError, classifyError,
   resolveAuthMode, resolveLayer, collectCatalog, summarizeCatalog, buildRunRecord,
   recordRuns, getRuns, clearRuns, quarantine, getDeadLetter, clearDeadLetter,
+  latestSynopticCycle,
 } from '../api/_catalog.js';
 import { scryptSync, randomBytes, createHmac } from 'node:crypto';
 
@@ -1555,7 +1559,7 @@ async function testNass() {
   ok('no record sourceUrl carries a key param', leakEv.every((e) => e.sourceUrl.indexOf('key=') === -1 && e.sourceUrl.indexOf(KEY) === -1));
 
   section('nass: registry wiring + aggregate/health rail');
-  ok('ADAPTERS registry now has 11 sources', ADAPTERS.length === 11);
+  ok('ADAPTERS registry now has 16 sources', ADAPTERS.length === 16);
   ok('nass registered in ADAPTERS', ADAPTERS.some((a) => a.id === 'nass'));
   ok('SOURCES has nass with env label + not keyless', SOURCES.nass && SOURCES.nass.env === 'USDA_NASS_API_KEY' && SOURCES.nass.keyless === false && SOURCES.nass.domain === 'market');
 
@@ -3980,6 +3984,236 @@ function testPhase6CoverageA11y() {
      /\.earth-ing-layer\.has-bbox:focus-visible\s*\{[^}]*outline/.test(html));
 }
 
+/* ============================ Phase VII ============================ */
+// Five new intel adapters (firms/faspsd/hungermap/unhcr/overpass): parsing,
+// normalization, secret handling (key in URL path or header ONLY, never in an
+// emitted record), disabled-when-unset, and malformed-input resilience.
+async function testPhaseVIIAdapters() {
+  section('phaseVII: parseCsv pure helper');
+  const rows = parseCsv('a,b,c\n1,2,3\n"x,y",5,6\n');
+  eq('parseCsv row count', rows.length, 2);
+  eq('parseCsv keys by header', rows[0].a, '1');
+  eq('parseCsv honors quoted comma', rows[1].a, 'x,y');
+  eq('parseCsv skips blank lines', parseCsv('h\n\n\n1\n').length, 1);
+
+  section('phaseVII: NASA FIRMS adapter (active fire, keyed)');
+  const KEY = 'FIRMSKEY' + 'a'.repeat(24);
+  const csv = 'latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n' +
+    '41.5,-93.6,320.1,0.4,0.4,2026-07-15,1327,N,VIIRS,h,2.0NRT,295.0,180.5,D\n' +
+    '49.1,32.0,310.0,0.4,0.4,2026-07-15,132,N,VIIRS,n,2.0NRT,290.0,12.0,D\n';
+  const firmsFetch = catFetch([['firms.modaps.eosdis.nasa.gov', () => catResp(200, csv)]]);
+  const fEvents = await firms({ fetchImpl: firmsFetch, env: { FIRMS_MAP_KEY: KEY }, dayRange: 3 });
+  ok('FIRMS returns fire records', fEvents.length >= 2);
+  ok('FIRMS severity scales with FRP', fEvents.some((e) => e.severity === 'critical'));
+  ok('FIRMS parses coordinates', fEvents.every((e) => e.lat != null && e.lon != null));
+  ok('FIRMS builds ISO observedAt from acq_date/acq_time', fEvents.some((e) => /^2026-07-15T13:27:00Z$/.test(e.published)));
+  ok('FIRMS key IS sent in the outbound URL path (server-side only)',
+    firmsFetch.calls.some((k) => k.url.indexOf(KEY) !== -1));
+  ok('FIRMS key NEVER appears in any emitted record', JSON.stringify(fEvents).indexOf(KEY) === -1);
+  ok('FIRMS provenance points at the public site', fEvents.every((e) => e.sourceUrl === 'https://firms.modaps.eosdis.nasa.gov/'));
+  ok('FIRMS clamps DAY_RANGE to <=5 in the URL', firmsFetch.calls.every((k) => /\/(VIIRS_SNPP_NRT)\/[^/]+\/[1-5]$/.test(k.url)));
+  // disabled when key missing / blank
+  let firmsDisabled = false;
+  try { await firms({ fetchImpl: firmsFetch, env: {} }); } catch (e) { firmsDisabled = !!e.disabled; }
+  ok('FIRMS disabled (throws .disabled) when key unset', firmsDisabled);
+  let firmsBlank = false;
+  try { await firms({ fetchImpl: firmsFetch, env: { FIRMS_MAP_KEY: '   ' } }); } catch (e) { firmsBlank = !!e.disabled; }
+  ok('FIRMS disabled when key present-but-blank', firmsBlank);
+
+  section('phaseVII: USDA FAS PSD adapter (global production, keyed)');
+  const FASKEY = 'FASKEY' + 'b'.repeat(30);
+  const psd = [
+    { commodityCode: '0410000', countryCode: 'US', attributeId: 28, value: 45000, marketYear: 2026 },
+    { commodityCode: '0410000', countryCode: 'RU', attributeId: 28, value: 90000, marketYear: 2026 },
+    { commodityCode: '0410000', countryCode: 'US', attributeId: 4, value: 999, marketYear: 2026 },
+  ];
+  const fasFetch = catFetch([['api.fas.usda.gov', () => catResp(200, psd)]]);
+  const fasEvents = await faspsd({ fetchImpl: fasFetch, env: { USDA_FAS_API_KEY: FASKEY }, now: new Date('2026-07-15T00:00:00Z') });
+  ok('FAS returns commodity production records', fasEvents.length >= 1);
+  ok('FAS sums Production (attr 28) across countries only', fasEvents.some((e) => e.value === 135000));
+  ok('FAS ignores non-Production attributes', fasEvents.every((e) => e.value !== 999));
+  ok('FAS key sent ONLY in X-Api-Key header (never URL)',
+    fasFetch.calls.some((k) => k.opts.headers && k.opts.headers['X-Api-Key'] === FASKEY) &&
+    fasFetch.calls.every((k) => k.url.indexOf(FASKEY) === -1));
+  ok('FAS key NEVER appears in any emitted record', JSON.stringify(fasEvents).indexOf(FASKEY) === -1);
+  let fasDisabled = false;
+  try { await faspsd({ fetchImpl: fasFetch, env: {} }); } catch (e) { fasDisabled = !!e.disabled; }
+  ok('FAS disabled when key unset', fasDisabled);
+
+  section('phaseVII: WFP HungerMap adapter (food insecurity, keyless)');
+  const hm = { countries: [
+    { properties: { Country: 'Somalia', iso3: 'SOM', fcs: { people: 4200000, prevalence: 0.45 }, centroid_lat: 5.2, centroid_lon: 46.2 } },
+    { properties: { Country: 'Chad', iso3: 'TCD', fcs: { people: 1800000, prevalence: 0.3 } } },
+    { properties: { Country: 'NoData', iso3: 'XXX', fcs: {} } },
+  ] };
+  const hmEvents = await hungermap({ fetchImpl: fakeFetch({ 'hungermapdata.org': hm }) });
+  ok('HungerMap returns country records (skips no-data)', hmEvents.length === 2);
+  ok('HungerMap converts fractional prevalence to pct', hmEvents.some((e) => Math.round(e.value) === 45));
+  ok('HungerMap severity from prevalence', hmEvents.find((e) => e.geography === 'Somalia').severity === 'high');
+
+  section('phaseVII: UNHCR adapter (displacement, keyless)');
+  const un = { items: [
+    { coa_name: 'Chad', refugees: 400000, asylum_seekers: 20000, idps: 100000 },
+    { coa_name: 'Chad', refugees: 100000, asylum_seekers: 0, idps: 0 },
+    { coa_name: 'Kenya', refugees: 300000, asylum_seekers: 50000, idps: 0 },
+  ] };
+  const unEvents = await unhcr({ fetchImpl: fakeFetch({ 'api.unhcr.org': un }), now: new Date('2026-07-15T00:00:00Z') });
+  ok('UNHCR aggregates by country of asylum', unEvents.length === 2);
+  ok('UNHCR sums flows per country', unEvents.find((e) => e.geography === 'Chad').value === 620000);
+  ok('UNHCR carries breakdown in extra provenance', unEvents.every((e) => e.extra && e.extra.refugees != null));
+
+  section('phaseVII: OSM Overpass adapter (bounded, keyless)');
+  const op = { elements: [{ type: 'count', tags: { total: '42', nodes: '30', ways: '10', relations: '2' } }] };
+  const opFetch = catFetch([['overpass-api.de', () => catResp(200, op)]]);
+  const opEvents = await overpass({ fetchImpl: opFetch });
+  ok('Overpass returns bounded infrastructure counts', opEvents.length >= 1 && opEvents.length <= 2);
+  ok('Overpass reads the count total', opEvents.some((e) => e.value === 42));
+  ok('Overpass POSTs an [out:json] count query in a data= body',
+    opFetch.calls.every((k) => k.opts.method === 'POST' && String(k.opts.body).indexOf('data=') === 0));
+  ok('Overpass sends a descriptive User-Agent (etiquette)',
+    opFetch.calls.every((k) => k.opts.headers && /AgriOS/.test(k.opts.headers['user-agent'] || '')));
+
+  section('phaseVII: server SOURCES registry additions');
+  ['firms', 'faspsd', 'hungermap', 'unhcr', 'overpass'].forEach((id) => ok('SOURCES has ' + id, !!SOURCES[id]));
+  ok('FIRMS is keyed with the FIRMS_MAP_KEY env NAME', SOURCES.firms.keyless === false && SOURCES.firms.env === 'FIRMS_MAP_KEY');
+  ok('FAS is keyed with the USDA_FAS_API_KEY env NAME', SOURCES.faspsd.keyless === false && SOURCES.faspsd.env === 'USDA_FAS_API_KEY');
+  ok('keyless Phase VII sources declare no env', SOURCES.hungermap.env === null && SOURCES.unhcr.env === null && SOURCES.overpass.env === null);
+}
+
+// New catalog providers/layers: ECMWF & NOAA forecast-cycle catalogs, WorldPop
+// discovery, Sentinel-2 STAC — all resolve to truthful CATALOG_ONLY (metadata),
+// never fabricated live pixels. No credentials required, no GRIB parsing.
+async function testPhaseVIICatalog() {
+  section('phaseVII: forecast synoptic-cycle helper');
+  const now = Date.parse('2026-07-15T14:30:00Z');
+  const cyc = latestSynopticCycle(now, { lagHours: 5 });
+  ok('cycle hour is a synoptic slot', [0, 6, 12, 18].indexOf(cyc.getUTCHours()) !== -1);
+  ok('cycle is not in the future (accounts for publish lag)', cyc.getTime() <= now);
+  ok('cycle is deterministic', latestSynopticCycle(now, { lagHours: 5 }).getTime() === cyc.getTime());
+
+  section('phaseVII: catalog layer contracts (metadata only, no fabricated values)');
+  const nowMs = Date.parse('2026-07-15T14:30:00Z');
+
+  const ecmwf = catFetch([['data.ecmwf.int', () => catResp(200, '<html>forecasts index</html>')]]);
+  let c = await resolveOne('ecmwf-open-forecast', { fetchImpl: ecmwf, env: {}, now: nowMs });
+  eq('ECMWF reachable index -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+  ok('ECMWF reports the derived cycle as freshnessRef', c.freshness && /^\d{4}-\d{2}-\d{2}T/.test(c.freshness.asOf));
+  ok('ECMWF requires no credential', c.authMode === 'none');
+
+  const ecmwfDown = catFetch([['data.ecmwf.int', () => catResp(503, 'boom')]]);
+  c = await resolveOne('ecmwf-open-forecast', { fetchImpl: ecmwfDown, env: {}, now: nowMs });
+  eq('ECMWF unreachable -> UPSTREAM_ERROR (never faked live)', c.state, 'UPSTREAM_ERROR');
+
+  const nomads = catFetch([['nomads.ncep.noaa.gov', () => catResp(200, 'GFS index')]]);
+  c = await resolveOne('nomads-gfs', { fetchImpl: nomads, env: {}, now: nowMs });
+  eq('NOAA NOMADS reachable -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+
+  const wp = catFetch([['worldpop.org/rest/data', () => catResp(200, { data: [{ id: 1, title: 'Global 2020 1km' }, { id: 2 }] })]]);
+  c = await resolveOne('worldpop-population', { fetchImpl: wp, env: {}, now: nowMs });
+  eq('WorldPop catalog discovery -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+  ok('WorldPop counts discovered datasets', c.recordsDiscovered >= 2);
+
+  const wpEmpty = catFetch([['worldpop.org/rest/data', () => catResp(200, { data: [] })]]);
+  c = await resolveOne('worldpop-population', { fetchImpl: wpEmpty, env: {}, now: nowMs });
+  eq('WorldPop empty catalog -> NO_RECENT_GRANULE (no breaker trip)', c.state, 'NO_RECENT_GRANULE');
+
+  const fresh = '2026-07-14T00:00:00Z';
+  const s2 = catFetch([['stac/collections', () => catResp(200, { id: 'sentinel-2-l2a', title: 'Sentinel-2 L2A', extent: { spatial: { bbox: [[-180, -85, 180, 85]] }, temporal: { interval: [['2015-01-01T00:00:00Z', fresh]] } } })]]);
+  c = await resolveOne('sentinel2-l2a', { fetchImpl: s2, env: {}, now: nowMs });
+  eq('Sentinel-2 L2A STAC -> CATALOG_ONLY', c.state, 'CATALOG_ONLY');
+  ok('Sentinel-2 coverage bbox parsed', Array.isArray(c.coverage.bbox) && c.coverage.bbox.length === 4);
+
+  section('phaseVII: catalog additions are credential/secret free');
+  ['ecmwf', 'noaa-nomads', 'worldpop'].forEach((id) => ok('provider present ' + id, !!CAT_PROVIDERS[id]));
+  ['sentinel2-l2a', 'ecmwf-open-forecast', 'nomads-gfs', 'worldpop-population'].forEach((id) => ok('layer present ' + id, !!LAYER_BY_ID[id]));
+  ok('new forecast/population providers are keyless (tokenEnv null)',
+    CAT_PROVIDERS.ecmwf.tokenEnv == null && CAT_PROVIDERS['noaa-nomads'].tokenEnv == null && CAT_PROVIDERS.worldpop.tokenEnv == null);
+}
+
+// deriveScenarioSeed: additive, pure, honest — suggests a starting point from
+// observed signals WITHOUT running or mutating a simulation, and always labels
+// itself scenario-not-prediction with cited sources.
+function testPhaseVIIScenarioSeed() {
+  section('phaseVII: scenario seed from observed signals (not a prediction)');
+  const SIM = loadTheaterModules().SIM_ENGINE;
+  ok('deriveScenarioSeed exported', typeof SIM.deriveScenarioSeed === 'function');
+
+  const events = [
+    { sourceId: 'portwatch', domain: 'logistics', category: 'Maritime chokepoint', severityScore: 0.95, source: 'IMF PortWatch', observedAt: '2026-07-15T00:00:00Z' },
+    { sourceId: 'firms', domain: 'hazard', category: 'Active fire', severityScore: 0.7, value: 120, source: 'NASA FIRMS', observedAt: '2026-07-15T00:00:00Z' },
+    { sourceId: 'hungermap', domain: 'humanitarian', category: 'Food insecurity (FCS)', value: 30, source: 'WFP HungerMap', observedAt: '2026-07-15T00:00:00Z' },
+  ];
+  const seed = SIM.deriveScenarioSeed(events);
+  ok('suggests a real preset', !!SIM.PRESET_BY_ID[seed.suggestedPreset]);
+  eq('strongest signal (chokepoint) drives the suggestion', seed.suggestedPreset, 'blacksea-blockade');
+  ok('intensity within 1..5', seed.suggestedIntensity >= 1 && seed.suggestedIntensity <= 5);
+  ok('explicit scenario-not-prediction disclaimer', /NOT a prediction or forecast/i.test(seed.disclaimer));
+  ok('cites the contributing sources (deduped)', Array.isArray(seed.sources) && seed.sources.length === 3);
+  ok('echoes the observed inputs used', seed.inputs && seed.inputs.chokepointSeverity > 0 && seed.inputs.activeFires >= 1);
+  ok('deterministic', JSON.stringify(SIM.deriveScenarioSeed(events)) === JSON.stringify(seed));
+
+  // Pre-summarized object form + food-insecurity dominance.
+  const seed2 = SIM.deriveScenarioSeed({ foodInsecurityPct: 55, sources: [{ id: 'hungermap', name: 'WFP' }] });
+  eq('food-insecurity dominance -> export-cascade', seed2.suggestedPreset, 'export-cascade');
+
+  // Empty signals degrade to an honest default, never throws.
+  const seed0 = SIM.deriveScenarioSeed(null);
+  ok('empty signals -> safe default preset', !!SIM.PRESET_BY_ID[seed0.suggestedPreset] && seed0.sources.length === 0);
+
+  // Purity: seeding must NOT alter runSim outputs.
+  const before = JSON.stringify(SIM.runSim({ preset: 'suez-closure' }).timeline);
+  SIM.deriveScenarioSeed(events);
+  const after = JSON.stringify(SIM.runSim({ preset: 'suez-closure' }).timeline);
+  ok('deriveScenarioSeed does not perturb runSim (pure)', before === after);
+}
+
+// Front-end descriptors surface the Phase VII sources/layers truthfully, with
+// env NAMES only and no secret values.
+function testPhaseVIIDescriptors() {
+  section('phaseVII: earth-sources + earth-catalog descriptors (truthful, NAMES-only)');
+  const win = loadEarthModules();
+  const SRC = win.EARTH_SOURCES, EC = win.EARTH_CATALOG;
+
+  ['firms', 'faspsd', 'hungermap', 'unhcr', 'overpass', 'ecmwf', 'noaa-nomads', 'worldpop']
+    .forEach((id) => ok('EARTH_SOURCES registry has ' + id, SRC.REGISTRY.some((e) => e.id === id)));
+
+  const intel = { asOf: '2026-07-15T00:00:00Z', sources: [
+    { id: 'firms', status: 'ok', asOf: '2026-07-15T00:00:00Z' },
+    { id: 'faspsd', status: 'disabled' },
+    { id: 'hungermap', status: 'ok' },
+  ] };
+  const resolved = SRC.resolve(intel);
+  const by = {};
+  resolved.forEach((r) => { by[r.id] = r; });
+  ok('FIRMS live when intel reports ok', by.firms.state === 'connected' && by.firms.live === true);
+  ok('FAS disabled surfaces as disabled (never live)', by.faspsd.state === 'disabled' && by.faspsd.live === false);
+  ok('HungerMap live when intel reports ok', by.hungermap.state === 'connected' && by.hungermap.live === true);
+  ok('unreported forecast catalogs stay registry-ready (never live)',
+    by.ecmwf.state === 'registry-ready' && by.ecmwf.live === false && by.worldpop.live === false);
+  ok('keyed FIRMS/FAS expose env NAMES only', by.firms.needs.join(',') === 'FIRMS_MAP_KEY' && by.faspsd.needs.join(',') === 'USDA_FAS_API_KEY');
+  ok('no Phase VII source needs a forbidden secret',
+    SRC.REGISTRY.every((e) => (e.envNames || []).every((n) => SRC.FORBIDDEN_SECRET_NAMES.indexOf(n) === -1)));
+
+  // Catalog client descriptors.
+  ['ecmwf', 'noaa-nomads', 'worldpop'].forEach((id) => ok('EARTH_CATALOG provider ' + id, EC.PROVIDERS.some((p) => p.id === id)));
+  ['sentinel2-l2a', 'ecmwf-open-forecast', 'nomads-gfs', 'worldpop-population']
+    .forEach((id) => ok('EARTH_CATALOG layer ' + id, EC.LAYERS.some((l) => l.layerId === id)));
+  const rows = EC.resolve({ contracts: [{ layerId: 'ecmwf-open-forecast', state: 'CATALOG_ONLY' }] });
+  const ecmwfRow = rows.find((r) => r.layerId === 'ecmwf-open-forecast');
+  ok('CATALOG_ONLY forecast layer is available (metadata) but never LIVE', ecmwfRow.available === true && ecmwfRow.state !== 'LIVE');
+
+  // No secret VALUES in either descriptor file — only names. earth-sources.js
+  // legitimately DEFINES the forbidden-name blocklist, so scan only earth-catalog.js
+  // for stray secret-name references; both files must read no env and hardcode nothing.
+  const scSrc = readFileSync(join(ROOT, 'assets', 'earth-sources.js'), 'utf8');
+  const ecSrc = readFileSync(join(ROOT, 'assets', 'earth-catalog.js'), 'utf8');
+  ['DATABASE_URL', 'PPLX_KEY', 'AGRIOS_AUTH_SECRET', 'AGRIOS_SESSION_SECRET', 'MIGRATE_TOKEN'].forEach((k) => {
+    ok('earth-catalog.js never references forbidden secret ' + k, !ecSrc.includes(k));
+  });
+  ok('descriptor files read no process.env / hardcode no secret values',
+    !/process\.env|=\s*['"][A-Za-z0-9]{24,}['"]/.test(scSrc) && !/process\.env/.test(ecSrc));
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -4042,6 +4276,10 @@ function testPhase6CoverageA11y() {
     await testRealAdapters();
     await testSentinels();
     await testNass();
+    await testPhaseVIIAdapters();
+    await testPhaseVIICatalog();
+    testPhaseVIIScenarioSeed();
+    testPhaseVIIDescriptors();
     testBrandingSecurity();
     testDesignSystem();
     await testAccounts();

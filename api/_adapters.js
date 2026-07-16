@@ -20,7 +20,7 @@
 //  10. IMF PortWatch  logistics   keyless
 //  11. USDA NASS      market      keyed (USDA_NASS_API_KEY; degrades when unset)
 
-import { fetchJSON, fetchText, severityFromScale, isFillValue } from './_sources.js';
+import { fetchJSON, fetchText, severityFromScale, isFillValue, mapLimit } from './_sources.js';
 
 // A small set of global breadbasket / import-hub reference points used by the
 // point-query weather adapters (Open-Meteo, POWER). Keeping this list short
@@ -478,6 +478,336 @@ export async function nass({ fetchImpl, timeoutMs = 7000, env = process.env, now
   return out;
 }
 
+// --------------------------------------------------------------- helpers -----
+// Minimal, dependency-free CSV parser. Handles the un-quoted numeric feeds we
+// consume (FIRMS) plus defensive double-quote support. Returns an array of
+// row objects keyed by the (trimmed) header names. Never throws on ragged rows.
+export function parseCsv(text) {
+  const rows = [];
+  const lines = String(text == null ? '' : text).split(/\r\n|\n|\r/);
+  let header = null;
+  for (const line of lines) {
+    if (line === '') continue;
+    const cells = splitCsvLine(line);
+    if (!header) { header = cells.map((c) => c.trim()); continue; }
+    const obj = {};
+    for (let i = 0; i < header.length; i++) obj[header[i]] = cells[i] != null ? cells[i] : '';
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function splitCsvLine(line) {
+  const out = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
+      else cur += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// FIRMS acq_date (YYYY-MM-DD) + acq_time (Hmm/HHmm minutes-of-day) -> ISO Z.
+function firmsIso(date, time) {
+  const d = String(date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const t = String(time == null ? '' : time).trim().replace(/[^0-9]/g, '');
+  const padded = t.length ? t.padStart(4, '0').slice(-4) : '0000';
+  const hh = padded.slice(0, 2), mm = padded.slice(2, 4);
+  return d + 'T' + hh + ':' + mm + ':00Z';
+}
+
+// --------------------------------------------------------------- NASA FIRMS --
+// Fire Information for Resource Management System — near-real-time active-fire
+// detections (VIIRS S-NPP). Requires a free MAP_KEY.
+//
+// The key is read ONLY from env.FIRMS_MAP_KEY (server-side) and placed SOLELY in
+// the documented outbound URL path segment. It never appears in any emitted
+// record: provenance/sourceUrl point at the public FIRMS site, and thrown errors
+// carry only generic messages. When the key is absent/blank the adapter throws a
+// `disabled` error so the source is marked disabled rather than failing.
+//
+// Fan-out is bounded: a small set of breadbasket bounding boxes queried at
+// concurrency 2, DAY_RANGE clamped to the API max of 5, results collapsed and
+// capped to the top detections by Fire Radiative Power (FRP).
+const FIRMS_ENDPOINT = 'https://firms.modaps.eosdis.nasa.gov/api/area/csv';
+const FIRMS_HOMEPAGE = 'https://firms.modaps.eosdis.nasa.gov/';
+const FIRMS_SOURCE = 'VIIRS_SNPP_NRT';
+// [west, south, east, north] boxes around the major breadbaskets.
+const FIRMS_AREAS = [
+  { name: 'US Corn Belt', box: [-104, 36, -82, 49] },
+  { name: 'Ukraine/Black Sea grain belt', box: [22, 44, 42, 53] },
+  { name: 'South Asia (Indo-Gangetic)', box: [68, 22, 90, 33] },
+  { name: 'Brazil Cerrado/Mato Grosso', box: [-62, -22, -44, -6] },
+  { name: 'North China Plain', box: [108, 30, 122, 41] },
+];
+
+export async function firms({ fetchImpl, timeoutMs = 8000, env = process.env, dayRange = 1, areas = FIRMS_AREAS } = {}) {
+  const src = (env && env.FIRMS_MAP_KEY != null)
+    ? env.FIRMS_MAP_KEY
+    : (typeof process !== 'undefined' && process.env ? process.env.FIRMS_MAP_KEY : undefined);
+  const present = src != null;
+  const key = String(src == null ? '' : src).trim();
+  if (!key) {
+    const e = new Error('disabled: FIRMS_MAP_KEY ' + (present ? 'is set but blank' : 'not set'));
+    e.disabled = true;
+    throw e;
+  }
+  const dr = Math.max(1, Math.min(5, Math.floor(Number(dayRange) || 1)));
+
+  const perArea = await mapLimit(areas, 2, async (a) => {
+    const areaStr = a.box.join(',');
+    const url = FIRMS_ENDPOINT + '/' + encodeURIComponent(key) + '/' + FIRMS_SOURCE + '/' +
+      encodeURIComponent(areaStr) + '/' + dr;
+    let text;
+    try { text = await fetchText(url, { fetchImpl, timeoutMs, maxBytes: 2_000_000 }); }
+    catch (_) { return []; }               // one box failing must not sink the source
+    const rows = parseCsv(text);
+    return rows.map((r) => {
+      const lat = Number(r.latitude), lon = Number(r.longitude);
+      const frp = Number(r.frp);
+      const conf = String(r.confidence || '').trim();
+      const iso = firmsIso(r.acq_date, r.acq_time);
+      return {
+        _frp: Number.isFinite(frp) ? frp : 0,
+        rawId: 'firms-' + (Number.isFinite(lat) ? lat.toFixed(4) : 'x') + '_' +
+          (Number.isFinite(lon) ? lon.toFixed(4) : 'x') + '-' + (r.acq_date || '') + (r.acq_time || ''),
+        domain: 'hazard',
+        category: 'Active fire',
+        title: a.name + ' — active fire' + (Number.isFinite(frp) ? ' (FRP ' + frp.toFixed(0) + ' MW)' : ''),
+        severity: severityFromScale(Number.isFinite(frp) ? frp : 0, [10, 50, 150]),
+        geography: a.name,
+        lat: Number.isFinite(lat) ? lat : null,
+        lon: Number.isFinite(lon) ? lon : null,
+        value: Number.isFinite(frp) ? frp : null, unit: 'MW FRP',
+        published: iso,
+        sourceUrl: FIRMS_HOMEPAGE,
+        confidence: /^h/i.test(conf) ? 0.9 : /^n/i.test(conf) ? 0.7 : 0.6,
+        evidence: 'observed',
+      };
+    });
+  });
+
+  const all = [];
+  for (const list of perArea) for (const rec of list) all.push(rec);
+  all.sort((x, y) => y._frp - x._frp);
+  return all.slice(0, 60).map((r) => { const { _frp, ...rest } = r; return rest; });
+}
+
+// ----------------------------------------------------------- USDA FAS PSD ----
+// Foreign Agricultural Service — Production, Supply & Distribution (PSD Online).
+// World-level supply metrics for high-value commodities. Requires USDA_FAS_API_KEY.
+//
+// The key is read ONLY from env.USDA_FAS_API_KEY and passed SOLELY in the
+// documented `X-Api-Key` request header — never in a URL, an emitted record, an
+// error message, or the cache key. Absent/blank => `disabled` (source disabled,
+// not failed). Backfills the requested marketing year to the prior year when the
+// latest is not yet published.
+const FAS_BASE = 'https://api.fas.usda.gov/api/psd';
+const FAS_HOMEPAGE = 'https://apps.fas.usda.gov/psdonline/';
+// commodityCode + the Production attributeId (28 = "Production" in PSD).
+const FAS_COMMODITIES = [
+  { code: '0410000', name: 'Wheat', unit: '1000 MT' },
+  { code: '0440000', name: 'Corn', unit: '1000 MT' },
+  { code: '0422110', name: 'Rice, milled', unit: '1000 MT' },
+  { code: '2222000', name: 'Soybeans', unit: '1000 MT' },
+];
+const FAS_PRODUCTION_ATTR = 28;
+
+export async function faspsd({ fetchImpl, timeoutMs = 8000, env = process.env, now = new Date(), commodities = FAS_COMMODITIES } = {}) {
+  const src = (env && env.USDA_FAS_API_KEY != null)
+    ? env.USDA_FAS_API_KEY
+    : (typeof process !== 'undefined' && process.env ? process.env.USDA_FAS_API_KEY : undefined);
+  const present = src != null;
+  const key = String(src == null ? '' : src).trim();
+  if (!key) {
+    const e = new Error('disabled: USDA_FAS_API_KEY ' + (present ? 'is set but blank' : 'not set'));
+    e.disabled = true;
+    throw e;
+  }
+  const headers = { 'X-Api-Key': key, accept: 'application/json' };
+  const marketYear = new Date(now).getUTCFullYear();
+
+  const results = await mapLimit(commodities, 2, async (c) => {
+    // Try the current marketing year, then backfill one year if unpublished.
+    for (const yr of [marketYear, marketYear - 1]) {
+      const url = FAS_BASE + '/commodity/' + encodeURIComponent(c.code) + '/country/all/year/' + yr;
+      let j;
+      try { j = await fetchJSON(url, { fetchImpl, timeoutMs, headers }); }
+      catch (_) { continue; }
+      const arr = Array.isArray(j) ? j : (j && Array.isArray(j.data) ? j.data : []);
+      // World roll-up: sum Production across countries for this commodity/year.
+      let total = 0, hit = false;
+      for (const row of arr) {
+        const attr = Number(row.attributeId != null ? row.attributeId : row.AttributeId);
+        if (attr !== FAS_PRODUCTION_ATTR) continue;
+        const v = Number(row.value != null ? row.value : row.Value);
+        if (!Number.isFinite(v)) continue;
+        total += v; hit = true;
+      }
+      if (hit) return { commodity: c, year: yr, total };
+    }
+    return null;
+  });
+
+  return results.filter(Boolean).map((r) => ({
+    rawId: 'faspsd-' + r.commodity.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '-production-' + r.year,
+    domain: 'market',
+    category: 'Global production (PSD)',
+    title: 'World ' + r.commodity.name + ' production ' + r.year + '/' + String((r.year + 1) % 100).padStart(2, '0') + ' — ' + formatBig(r.total) + ' ' + r.commodity.unit,
+    severity: 'moderate',
+    geography: 'World',
+    lat: null, lon: null,
+    value: r.total, unit: r.commodity.unit,
+    published: r.year + '-12-31T00:00:00Z',
+    sourceUrl: FAS_HOMEPAGE,
+    confidence: 0.9,
+    extra: { marketingYear: r.year, statistic: 'PRODUCTION', commodityCode: r.commodity.code },
+  }));
+}
+
+// ------------------------------------------------------ WFP HungerMap LIVE ----
+// World Food Programme HungerMap — country-level food-insecurity nowcasts
+// (people with insufficient food consumption). Keyless public JSON, ~6h refresh.
+export async function hungermap({ fetchImpl, timeoutMs = 7000 } = {}) {
+  const url = 'https://api.hungermapdata.org/v2/adm0data.json';
+  const j = await fetchJSON(url, { fetchImpl, timeoutMs });
+  const countries = (j && Array.isArray(j.countries)) ? j.countries
+    : (j && j.body && Array.isArray(j.body.countries)) ? j.body.countries
+    : (Array.isArray(j) ? j : []);
+  const out = [];
+  for (const c of countries) {
+    const props = (c && c.properties) || c || {};
+    const name = props.Country || props.country || props.name || (props.iso3 || 'Country');
+    const fcs = (props.fcs) || (props.metrics && props.metrics.fcs) || null;
+    const people = fcs && (fcs.people != null ? fcs.people : (fcs.people_total != null ? fcs.people_total : null));
+    const prevalence = fcs && (fcs.prevalence != null ? fcs.prevalence
+      : (fcs.ratio && fcs.ratio.ratio != null ? fcs.ratio.ratio : null));
+    const p = (prevalence == null) ? NaN : Number(prevalence);
+    const ppl = (people == null) ? NaN : Number(people);
+    if (!Number.isFinite(p) && !Number.isFinite(ppl)) continue;
+    const pct = Number.isFinite(p) ? (p <= 1 ? p * 100 : p) : null;
+    out.push({
+      rawId: 'hm-' + String(props.iso3 || props.iso || name).toLowerCase().replace(/[^a-z0-9]+/g, ''),
+      domain: 'humanitarian',
+      category: 'Food insecurity (FCS)',
+      title: name + ' — insufficient food consumption' +
+        (Number.isFinite(ppl) ? ' ' + formatBig(ppl) + ' people' : '') +
+        (pct != null ? ' (' + pct.toFixed(0) + '%)' : ''),
+      severity: severityFromScale(pct != null ? pct : 0, [20, 40, 60]),
+      geography: name,
+      lat: Number(props.centroid_lat != null ? props.centroid_lat : (props.lat != null ? props.lat : NaN)) || null,
+      lon: Number(props.centroid_lon != null ? props.centroid_lon : (props.lon != null ? props.lon : NaN)) || null,
+      value: pct != null ? pct : (Number.isFinite(ppl) ? ppl : null),
+      unit: pct != null ? '% insufficient food' : 'people',
+      published: props.date || props.updated || null,
+      sourceUrl: 'https://hungermap.wfp.org/',
+      confidence: 0.75,
+    });
+  }
+  return out;
+}
+
+// ------------------------------------------------ UNHCR Refugee Statistics ----
+// Forced-displacement flows aggregated by country of asylum. Keyless JSON.
+export async function unhcr({ fetchImpl, timeoutMs = 7000, now = new Date() } = {}) {
+  const yr = new Date(now).getUTCFullYear() - 1; // latest fully-published year
+  const url = 'https://api.unhcr.org/population/v1/population/?limit=1000&yearFrom=' + yr +
+    '&yearTo=' + yr + '&coa_all=true';
+  const j = await fetchJSON(url, { fetchImpl, timeoutMs });
+  const items = (j && Array.isArray(j.items)) ? j.items : (Array.isArray(j) ? j : []);
+  const byAsylum = new Map();
+  for (const it of items) {
+    const coa = it.coa_name || it.coa || 'Unknown';
+    const refugees = Number(it.refugees) || 0;
+    const asylum = Number(it.asylum_seekers) || 0;
+    const idp = Number(it.idps) || 0;
+    const prev = byAsylum.get(coa) || { coa, refugees: 0, asylum: 0, idp: 0 };
+    prev.refugees += refugees; prev.asylum += asylum; prev.idp += idp;
+    byAsylum.set(coa, prev);
+  }
+  const rows = Array.from(byAsylum.values())
+    .map((r) => ({ ...r, total: r.refugees + r.asylum + r.idp }))
+    .filter((r) => r.total > 0)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 30);
+  return rows.map((r) => ({
+    rawId: 'unhcr-' + String(r.coa).toLowerCase().replace(/[^a-z0-9]+/g, '') + '-' + yr,
+    domain: 'humanitarian',
+    category: 'Forced displacement',
+    title: r.coa + ' — ' + formatBig(r.total) + ' displaced (' + yr + ')',
+    severity: severityFromScale(r.total, [100_000, 500_000, 1_500_000]),
+    geography: r.coa,
+    lat: null, lon: null,
+    value: r.total, unit: 'people',
+    published: yr + '-12-31T00:00:00Z',
+    sourceUrl: 'https://www.unhcr.org/refugee-statistics/',
+    confidence: 0.85,
+    extra: { refugees: r.refugees, asylumSeekers: r.asylum, idps: r.idp, year: yr },
+  }));
+}
+
+// --------------------------------------------------- OpenStreetMap Overpass ---
+// Bounded infrastructure counts (grain storage / ports / rail freight) around
+// the breadbaskets. Keyless, but rate-limited & shared — so this is strictly
+// bounded: two small bboxes, a count-only query, a short timeout, and a
+// descriptive User-Agent per Overpass etiquette.
+const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
+// [south, west, north, east] — Overpass bbox order.
+const OVERPASS_AREAS = [
+  { name: 'US Corn Belt', box: [36, -104, 49, -82] },
+  { name: 'Ukraine/Black Sea grain belt', box: [44, 22, 53, 42] },
+];
+
+export async function overpass({ fetchImpl, timeoutMs = 9000, areas = OVERPASS_AREAS } = {}) {
+  const picked = areas.slice(0, 2);
+  const results = await mapLimit(picked, 1, async (a) => {
+    const [s, w, n, e] = a.box;
+    const bbox = s + ',' + w + ',' + n + ',' + e;
+    const query = '[out:json][timeout:20];(' +
+      'nwr["man_made"="silo"](' + bbox + ');' +
+      'nwr["landuse"="port"](' + bbox + ');' +
+      'nwr["railway"="yard"](' + bbox + ');' +
+      ');out count;';
+    let j;
+    try {
+      j = await fetchJSON(OVERPASS_ENDPOINT, {
+        fetchImpl, timeoutMs, method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': 'AgriOS/PhaseVII (agri-crisis-nexus; contact via repo)' },
+        body: 'data=' + encodeURIComponent(query),
+      });
+    } catch (_) { return null; }
+    let count = 0;
+    const els = (j && Array.isArray(j.elements)) ? j.elements : [];
+    for (const el of els) {
+      const tags = el && el.tags ? el.tags : {};
+      const total = Number(tags.total != null ? tags.total : (tags.nodes || 0));
+      if (Number.isFinite(total)) count += total;
+    }
+    return { area: a, count };
+  });
+  return results.filter(Boolean).map((r) => ({
+    rawId: 'osm-' + r.area.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+    domain: 'logistics',
+    category: 'Agri-logistics infrastructure',
+    title: r.area.name + ' — ' + formatBig(r.count) + ' logistics/storage features mapped',
+    severity: 'stable',
+    geography: r.area.name,
+    lat: null, lon: null,
+    value: r.count, unit: 'OSM features',
+    published: null,
+    sourceUrl: 'https://www.openstreetmap.org/',
+    confidence: 0.6,
+    evidence: 'observed',
+  }));
+}
+
 // Registry the aggregator iterates. `id` maps to SOURCES; `run` is the adapter.
 export const ADAPTERS = [
   { id: 'gdacs', run: gdacs, ttlMs: 300_000 },
@@ -491,4 +821,9 @@ export const ADAPTERS = [
   { id: 'gdelt', run: gdelt, ttlMs: 900_000 },
   { id: 'portwatch', run: portwatch, ttlMs: 3_600_000 },
   { id: 'nass', run: nass, ttlMs: 43_200_000 },
+  { id: 'firms', run: firms, ttlMs: 900_000 },
+  { id: 'faspsd', run: faspsd, ttlMs: 43_200_000 },
+  { id: 'hungermap', run: hungermap, ttlMs: 21_600_000 },
+  { id: 'unhcr', run: unhcr, ttlMs: 86_400_000 },
+  { id: 'overpass', run: overpass, ttlMs: 86_400_000 },
 ];

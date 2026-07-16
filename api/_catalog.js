@@ -26,7 +26,7 @@
 // against saved fixtures with no network and no credentials.
 
 import {
-  fetchJSON, withRetry, mapLimit,
+  fetchJSON, fetchText, withRetry, mapLimit,
   breakerAllows, breakerSuccess, breakerFailure,
   cacheGet, cacheSet,
 } from './_sources.js';
@@ -87,6 +87,24 @@ export const PROVIDERS = {
     id: 'wri-aqueduct', name: 'WRI Aqueduct (Resource Watch / ArcGIS)', tokenEnv: null,
     homepage: 'https://www.wri.org/aqueduct',
     license: 'WRI Aqueduct (CC-BY-4.0)',
+    publicFallback: true,
+  },
+  ecmwf: {
+    id: 'ecmwf', name: 'ECMWF Open Data', tokenEnv: null,
+    homepage: 'https://www.ecmwf.int/en/forecasts/datasets/open-data',
+    license: 'CC-BY-4.0 (ECMWF open data)',
+    publicFallback: true,
+  },
+  'noaa-nomads': {
+    id: 'noaa-nomads', name: 'NOAA NOMADS (GFS/GEFS)', tokenEnv: null,
+    homepage: 'https://nomads.ncep.noaa.gov/',
+    license: 'Public domain (US Gov, NOAA/NCEP)',
+    publicFallback: true,
+  },
+  worldpop: {
+    id: 'worldpop', name: 'WorldPop', tokenEnv: null,
+    homepage: 'https://www.worldpop.org/',
+    license: 'CC-BY-4.0 (WorldPop)',
     publicFallback: true,
   },
 };
@@ -288,6 +306,68 @@ function wriAqueductProbe(servicePath) {
   };
 }
 
+// ---- Forecast synoptic-cycle helpers (ECMWF Open Data / NOAA NOMADS) -------
+// NWP models run on 6-hourly synoptic cycles (00/06/12/18 UTC), published a few
+// hours after the cycle time. We derive the newest cycle that should be public
+// as truthful METADATA — never rendered forecast pixels. Vercel-safe: no GRIB
+// parsing, just a small reachability check on the public index.
+export function latestSynopticCycle(now, opts = {}) {
+  const cycleHours = opts.cycleHours || [0, 6, 12, 18];
+  const lagHours = opts.lagHours != null ? opts.lagHours : 5;
+  const t = new Date(typeof now === 'number' ? now : (Date.parse(now) || Date.now()));
+  const eff = new Date(t.getTime() - lagHours * 3_600_000);
+  const h = eff.getUTCHours();
+  let chosen = cycleHours[0];
+  for (const c of cycleHours) if (c <= h) chosen = c;
+  return new Date(Date.UTC(eff.getUTCFullYear(), eff.getUTCMonth(), eff.getUTCDate(), chosen, 0, 0));
+}
+
+// Probe a forecast provider by (cheaply) confirming its public index is
+// reachable, then reporting the derived current cycle. Transport failures throw
+// so the breaker/state machine can react; success yields a CATALOG_ONLY-eligible
+// contract (kind:'catalog'). The cycle time is the availability marker, clearly
+// distinct from any rendered value (which we never fabricate).
+function forecastCycleProbe(indexUrl, meta = {}) {
+  return async function ({ fetchImpl, timeoutMs = 8000, now = new Date() }) {
+    const text = await fetchText(indexUrl, { fetchImpl, timeoutMs, maxBytes: 1_500_000 });
+    const reachable = typeof text === 'string' && text.length > 0;
+    const cycle = latestSynopticCycle(now, meta);
+    const iso = cycle.toISOString();
+    return {
+      recordsDiscovered: reachable ? 1 : 0,
+      productId: meta.productId || null,
+      productTitle: meta.productTitle || null,
+      coverage: { bbox: meta.bbox || [-180, -90, 180, 90], temporal: { start: null, end: iso } },
+      granule: { id: 'cycle-' + iso, time: iso, updated: iso, sizeMb: null },
+      freshnessRef: iso,
+      features: [],
+    };
+  };
+}
+
+// ---- WorldPop REST catalog probe (gridded population dataset discovery) -----
+// Discovers dataset metadata only; we deliberately do NOT download the massive
+// population rasters. Empty catalog is a no-data condition (not a transport
+// failure) so the breaker is not tripped.
+function worldpopProbe(alias) {
+  return async function ({ fetchImpl, timeoutMs = 8000 }) {
+    const url = 'https://www.worldpop.org/rest/data/pop/' + encodeURIComponent(alias);
+    const j = await fetchJSON(url, { fetchImpl, timeoutMs });
+    const data = (j && Array.isArray(j.data)) ? j.data : [];
+    if (!data.length) { const e = new Error('no-catalog: WorldPop ' + alias + ' empty'); e.noData = true; throw e; }
+    const first = data[0] || {};
+    return {
+      recordsDiscovered: data.length,
+      productId: alias,
+      productTitle: first.title || first.name || alias,
+      coverage: { bbox: [-180, -90, 180, 90], temporal: { start: null, end: null } },
+      granule: null,
+      freshnessRef: null,
+      features: [],
+    };
+  };
+}
+
 export const LAYER_CONTRACTS = [
   // ---- NASA Earthdata (CMR) — public discovery, token as enhancement ----
   {
@@ -359,6 +439,46 @@ export const LAYER_CONTRACTS = [
     sourceUrl: 'https://www.wri.org/aqueduct',
     metricDefs: 'Basin-level baseline water stress / risk indicators (Aqueduct).',
     probe: wriAqueductProbe('Aqueduct/aqueduct_aggr/MapServer'),
+  },
+  // ---- Copernicus Sentinel-2 L2A — public STAC discovery ----
+  {
+    layerId: 'sentinel2-l2a', provider: 'copernicus', domain: 'satellite',
+    product: 'Copernicus Sentinel-2 L2A surface reflectance', cadence: 'daily',
+    kind: 'catalog', units: null,
+    sourceUrl: 'https://dataspace.copernicus.eu/',
+    metricDefs: 'Public STAC catalog coverage for Sentinel-2 L2A (crop/vegetation context tiles).',
+    probe: copernicusStacProbe('sentinel-2-l2a'),
+  },
+  // ---- ECMWF Open Data — synoptic forecast-cycle catalog (metadata only) ----
+  {
+    layerId: 'ecmwf-open-forecast', provider: 'ecmwf', domain: 'weather',
+    product: 'ECMWF IFS/AIFS Open Data forecast (0.25°)', cadence: 'half-hourly',
+    kind: 'catalog', units: null,
+    sourceUrl: 'https://www.ecmwf.int/en/forecasts/datasets/open-data',
+    metricDefs: 'Availability of the current public forecast cycle (00/06/12/18Z). Metadata only — no GRIB parsing, no rendered forecast values.',
+    probe: forecastCycleProbe('https://data.ecmwf.int/forecasts/', {
+      productId: 'ecmwf-open-data', productTitle: 'ECMWF Open Data forecast cycle',
+    }),
+  },
+  // ---- NOAA NOMADS GFS — synoptic forecast-cycle catalog (metadata only) ----
+  {
+    layerId: 'nomads-gfs', provider: 'noaa-nomads', domain: 'weather',
+    product: 'NOAA GFS 0.25° deterministic forecast', cadence: 'half-hourly',
+    kind: 'catalog', units: null,
+    sourceUrl: 'https://nomads.ncep.noaa.gov/',
+    metricDefs: 'Availability of the current GFS cycle (00/06/12/18Z). Metadata only — no GRIB download/parsing on serverless.',
+    probe: forecastCycleProbe('https://nomads.ncep.noaa.gov/', {
+      productId: 'gfs-0p25', productTitle: 'NOAA GFS forecast cycle', lagHours: 6,
+    }),
+  },
+  // ---- WorldPop — gridded population dataset discovery (keyless REST) ----
+  {
+    layerId: 'worldpop-population', provider: 'worldpop', domain: 'population',
+    product: 'WorldPop unconstrained global population (~1km)', cadence: 'periodic',
+    kind: 'catalog', units: 'persons per grid cell',
+    sourceUrl: 'https://www.worldpop.org/',
+    metricDefs: 'Population-exposure catalog discovery (dataset metadata; rasters not downloaded).',
+    probe: worldpopProbe('wpgp'),
   },
 ];
 

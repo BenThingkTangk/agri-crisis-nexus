@@ -351,6 +351,104 @@
     });
   }
 
+  /* ---------------- scenario seeding from observed signals ----------------
+     Phase VII: turn live intel/catalog signals into a SUGGESTED starting point
+     for exploration. This is ADDITIVE and pure — it never runs a simulation,
+     never mutates params, and is explicitly a scenario seed, NOT a prediction.
+     Observed inputs are echoed with their sources so the operator can see
+     exactly what nudged each suggestion; simulation outputs remain modeled
+     proxies. */
+  var SCENARIO_SEED_DISCLAIMER =
+    'Scenario seed only — a starting point for exploration, NOT a prediction or forecast. ' +
+    'Observed inputs are cited; simulation outputs remain modeled proxies.';
+
+  function num0(v) { var n = Number(v); return Number.isFinite(n) ? n : 0; }
+
+  // Accepts either an array of normalized events, an object { events:[...] },
+  // or a pre-summarized signals object. Returns a stable, side-effect-free seed.
+  function deriveScenarioSeed(signals) {
+    var s = signals || {};
+    var events = Array.isArray(s) ? s : (Array.isArray(s.events) ? s.events : null);
+
+    // Signal tallies (deterministic; from events when provided, else explicit fields).
+    var fires = 0, chokepoint = 0, conflict = 0, displacement = 0;
+    var foodInsecurityPct = 0, priceInflation = 0, productionStress = 0;
+    var sources = [];
+    var seenSrc = {};
+
+    function noteSource(id, name, asOf) {
+      var key = id || name; if (!key || seenSrc[key]) return; seenSrc[key] = true;
+      sources.push({ id: id || null, name: name || id || 'source', asOf: asOf || null });
+    }
+
+    if (events) {
+      events.forEach(function (e) {
+        if (!e) return;
+        var dom = e.domain || '', cat = String(e.category || '').toLowerCase(), sev = e.severityScore || 0;
+        if (/fire/.test(cat) || e.sourceId === 'firms') fires += 1;
+        if (dom === 'logistics' || e.sourceId === 'portwatch') chokepoint = Math.max(chokepoint, sev);
+        if (dom === 'conflict') conflict += 1;
+        if (e.sourceId === 'unhcr' || /displac/.test(cat)) displacement += num0(e.value);
+        if (e.sourceId === 'hungermap' || /food insecurity|fcs/.test(cat)) foodInsecurityPct = Math.max(foodInsecurityPct, num0(e.value));
+        if (/inflation|cpi|price/.test(cat)) priceInflation = Math.max(priceInflation, num0(e.value));
+        if (dom === 'weather' || /drought|agro-climate/.test(cat)) productionStress = Math.max(productionStress, sev);
+        noteSource(e.sourceId, e.source, e.observedAt || e.fetchedAt);
+      });
+    } else {
+      fires = num0(s.fires);
+      chokepoint = num0(s.chokepoint);
+      conflict = num0(s.conflict);
+      displacement = num0(s.displacement);
+      foodInsecurityPct = num0(s.foodInsecurityPct);
+      priceInflation = num0(s.priceInflation);
+      productionStress = num0(s.productionStress);
+      (s.sources || []).forEach(function (src) { noteSource(src && src.id, src && src.name, src && src.asOf); });
+    }
+
+    // Weighted pressure score (0..1) — deterministic, bounded.
+    var pressure = clamp(
+      Math.min(1, fires / 40) * 0.2 +
+      chokepoint * 0.2 +
+      Math.min(1, conflict / 15) * 0.15 +
+      Math.min(1, displacement / 3_000_000) * 0.15 +
+      Math.min(1, foodInsecurityPct / 60) * 0.15 +
+      Math.min(1, priceInflation / 40) * 0.1 +
+      productionStress * 0.05,
+      0, 1);
+
+    var suggestedIntensity = clamp(Math.round(1 + pressure * 4), 1, 5);
+
+    // Pick the preset whose dominant driver matches the strongest observed signal.
+    var drivers = [
+      { id: 'blacksea-blockade', score: chokepoint, why: 'maritime chokepoint disruption is the strongest observed signal' },
+      { id: 'multi-drought', score: Math.max(productionStress, Math.min(1, fires / 40)), why: 'breadbasket heat/fire/drought stress dominates the observed signals' },
+      { id: 'export-cascade', score: Math.min(1, foodInsecurityPct / 60), why: 'elevated food-insecurity prevalence dominates the observed signals' },
+      { id: 'polycrisis', score: Math.min(1, (displacement / 3_000_000)) * 0.6 + Math.min(1, conflict / 15) * 0.4, why: 'compounding displacement and conflict signals dominate' },
+    ];
+    drivers.sort(function (a, b) { return b.score - a.score; });
+    var top = drivers[0].score > 0 ? drivers[0] : { id: 'multi-drought', why: 'no strong live signal — defaulting to a broad multi-breadbasket baseline' };
+    var suggestedPreset = PRESET_BY_ID[top.id] ? top.id : 'multi-drought';
+
+    return {
+      suggestedPreset: suggestedPreset,
+      suggestedIntensity: suggestedIntensity,
+      pressure: round1(pressure * 100) / 100,
+      inputs: {
+        activeFires: fires,
+        chokepointSeverity: round1(chokepoint * 100) / 100,
+        conflictEvents: conflict,
+        displacedPersons: displacement,
+        foodInsecurityPct: round1(foodInsecurityPct),
+        priceInflationPct: round1(priceInflation),
+        productionStress: round1(productionStress * 100) / 100,
+      },
+      rationale: 'Suggested "' + (PRESET_BY_ID[suggestedPreset] ? PRESET_BY_ID[suggestedPreset].label : suggestedPreset) +
+        '" at intensity ' + suggestedIntensity + '/5 because ' + top.why + '.',
+      disclaimer: SCENARIO_SEED_DISCLAIMER,
+      sources: sources,
+    };
+  }
+
   var API = {
     HORIZON: HORIZON,
     PRESETS: PRESETS,
@@ -358,11 +456,13 @@
     INTERVENTIONS: INTERVENTIONS,
     INTERVENTION_BY_ID: INTERVENTION_BY_ID,
     PHASES: PHASES,
+    SCENARIO_SEED_DISCLAIMER: SCENARIO_SEED_DISCLAIMER,
     normalizeParams: normalizeParams,
     runSim: runSim,
     computePhases: computePhases,
     phaseForDay: phaseForDay,
     phaseLedger: phaseLedger,
+    deriveScenarioSeed: deriveScenarioSeed,
     clamp: clamp,
   };
   root.SIM_ENGINE = API;

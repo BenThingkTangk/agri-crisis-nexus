@@ -67,6 +67,27 @@
       url: 'https://www.earthdata.nasa.gov/', description: 'Daily corrected-reflectance tiles (context, not live).',
       forceState: 'connected', forceLive: false, note: 'Daily satellite context with ~1-day latency — never a live feed.' },
 
+    /* --- Phase VII keyless live feeds (server-side via /api/intel) --- */
+    { id: 'hungermap', name: 'WFP HungerMap LIVE — Food insecurity', category: 'humanitarian',
+      open: true, keyless: true, intelId: 'hungermap', cadence: 'continuous',
+      url: 'https://hungermap.wfp.org/', description: 'Country food-insecurity nowcasts (insufficient food consumption).' },
+    { id: 'unhcr', name: 'UNHCR — Refugee statistics', category: 'humanitarian',
+      open: true, keyless: true, intelId: 'unhcr', cadence: 'periodic',
+      url: 'https://www.unhcr.org/refugee-statistics/', description: 'Forced-displacement flows by country of asylum.' },
+    { id: 'overpass', name: 'OpenStreetMap Overpass — Agri-logistics', category: 'logistics',
+      open: true, keyless: true, intelId: 'overpass', cadence: 'daily',
+      url: 'https://www.openstreetmap.org/', description: 'Bounded storage/port/rail infrastructure counts near breadbaskets.' },
+
+    /* --- Phase VII keyed live feeds (server-side, disabled until key set) --- */
+    { id: 'firms', name: 'NASA FIRMS — Active fire (VIIRS)', category: 'hazard',
+      open: true, keyless: false, intelId: 'firms', cadence: 'continuous',
+      url: 'https://firms.modaps.eosdis.nasa.gov/', envNames: ['FIRMS_MAP_KEY'],
+      description: 'Near-real-time active-fire detections over breadbaskets (requires a free MAP_KEY).' },
+    { id: 'faspsd', name: 'USDA FAS PSD — Global production', category: 'market',
+      open: true, keyless: false, intelId: 'faspsd', cadence: 'periodic',
+      url: 'https://apps.fas.usda.gov/psdonline/', envNames: ['USDA_FAS_API_KEY'],
+      description: 'World production/supply for wheat, corn, rice, soybeans (requires a free API key).' },
+
     /* --- optional-key sources (server-side): disabled until the key is set --- */
     { id: 'reliefweb', name: 'ReliefWeb — Humanitarian reports', category: 'humanitarian',
       open: true, keyless: false, intelId: 'reliefweb', cadence: 'continuous',
@@ -105,7 +126,21 @@
     { id: 'openfema', name: 'OpenFEMA — US disaster declarations', category: 'humanitarian',
       open: true, keyless: true, intelId: null, cadence: 'daily',
       url: 'https://www.fema.gov/about/openfema/api', registryReady: true,
-      description: 'US disaster declarations (keyless; not yet wired server-side).' }
+      description: 'US disaster declarations (keyless; not yet wired server-side).' },
+
+    /* --- Phase VII forecast/population catalogs (surfaced via /api/ingest) --- */
+    { id: 'ecmwf', name: 'ECMWF Open Data — Forecast cycles', category: 'weather',
+      open: true, keyless: true, intelId: null, cadence: 'half-hourly',
+      url: 'https://www.ecmwf.int/en/forecasts/datasets/open-data', registryReady: true,
+      description: 'Public forecast-cycle catalog (metadata only; no GRIB parsing — see Ingestion Operations).' },
+    { id: 'noaa-nomads', name: 'NOAA NOMADS — GFS/GEFS cycles', category: 'weather',
+      open: true, keyless: true, intelId: null, cadence: 'half-hourly',
+      url: 'https://nomads.ncep.noaa.gov/', registryReady: true,
+      description: 'Public GFS/GEFS cycle catalog (metadata only; no GRIB download).' },
+    { id: 'worldpop', name: 'WorldPop — Gridded population', category: 'population',
+      open: true, keyless: true, intelId: null, cadence: 'periodic',
+      url: 'https://www.worldpop.org/', registryReady: true,
+      description: 'Keyless REST population-exposure catalog (rasters not downloaded).' }
   ];
   var REGISTRY_BY_ID = {};
   REGISTRY.forEach(function (s) { REGISTRY_BY_ID[s.id] = s; });

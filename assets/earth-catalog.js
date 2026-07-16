@@ -61,6 +61,15 @@
     { id: 'wri-aqueduct', name: 'WRI Aqueduct', tokenEnv: null,
       url: 'https://www.wri.org/aqueduct', publicFallback: true,
       note: 'Public WRI ArcGIS / Resource Watch water-risk services — keyless.' },
+    { id: 'ecmwf', name: 'ECMWF Open Data', tokenEnv: null,
+      url: 'https://www.ecmwf.int/en/forecasts/datasets/open-data', publicFallback: true,
+      note: 'Public forecast-cycle catalog (00/06/12/18Z). Metadata only — no GRIB parsing, no rendered values.' },
+    { id: 'noaa-nomads', name: 'NOAA NOMADS (GFS/GEFS)', tokenEnv: null,
+      url: 'https://nomads.ncep.noaa.gov/', publicFallback: true,
+      note: 'Public GFS/GEFS cycle catalog. Metadata only — no GRIB download/parse on serverless.' },
+    { id: 'worldpop', name: 'WorldPop', tokenEnv: null,
+      url: 'https://www.worldpop.org/', publicFallback: true,
+      note: 'Keyless REST catalog discovery for gridded population — rasters not downloaded.' },
   ];
 
   // Layer descriptors (mirror api/_catalog.js LAYER_CONTRACTS). Drives the map
@@ -75,6 +84,10 @@
     { layerId: 'wapor-precipitation',     provider: 'fao-wapor',    domain: 'weather',   product: 'WaPOR precipitation (dekadal)',    cadence: 'dekadal',  kind: 'raster-tiles',    map: true },
     { layerId: 'wapor-evapotranspiration', provider: 'fao-wapor',   domain: 'water',     product: 'WaPOR evapotranspiration',         cadence: 'dekadal',  kind: 'raster-tiles',    map: true },
     { layerId: 'aqueduct-water-risk',     provider: 'wri-aqueduct', domain: 'water',     product: 'Aqueduct baseline water risk',     cadence: 'periodic', kind: 'feature-service', map: true },
+    { layerId: 'sentinel2-l2a',           provider: 'copernicus',   domain: 'satellite', product: 'Sentinel-2 L2A surface reflectance', cadence: 'daily',    kind: 'catalog',         map: false },
+    { layerId: 'ecmwf-open-forecast',     provider: 'ecmwf',        domain: 'weather',   product: 'ECMWF Open Data forecast cycle',    cadence: 'half-hourly', kind: 'catalog',      map: false },
+    { layerId: 'nomads-gfs',              provider: 'noaa-nomads',  domain: 'weather',   product: 'NOAA GFS forecast cycle',           cadence: 'half-hourly', kind: 'catalog',      map: false },
+    { layerId: 'worldpop-population',     provider: 'worldpop',     domain: 'population', product: 'WorldPop gridded population',       cadence: 'periodic', kind: 'catalog',         map: false },
   ];
 
   function stateInfo(state) {
