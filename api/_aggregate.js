@@ -8,10 +8,17 @@
 
 import {
   SOURCES, normalizeEvent, isValidEvent, dedupeEvents, aggregateStatus,
-  withRetry, mapLimit, breakerAllows, breakerSuccess, breakerFailure,
+  withRetry, withDeadline, mapLimit, breakerAllows, breakerSuccess, breakerFailure,
   cacheGet, cacheSet,
 } from './_sources.js';
 import { ADAPTERS } from './_adapters.js';
+
+// Hard wall-clock ceiling for a single adapter, retries and fan-out included.
+// Serverless routes have a short total budget, so no one upstream may exceed
+// this — a slow/hanging source is abandoned (status `timeout`) rather than
+// stalling the whole /api/intel response. Overridable per-adapter (entry.deadlineMs)
+// or per-call (deps.adapterDeadlineMs).
+const ADAPTER_DEADLINE_MS = 3000;
 
 // Run a single adapter with full resilience. Returns a health row plus events.
 async function runSource(entry, deps) {
@@ -35,10 +42,15 @@ async function runSource(entry, deps) {
     return { source: healthRow(meta, events.length ? 'stale' : 'down', events.length, fetchedAt, { circuit: 'open' }), events };
   }
 
+  const deadlineMs = entry.deadlineMs || deps.adapterDeadlineMs || ADAPTER_DEADLINE_MS;
   try {
-    const raw = await withRetry(
-      () => entry.run({ fetchImpl, now: new Date(now), env, timeoutMs: entry.timeoutMs }),
-      { retries: 1, baseDelayMs: 150, sleep }
+    const raw = await withDeadline(
+      withRetry(
+        () => entry.run({ fetchImpl, now: new Date(now), env, timeoutMs: entry.timeoutMs }),
+        { retries: 1, baseDelayMs: 150, sleep }
+      ),
+      deadlineMs,
+      entry.id
     );
     const events = (Array.isArray(raw) ? raw : [])
       .map((r) => normalizeEvent(r, { sourceId: entry.id, fetchedAt }))
@@ -58,7 +70,10 @@ async function runSource(entry, deps) {
     if (c.hit && c.value && c.value.length) {
       return { source: healthRow(meta, 'stale', c.value.length, fetchedAt, { error: safeMsg(err) }), events: c.value };
     }
-    return { source: healthRow(meta, 'down', 0, fetchedAt, { error: safeMsg(err) }), events: [] };
+    // No cache: surface a distinct `timeout` state for a blown deadline so the
+    // UI can say "timed out" rather than mislabeling a reachable source.
+    const status = (err && err.timeout) ? 'timeout' : 'down';
+    return { source: healthRow(meta, status, 0, fetchedAt, { error: safeMsg(err) }), events: [] };
   }
 }
 
@@ -81,7 +96,10 @@ function safeMsg(err) {
 export async function aggregate(deps = {}) {
   const adapters = deps.adapters || ADAPTERS;
   const now = deps.now || Date.now();
-  const concurrency = deps.concurrency || 4;
+  // Run wide: every adapter is independently deadline-capped, so the whole
+  // aggregate settles in ~ceil(adapters/concurrency) * ADAPTER_DEADLINE_MS worst
+  // case. Higher concurrency keeps that product comfortably under the route budget.
+  const concurrency = deps.concurrency || 8;
   const results = await mapLimit(adapters, concurrency, (entry) => runSource(entry, Object.assign({}, deps, { now })));
 
   const sources = results.map((r) => r.source);

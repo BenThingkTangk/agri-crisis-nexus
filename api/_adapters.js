@@ -684,8 +684,10 @@ export async function faspsd({ fetchImpl, timeoutMs = 8000, env = process.env, n
 // the source as down/stale — we never fabricate food-insecurity data.
 const HUNGERMAP_BULK = 'https://api.hungermapdata.org/v2/adm0data.json';
 const HUNGERMAP_COUNTRY = 'https://api.hungermapdata.org/v1/foodsecurity/country/';
-// Bounded fallback roster — major food-crisis / breadbasket-adjacent countries.
-const HUNGERMAP_FALLBACK_ISO3 = ['SOM', 'AFG', 'YEM', 'SDN', 'SSD', 'ETH', 'COD', 'TCD', 'SYR', 'NGA', 'HTI', 'MLI', 'BFA', 'NER'];
+// Bounded fallback roster — major food-crisis countries. Kept short on purpose:
+// the fallback runs as a single concurrent batch, so bulk-abort + fallback stay
+// comfortably under the adapter deadline enforced in _aggregate.js.
+const HUNGERMAP_FALLBACK_ISO3 = ['SOM', 'AFG', 'YEM', 'SDN', 'SSD', 'ETH'];
 
 // Build a normalized raw record from loosely-shaped country properties.
 function hmRecord(props) {
@@ -717,13 +719,13 @@ function hmRecord(props) {
   };
 }
 
-export async function hungermap({ fetchImpl, timeoutMs = 8000, sleep, countryIso3 = HUNGERMAP_FALLBACK_ISO3 } = {}) {
-  // Primary: one bulk call for every country, with a single bounded retry.
+export async function hungermap({ fetchImpl, timeoutMs = 2500, countryIso3 = HUNGERMAP_FALLBACK_ISO3 } = {}) {
+  // The bulk endpoint has been observed to hang in production, so we give it a
+  // short single-attempt budget (no retry — retrying a hang just burns the
+  // deadline) and abort fast, leaving room for the per-country fallback.
+  const bulkTimeout = Math.min(timeoutMs, 1800);
   try {
-    const j = await withRetry(
-      () => fetchJSON(HUNGERMAP_BULK, { fetchImpl, timeoutMs, maxBytes: 8_000_000 }),
-      { retries: 1, baseDelayMs: 250, sleep }
-    );
+    const j = await fetchJSON(HUNGERMAP_BULK, { fetchImpl, timeoutMs: bulkTimeout, maxBytes: 8_000_000 });
     const countries = (j && Array.isArray(j.countries)) ? j.countries
       : (j && j.body && Array.isArray(j.body.countries)) ? j.body.countries
       : (Array.isArray(j) ? j : []);
@@ -735,11 +737,14 @@ export async function hungermap({ fetchImpl, timeoutMs = 8000, sleep, countryIso
     if (out.length) return out;
   } catch (e) { /* fall through to bounded per-country fallback */ }
 
-  // Fallback: bounded, concurrency-capped per-country nowcasts. Best-effort —
-  // each country failure is swallowed; we aggregate whatever resolves.
-  const results = await mapLimit(countryIso3, 3, async (iso3) => {
+  // Fallback: bounded per-country nowcasts in a single concurrent batch (limit =
+  // roster size) with a tight per-request timeout, so the whole fallback is one
+  // network round. Best-effort — each country failure is swallowed; we aggregate
+  // whatever resolves.
+  const countryTimeout = Math.min(timeoutMs, 1000);
+  const results = await mapLimit(countryIso3, countryIso3.length || 1, async (iso3) => {
     try {
-      const j = await fetchJSON(HUNGERMAP_COUNTRY + encodeURIComponent(iso3), { fetchImpl, timeoutMs });
+      const j = await fetchJSON(HUNGERMAP_COUNTRY + encodeURIComponent(iso3), { fetchImpl, timeoutMs: countryTimeout });
       const b = (j && j.body) || j || {};
       const country = b.country || {};
       return hmRecord({

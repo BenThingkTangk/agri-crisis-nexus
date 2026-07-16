@@ -253,9 +253,23 @@ export async function fetchText(url, opts = {}) {
   } = opts;
   if (typeof fetchImpl !== 'function') throw new Error('no fetch available');
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let timer;
+  // Race the request against a hard timer. We both signal AbortController (so a
+  // well-behaved fetch cancels its socket) AND reject the race — this guarantees
+  // the timeout even if the underlying fetch ignores the abort signal or hangs
+  // before returning headers.
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try { ctrl.abort(); } catch (_) { /* ignore */ }
+      const e = new Error('request aborted (timeout ' + timeoutMs + 'ms)');
+      e.timeout = true;
+      reject(e);
+    }, timeoutMs);
+  });
+  const req = Promise.resolve(fetchImpl(url, { method, headers, body, signal: ctrl.signal }));
+  req.catch(() => {}); // if the timer wins the race, ignore the abandoned request's late rejection
   try {
-    const r = await fetchImpl(url, { method, headers, body, signal: ctrl.signal });
+    const r = await Promise.race([req, timeout]);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const len = Number(r.headers && r.headers.get && r.headers.get('content-length'));
     if (Number.isFinite(len) && len > maxBytes) throw new Error('response too large');
@@ -290,6 +304,27 @@ export async function withRetry(fn, opts = {}) {
     }
   }
   throw lastErr;
+}
+
+// ---------------------------------------------------------------------------
+// Hard wall-clock deadline. Races a promise against a timer that rejects with a
+// `.timeout` error, guaranteeing the caller can never block longer than `ms`
+// regardless of how the underlying work (fetch, retries, fan-out) behaves. The
+// underlying promise is not cancellable, so we swallow any late rejection to
+// avoid an unhandledRejection after the deadline has already fired.
+// ---------------------------------------------------------------------------
+export function withDeadline(promise, ms, label) {
+  let timer;
+  const p = Promise.resolve(promise);
+  p.catch(() => {}); // late rejection after the deadline is expected; ignore it
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const e = new Error((label || 'operation') + ' deadline exceeded (' + ms + 'ms)');
+      e.timeout = true;
+      reject(e);
+    }, ms);
+  });
+  return Promise.race([p, guard]).finally(() => clearTimeout(timer));
 }
 
 // ---------------------------------------------------------------------------

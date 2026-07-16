@@ -154,7 +154,7 @@
     switch (String(status || '').toLowerCase()) {
       case 'ok': case 'live': case 'fresh': return 'connected';
       case 'stale': return 'stale';
-      case 'down': case 'error': case 'fail': return 'down';
+      case 'down': case 'error': case 'fail': case 'timeout': return 'down';
       case 'disabled': case 'off': return 'disabled';
       default: return 'down';
     }

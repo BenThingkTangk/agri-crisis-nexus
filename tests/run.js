@@ -25,7 +25,7 @@ import { isSameOrigin, rateLimit, parseCookies, getSessionToken } from '../api/_
 import {
   SEVERITY_LEVELS, severityFromLevel, severityFromScale, severityScore,
   normalizeEvent, isValidEvent, dedupeEvents, aggregateStatus,
-  withRetry, mapLimit, resetBreakers, cacheClear, breakerFailure, breakerAllows,
+  withRetry, withDeadline, mapLimit, resetBreakers, cacheClear, breakerFailure, breakerAllows,
   SOURCES, isFillValue, FILL_SENTINELS,
 } from '../api/_sources.js';
 import { aggregate, clearSnapshots, recordSnapshot, getSnapshots } from '../api/_aggregate.js';
@@ -4297,6 +4297,88 @@ async function testPhaseVIIQAFixes() {
   ok('static gate count matches the intel-linked registry count', Number(shown) === intelBacked);
 }
 
+// Phase VII QA v2 — the production blocker: one hanging adapter (HungerMap bulk)
+// pushed /api/intel past the Vercel function timeout (504), which made the
+// browser render every keyed source as credential-required. The aggregate must
+// now bound every adapter with a hard wall-clock deadline and degrade to
+// per-source timeout/down while other sources still succeed.
+async function testPhaseVIIRouteResilience() {
+  section('phaseVII-QA-v2: /api/intel cannot be taken down by a slow adapter');
+  cacheClear(); resetBreakers();
+
+  // withDeadline: caps a hanging promise and flags the rejection as a timeout.
+  let deadlineFired = false;
+  const t0 = Date.now();
+  try {
+    await withDeadline(new Promise(() => {}), 40, 'hang');
+  } catch (e) { deadlineFired = e && e.timeout === true; }
+  ok('withDeadline rejects a hanging promise with a .timeout error', deadlineFired);
+  ok('withDeadline returns within roughly its budget', Date.now() - t0 < 400);
+  ok('withDeadline resolves fast promises normally',
+    (await withDeadline(Promise.resolve(7), 1000)) === 7);
+
+  // A never-resolving adapter alongside healthy + disabled ones. The aggregate
+  // must still settle (bounded), never throw, and report the hang as `timeout`
+  // while the healthy source stays `ok`.
+  const hang = { id: 'gdacs', ttlMs: 0, run: () => new Promise(() => {}) };
+  const good = { id: 'usgs', ttlMs: 0, run: async () => [
+    { rawId: 'q1', domain: 'hazard', category: 'Earthquake', title: 'M5.0', severity: 'moderate', geography: 'X', lat: 0, lon: 0, published: '2024-01-01T00:00:00Z' },
+  ] };
+  const optedOut = { id: 'firms', ttlMs: 0, run: () => { const e = new Error('no key'); e.disabled = true; throw e; } };
+
+  const start = Date.now();
+  const agg = await aggregate({
+    fetchImpl: async () => { throw new Error('no network in test'); },
+    adapters: [hang, good, optedOut],
+    adapterDeadlineMs: 60,
+    concurrency: 8,
+    sleep: async () => {},
+  });
+  const elapsed = Date.now() - start;
+
+  ok('aggregate resolves despite a hanging adapter (never rejects)', agg && Array.isArray(agg.sources));
+  ok('aggregate stays bounded in time under the adapter deadline', elapsed < 1500);
+  const hangRow = agg.sources.find((s) => s.id === 'gdacs');
+  ok('the hanging adapter is reported as timeout (not ok)', hangRow && hangRow.status === 'timeout');
+  const goodRow = agg.sources.find((s) => s.id === 'usgs');
+  ok('a healthy adapter still succeeds alongside the hang', goodRow && goodRow.status === 'ok' && goodRow.count === 1);
+  const offRow = agg.sources.find((s) => s.id === 'firms');
+  ok('an opted-out adapter is still disabled (not a failure)', offRow && offRow.status === 'disabled');
+  ok('successful events survive a co-running hang', agg.summary.total === 1);
+  ok('aggregate status is partial, not degraded, when some sources succeed', agg.status === 'partial');
+
+  // UI mapping: a timeout/down source must never be shown as credential-required,
+  // and a keyed source reported ok stays connected+live even while WFP is down.
+  const SRC = loadEarthModules().EARTH_SOURCES;
+  const resolved = SRC.resolve({ sources: [
+    { id: 'firms', status: 'ok' },
+    { id: 'faspsd', status: 'ok' },
+    { id: 'hungermap', status: 'timeout' },
+  ] });
+  const firmsR = resolved.find((r) => r.id === 'firms');
+  const fasR = resolved.find((r) => r.id === 'faspsd');
+  const hmR = resolved.find((r) => r.id === 'hungermap');
+  ok('FIRMS stays connected+live when WFP times out', firmsR && firmsR.state === 'connected' && firmsR.live === true);
+  ok('FAS-PSD stays connected+live when WFP times out', fasR && fasR.state === 'connected' && fasR.live === true);
+  ok('keyed FIRMS is not credential-required during a partial outage', firmsR && firmsR.credentialRequired === false);
+  ok('a timed-out source maps to down (never credential-required)',
+    hmR && hmR.state === 'down' && hmR.credentialRequired === false && hmR.live === false);
+
+  // HungerMap fallback stays a single bounded batch so it cannot blow the budget:
+  // even with the bulk endpoint hanging, it aborts fast and returns partial data.
+  const hmFetch = catFetch([
+    ['adm0data.json', () => new Promise(() => {})], // bulk hangs
+    ['/foodsecurity/country/SOM', () => catResp(200, { statusCode: '200', body: { country: { name: 'Somalia', iso3: 'SOM' }, date: '2024-03-17', metrics: { fcs: { people: 4200000, prevalence: 0.5 } } } })],
+    ['/foodsecurity/country/AFG', () => catResp(200, { statusCode: '200', body: { country: { name: 'Afghanistan', iso3: 'AFG' }, date: '2024-03-17', metrics: { fcs: { people: 1000000, prevalence: 0.3 } } } })],
+  ]);
+  const hmStart = Date.now();
+  const evHm = await hungermap({ fetchImpl: hmFetch, timeoutMs: 200, countryIso3: ['SOM', 'AFG'] });
+  ok('HungerMap returns partial data when bulk hangs', evHm.length === 2);
+  ok('HungerMap bulk-hang fallback stays bounded', Date.now() - hmStart < 1500);
+
+  cacheClear(); resetBreakers();
+}
+
 (async function main() {
   console.log('AgriOS · A Nirmata Holdings Company — test suite');
   try {
@@ -4364,6 +4446,7 @@ async function testPhaseVIIQAFixes() {
     testPhaseVIIScenarioSeed();
     testPhaseVIIDescriptors();
     await testPhaseVIIQAFixes();
+    await testPhaseVIIRouteResilience();
     testBrandingSecurity();
     testDesignSystem();
     await testAccounts();
